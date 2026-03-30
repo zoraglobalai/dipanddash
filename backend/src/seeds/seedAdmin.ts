@@ -7,7 +7,7 @@ import { hashPassword } from "../utils/password";
 import { logger } from "../utils/logger";
 import { env } from "../config/env";
 
-const seedAdmin = async () => {
+export const seedAdmin = async () => {
   try {
     if (!env.SEED_ADMIN_USERNAME || !env.SEED_ADMIN_PASSWORD) {
       throw new Error("SEED_ADMIN_USERNAME and SEED_ADMIN_PASSWORD must be set in .env");
@@ -52,4 +52,6 @@ const seedAdmin = async () => {
   }
 };
 
-seedAdmin();
+if (require.main === module) {
+  seedAdmin();
+}

@@ -3,15 +3,22 @@
   "version": "1.0.0",
   "description": "Dip & Dash admin/staff shared backend API",
   "main": "dist/server.js",
+  "engines": {
+    "node": ">=22 <25"
+  },
   "scripts": {
     "dev": "nodemon",
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/server.js",
+    "serve": "node dist/server.js",
+    "start": "npm run migration:run:prod && npm run seed:admin:prod:optional && npm run serve",
     "seed": "npm run seed:admin",
     "seed:admin": "ts-node src/seeds/seedAdmin.ts",
+    "seed:admin:prod": "node dist/seeds/seedAdmin.js",
+    "seed:admin:prod:optional": "node dist/seeds/seedAdminIfConfigured.js",
     "typeorm": "typeorm-ts-node-commonjs -d src/database/data-source.ts",
     "migration:generate": "npm run typeorm -- migration:generate src/database/migrations/AutoMigration",
-    "migration:run": "npm run typeorm -- migration:run"
+    "migration:run": "npm run typeorm -- migration:run",
+    "migration:run:prod": "node dist/database/run-migrations.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",

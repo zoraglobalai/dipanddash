@@ -1,5 +1,7 @@
 import "reflect-metadata";
+import path from "node:path";
 import { DataSource } from "typeorm";
+import type { PostgresConnectionOptions } from "typeorm/driver/postgres/PostgresConnectionOptions";
 
 import { env } from "../config/env";
 import { User } from "../modules/users/user.entity";
@@ -40,54 +42,77 @@ import { OutletTransfer } from "../modules/outlet-transfers/outlet-transfer.enti
 import { OutletIngredientStock } from "../modules/outlet-transfers/outlet-ingredient-stock.entity";
 import { OutletProductStock } from "../modules/outlet-transfers/outlet-product-stock.entity";
 
-export const AppDataSource = new DataSource({
-  type: "postgres",
-  host: env.DATABASE_HOST,
-  port: env.DATABASE_PORT,
-  username: env.DATABASE_USERNAME,
-  password: env.DATABASE_PASSWORD,
-  database: env.DATABASE_NAME,
-  synchronize: env.NODE_ENV !== "production",
-  logging: false,
-  ssl: env.DATABASE_SSL ? { rejectUnauthorized: false } : false,
-  entities: [
-    User,
-    AttendanceRecord,
-    IngredientCategory,
-    Ingredient,
-    IngredientStock,
-    IngredientStockLog,
-    DailyAllocation,
-    PosBillingControl,
-    StaffClosingReport,
-    ItemCategory,
-    Item,
-    ItemIngredient,
-    AddOn,
-    AddOnIngredient,
-    Combo,
-    ComboItem,
-    Coupon,
-    CouponUsage,
-    AuthSession,
-    Customer,
-    Invoice,
-    InvoiceLine,
-    InvoicePayment,
-    InvoiceActivity,
-    InvoiceUsageEvent,
-    SyncReceipt,
-    GamingBooking,
-    Supplier,
-    Product,
-    PurchaseOrder,
-    PurchaseOrderLine,
-    CashAudit,
-    DumpEntry,
-    Outlet,
-    OutletTransfer,
-    OutletIngredientStock,
-    OutletProductStock
-  ],
-  migrations: ["src/database/migrations/*.ts"]
-});
+const entities = [
+  User,
+  AttendanceRecord,
+  IngredientCategory,
+  Ingredient,
+  IngredientStock,
+  IngredientStockLog,
+  DailyAllocation,
+  PosBillingControl,
+  StaffClosingReport,
+  ItemCategory,
+  Item,
+  ItemIngredient,
+  AddOn,
+  AddOnIngredient,
+  Combo,
+  ComboItem,
+  Coupon,
+  CouponUsage,
+  AuthSession,
+  Customer,
+  Invoice,
+  InvoiceLine,
+  InvoicePayment,
+  InvoiceActivity,
+  InvoiceUsageEvent,
+  SyncReceipt,
+  GamingBooking,
+  Supplier,
+  Product,
+  PurchaseOrder,
+  PurchaseOrderLine,
+  CashAudit,
+  DumpEntry,
+  Outlet,
+  OutletTransfer,
+  OutletIngredientStock,
+  OutletProductStock
+];
+
+const migrations = [
+  path.join(__dirname, "migrations", "*.ts"),
+  path.join(__dirname, "migrations", "*.js")
+];
+
+const baseDataSourceOptions: Omit<
+  PostgresConnectionOptions,
+  "type" | "url" | "host" | "port" | "username" | "password" | "database"
+> = {
+  synchronize: env.DB_SYNCHRONIZE,
+  logging: env.DB_LOGGING,
+  ssl: env.DATABASE_SSL
+    ? { rejectUnauthorized: env.DATABASE_SSL_REJECT_UNAUTHORIZED }
+    : false,
+  entities,
+  migrations,
+  migrationsTableName: "typeorm_migrations"
+};
+
+export const AppDataSource = env.DATABASE_URL
+  ? new DataSource({
+      type: "postgres",
+      ...baseDataSourceOptions,
+      url: env.DATABASE_URL
+    })
+  : new DataSource({
+      type: "postgres",
+      ...baseDataSourceOptions,
+      host: env.DATABASE_HOST!,
+      port: env.DATABASE_PORT,
+      username: env.DATABASE_USERNAME!,
+      password: env.DATABASE_PASSWORD!,
+      database: env.DATABASE_NAME!
+    });

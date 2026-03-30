@@ -3,50 +3,103 @@ import { z } from "zod";
 
 dotenv.config();
 
+const optionalString = z.preprocess(
+  (value) => {
+    if (typeof value !== "string") {
+      return value;
+    }
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  },
+  z.string().optional()
+);
+
+const optionalBoolean = z.preprocess((value) => {
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "true") {
+      return true;
+    }
+    if (normalized === "false") {
+      return false;
+    }
+  }
+  return value;
+}, z.boolean().optional());
+
 const envSchema = z.object({
   NODE_ENV: z.enum(["development", "production", "test"]).default("development"),
   PORT: z.coerce.number().default(5000),
   API_PREFIX: z.string().default("/api"),
-  CLIENT_ORIGIN: z.string().optional(),
-  CLIENT_ORIGINS: z.string().optional(),
-  COOKIE_DOMAIN: z
-    .string()
-    .optional()
-    .transform((value) => {
-      const trimmed = value?.trim();
-      return trimmed ? trimmed : undefined;
-    }),
+  CLIENT_ORIGIN: optionalString,
+  CLIENT_ORIGINS: optionalString,
+  COOKIE_DOMAIN: optionalString,
   ACCESS_TOKEN_SECRET: z.string().min(16).optional(),
   JWT_ACCESS_SECRET: z.string().min(16).optional(),
   REFRESH_TOKEN_SECRET: z.string().min(16).optional(),
-  ACCESS_TOKEN_EXPIRES_IN: z.string().optional(),
-  JWT_ACCESS_EXPIRES_IN: z.string().optional(),
+  ACCESS_TOKEN_EXPIRES_IN: optionalString,
+  JWT_ACCESS_EXPIRES_IN: optionalString,
   REFRESH_TOKEN_EXPIRES_IN: z.string().default("14d"),
-  ACCESS_COOKIE_NAME: z.string().optional(),
-  AUTH_COOKIE_NAME: z.string().optional(),
+  ACCESS_COOKIE_NAME: optionalString,
+  AUTH_COOKIE_NAME: optionalString,
   REFRESH_COOKIE_NAME: z.string().default("DND_REFRESH_TOKEN"),
-  COOKIE_SECURE: z
-    .string()
-    .optional()
-    .transform((value) => {
-      if (value === undefined) {
-        return undefined;
-      }
-      return value === "true";
-    }),
+  COOKIE_SECURE: optionalBoolean,
   COOKIE_SAME_SITE: z.enum(["lax", "strict", "none"]).optional(),
-  DATABASE_HOST: z.string(),
+  DATABASE_URL: optionalString,
+  DATABASE_HOST: optionalString,
   DATABASE_PORT: z.coerce.number().default(5432),
-  DATABASE_USERNAME: z.string(),
-  DATABASE_PASSWORD: z.string(),
-  DATABASE_NAME: z.string(),
+  DATABASE_USERNAME: optionalString,
+  DATABASE_PASSWORD: optionalString,
+  DATABASE_NAME: optionalString,
   SEED_ADMIN_USERNAME: z.string().min(3).optional(),
   SEED_ADMIN_PASSWORD: z.string().min(8).optional(),
   SEED_ADMIN_FULL_NAME: z.string().min(3).default("Admin User"),
-  DATABASE_SSL: z
-    .string()
-    .optional()
-    .transform((value) => value === "true")
+  DATABASE_SSL: optionalBoolean,
+  DATABASE_SSL_REJECT_UNAUTHORIZED: optionalBoolean,
+  DB_SYNCHRONIZE: optionalBoolean,
+  DB_LOGGING: optionalBoolean
+}).superRefine((value, ctx) => {
+  if (value.DATABASE_URL) {
+    return;
+  }
+
+  if (!value.DATABASE_HOST) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["DATABASE_HOST"],
+      message: "DATABASE_HOST is required when DATABASE_URL is not set"
+    });
+  }
+
+  if (!value.DATABASE_USERNAME) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["DATABASE_USERNAME"],
+      message: "DATABASE_USERNAME is required when DATABASE_URL is not set"
+    });
+  }
+
+  if (!value.DATABASE_PASSWORD) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["DATABASE_PASSWORD"],
+      message: "DATABASE_PASSWORD is required when DATABASE_URL is not set"
+    });
+  }
+
+  if (!value.DATABASE_NAME) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["DATABASE_NAME"],
+      message: "DATABASE_NAME is required when DATABASE_URL is not set"
+    });
+  }
 });
 
 const parsedEnv = envSchema.safeParse(process.env);
@@ -59,6 +112,7 @@ if (!parsedEnv.success) {
 
 const rawEnv = parsedEnv.data;
 const isProduction = rawEnv.NODE_ENV === "production";
+const hasDatabaseUrl = Boolean(rawEnv.DATABASE_URL);
 
 const parseOrigins = (value: string | undefined) =>
   (value ?? "")
@@ -98,6 +152,10 @@ const accessTokenExpiresIn =
 const accessCookieName = rawEnv.ACCESS_COOKIE_NAME ?? rawEnv.AUTH_COOKIE_NAME ?? "DND_ACCESS_TOKEN";
 const cookieSecure = rawEnv.COOKIE_SECURE ?? isProduction;
 const cookieSameSite = rawEnv.COOKIE_SAME_SITE ?? (cookieSecure ? "none" : "lax");
+const databaseSsl = rawEnv.DATABASE_SSL ?? (isProduction || hasDatabaseUrl);
+const databaseSslRejectUnauthorized = rawEnv.DATABASE_SSL_REJECT_UNAUTHORIZED ?? false;
+const dbSynchronize = rawEnv.DB_SYNCHRONIZE ?? !isProduction;
+const dbLogging = rawEnv.DB_LOGGING ?? false;
 
 if (cookieSameSite === "none" && !cookieSecure) {
   throw new Error("Environment validation failed: COOKIE_SAME_SITE=none requires COOKIE_SECURE=true");
@@ -115,7 +173,11 @@ export const env = {
   ACCESS_COOKIE_NAME: accessCookieName,
   AUTH_COOKIE_NAME: accessCookieName,
   COOKIE_SECURE: cookieSecure,
-  COOKIE_SAME_SITE: cookieSameSite
+  COOKIE_SAME_SITE: cookieSameSite,
+  DATABASE_SSL: databaseSsl,
+  DATABASE_SSL_REJECT_UNAUTHORIZED: databaseSslRejectUnauthorized,
+  DB_SYNCHRONIZE: dbSynchronize,
+  DB_LOGGING: dbLogging
 };
 
 export { isProduction };
