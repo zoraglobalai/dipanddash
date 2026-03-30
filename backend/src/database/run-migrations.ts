@@ -19,6 +19,12 @@ const runMigrations = async (): Promise<void> => {
       );
     }
   } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (message.includes("'users' table is missing")) {
+      logger.error(
+        "Migration bootstrap failed: base tables are missing. For first deploy on empty DB, set DB_SYNCHRONIZE=true and redeploy once, then set DB_SYNCHRONIZE=false."
+      );
+    }
     logger.error("Failed to run database migrations", error);
     process.exitCode = 1;
   } finally {
