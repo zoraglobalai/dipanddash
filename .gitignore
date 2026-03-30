@@ -1,0 +1,67 @@
+# Dependencies
+node_modules/
+**/node_modules/
+backend/node_modules/
+frontend/node_modules/
+
+# Build outputs
+dist/
+build/
+**/dist/
+backend/dist/
+frontend/dist/
+target/
+**/target/
+**/src-tauri/target/
+
+# Tauri / Rust artifacts
+**/*.pdb
+**/*.rlib
+**/*.rmeta
+**/*.dSYM/
+**/*.ilk
+**/*.exp
+**/*.lib
+
+# Environment files
+.env
+.env.*
+!.env.example
+backend/.env
+backend/.env.*
+!backend/.env.example
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+pos-desktop/.env
+pos-desktop/.env.*
+!pos-desktop/.env.example
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# TypeScript cache
+*.tsbuildinfo
+
+# Vite / tooling cache
+.vite/
+.cache/
+.turbo/
+.npm/
+.pnpm-store/
+.yarn/
+
+# Coverage
+coverage/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.tmp
+*.temp

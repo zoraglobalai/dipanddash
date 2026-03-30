@@ -1,0 +1,75 @@
+@import url("https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=Sora:wght@500;600;700;800&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --color-gold: #daa438;
+  --color-gold-light: #ffe08a;
+  --color-red: #8e0909;
+  --color-red-light: #c10e0e;
+  --color-black: #111111;
+  --color-white: #ffffff;
+  --color-text: #1b1b1b;
+  --color-subtitle: #6a5750;
+  --color-border: #f1d9be;
+  --color-muted-bg: #fff9ee;
+  --radius-card: 16px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: "Manrope", sans-serif;
+  background: #fffcf8;
+  color: var(--color-text);
+}
+
+.premium-card {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-card);
+  background: linear-gradient(180deg, #ffffff 0%, #fffbf4 100%);
+  box-shadow: 0 16px 34px rgba(55, 22, 9, 0.1);
+}
+
+.soft-grid-bg {
+  background-color: #fffcf5;
+  background-image:
+    linear-gradient(rgba(142, 9, 9, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(218, 164, 56, 0.06) 1px, transparent 1px);
+  background-size: 26px 26px;
+}
+
+@media print {
+  body * {
+    visibility: hidden !important;
+  }
+
+  #invoice-bill-template,
+  #invoice-bill-template * {
+    visibility: visible !important;
+  }
+
+  #invoice-bill-template {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    max-width: 100%;
+    border: none !important;
+    border-radius: 0 !important;
+    margin: 0;
+    padding: 14px;
+    box-shadow: none !important;
+  }
+}

@@ -1,0 +1,23 @@
+export const APP_ROUTES = {
+  LOGIN: "/login",
+  ROOT: "/",
+  DASHBOARD: "/dashboard",
+  ADMIN_DASHBOARD: "/dashboard/admin",
+  ATTENDANCE: "/attendance",
+  STAFF_MANAGEMENT: "/staff-management",
+  SUPPLIERS: "/suppliers",
+  PURCHASE: "/purchase",
+  ASSETS_ENTRY: "/assets-entry",
+  ITEMS_ENTRY: "/items-entry",
+  INGREDIENT_ENTRY: "/ingredient-entry",
+  STOCK_AUDIT: "/stock-audit",
+  DUMP_WASTAGE: "/dump-wastage",
+  CASH_AUDIT: "/cash-audit",
+  OUTLETS: "/outlets",
+  OFFERS: "/offers",
+  REPORTS: "/reports",
+  ORDERS: "/orders",
+  INVOICES: "/invoices",
+  GAMING: "/gaming",
+  PROFILE: "/profile"
+} as const;

@@ -1,0 +1,51 @@
+export const INGREDIENT_UNITS = [
+  "mcg",
+  "mg",
+  "g",
+  "kg",
+  "quintal",
+  "ton",
+  "ml",
+  "cl",
+  "dl",
+  "l",
+  "gallon",
+  "pcs",
+  "piece",
+  "count",
+  "unit",
+  "units",
+  "pair",
+  "dozen",
+  "tray",
+  "plate",
+  "pack",
+  "packet",
+  "box",
+  "bottle",
+  "can",
+  "jar",
+  "tub",
+  "pouch",
+  "roll",
+  "bag",
+  "sack",
+  "bundle",
+  "carton",
+  "crate",
+  "loaf",
+  "block",
+  "cup",
+  "tablespoon",
+  "teaspoon",
+  "custom"
+] as const;
+
+export type IngredientUnit = (typeof INGREDIENT_UNITS)[number];
+
+export enum IngredientStockLogType {
+  ADD = "ADD",
+  ALLOCATE = "ALLOCATE",
+  USE = "USE",
+  ADJUST = "ADJUST"
+}
