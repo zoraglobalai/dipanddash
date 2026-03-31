@@ -47,6 +47,55 @@ npm run tauri:dev
 npm run db:reset-local
 ```
 
+5. Build desktop installer (normal build, no updater artifacts):
+```bash
+npm run tauri:build
+```
+
+6. Build desktop installer + updater artifacts (for GitHub Release auto-update):
+```bash
+npm run tauri:build:update
+```
+
+## Auto-update release setup (one-time)
+
+1. Generate Tauri updater signing key pair (run once on your machine):
+```powershell
+npm exec tauri signer generate -w "$env:USERPROFILE\.tauri\dipanddash.key"
+```
+
+2. Copy the generated public key and set it in:
+- `src-tauri/tauri.updater.conf.json` -> `plugins.updater.pubkey`
+
+3. Update release endpoint in:
+- `src-tauri/tauri.updater.conf.json` -> `plugins.updater.endpoints`
+- Example: `https://github.com/<owner>/<repo>/releases/latest/download/latest.json`
+
+## Auto-update release steps (every new version)
+
+1. Bump app version in:
+- `package.json` (`version`)
+- `src-tauri/tauri.conf.json` (`version`)
+
+2. Load signing key to environment (PowerShell):
+```powershell
+$env:TAURI_SIGNING_PRIVATE_KEY = Get-Content "$env:USERPROFILE\.tauri\dipanddash.key" -Raw
+```
+
+3. Build update artifacts:
+```bash
+npm run tauri:build:update
+```
+
+4. Create a GitHub Release (tag should match version, ex: `v0.1.1`) and upload generated artifacts from `src-tauri/target/release/bundle/**`, including:
+- installer file (`.msi`/`.exe`)
+- updater manifest (`latest.json`)
+- signature file(s) (`.sig`)
+
+5. Installed desktop app will detect the new version on next launch and show:
+- `Download and install now?`
+- then `Restart now to apply the new version?`
+
 ## Notes
 
 - Backend endpoints already added in main backend app:

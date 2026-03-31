@@ -1,9 +1,11 @@
+import { useEffect } from "react";
 import { Box, Text, VStack } from "@chakra-ui/react";
 
 import { PosProvider } from "@/app/PosContext";
 import { PosLoginPage } from "@/app/PosLoginPage";
 import { StaffDesktopShell } from "@/app/StaffDesktopShell";
 import { usePosAuth } from "@/app/PosAuthContext";
+import { checkForDesktopUpdates } from "@/lib/updater";
 
 const BootLoader = () => (
   <VStack minH="100vh" justify="center" spacing={3} bg="linear-gradient(160deg, #FFF6E6 0%, #FFFDF9 48%, #FFFFFF 100%)">
@@ -16,6 +18,10 @@ const BootLoader = () => (
 
 export const App = () => {
   const { session, isBootstrapping } = usePosAuth();
+
+  useEffect(() => {
+    void checkForDesktopUpdates();
+  }, []);
 
   if (isBootstrapping) {
     return <BootLoader />;
