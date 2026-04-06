@@ -18,6 +18,11 @@ type RequestConfigWithRetry = InternalAxiosRequestConfig & {
   _retry?: boolean;
 };
 
+type RequestDescriptor = {
+  method?: string;
+  url?: string;
+};
+
 const extractErrorMessage = (error: unknown): string | undefined => {
   if (!error || typeof error !== "object") {
     return undefined;
@@ -63,6 +68,26 @@ const isRefreshBlockedEndpoint = (url?: string): boolean => {
   }
 
   return /\/auth\/(login|logout|logout-all|refresh)(?:\?|$)/.test(url);
+};
+
+const getRequestLabel = (request?: RequestDescriptor): string => {
+  const method = (request?.method ?? "GET").toUpperCase();
+  const url = request?.url ?? "<unknown-url>";
+  return `${method} ${url}`;
+};
+
+const annotateTransportError = (error: AxiosError): void => {
+  if (error.response) {
+    return;
+  }
+
+  const requestLabel = getRequestLabel(error.config);
+  if (error.code === "ECONNABORTED") {
+    error.message = `Request timeout (${requestLabel})`;
+    return;
+  }
+
+  error.message = `Network error (${requestLabel})`;
 };
 
 export const setUnauthorizedHandler = (handler: UnauthorizedHandler | null) => {
@@ -120,7 +145,16 @@ apiClient.interceptors.request.use(async (config) => {
 apiClient.interceptors.response.use(
   (response) => response,
   async (error: AxiosError) => {
+    annotateTransportError(error);
+
     const originalRequest = error.config as RequestConfigWithRetry | undefined;
+    const requestLabel = getRequestLabel(originalRequest);
+    console.error("[api] request failed", {
+      request: requestLabel,
+      status: error.response?.status,
+      code: error.code,
+      message: error.message
+    });
 
     if (!originalRequest || error.response?.status !== 401) {
       return Promise.reject(error);
