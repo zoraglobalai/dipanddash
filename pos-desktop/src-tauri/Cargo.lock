@@ -654,7 +654,7 @@ dependencies = [
 
 [[package]]
 name = "dip_dash_pos"
-version = "0.1.0"
+version = "0.1.2"
 dependencies = [
  "serde",
  "serde_json",

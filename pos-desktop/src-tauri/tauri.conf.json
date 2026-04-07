@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Dip and Dash POS",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "identifier": "com.dipanddash.pos",
   "build": {
     "frontendDist": "../dist",
@@ -44,7 +44,7 @@
     "updater": {
       "active": true,
       "dialog": false,
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDM3NzlFQzE5MEQ3OUE2ODgKUldTSXBua05HZXg1Ti93b0N1Rnhnd0RYdW8rdmMwMkxFZk1Sa2piNnhDU3NhRlNwWWJtMDlKMnAK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEMwQUFENjNDOTA4REQ0NTQKUldSVTFJMlFQTmFxd0ZOSlN3dGJiK04yU01mclVBWlkrSUd5cmk4em1sNnRuelAzbWpqY3Q3TWMK",
       "endpoints": [
         "https://github.com/zoraglobalai/dipanddash/releases/latest/download/latest.json"
       ]
