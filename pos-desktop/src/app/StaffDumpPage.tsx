@@ -1,4 +1,10 @@
 import {
+  AlertDialog,
+  AlertDialogBody,
+  AlertDialogContent,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogOverlay,
   Box,
   Button,
   FormControl,
@@ -10,9 +16,10 @@ import {
   Text,
   Textarea,
   VStack,
+  useDisclosure,
   useToast
 } from "@chakra-ui/react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { dumpService } from "@/services/dump.service";
 import type { DumpEntryOptions, DumpEntryRecord, DumpEntryType } from "@/types/pos";
@@ -100,6 +107,12 @@ const getTodayDate = () => new Date().toISOString().slice(0, 10);
 
 export const StaffDumpPage = () => {
   const toast = useToast();
+  const {
+    isOpen: isConfirmOpen,
+    onOpen: openSubmitConfirm,
+    onClose: closeSubmitConfirm
+  } = useDisclosure();
+  const cancelRef = useRef<HTMLButtonElement | null>(null);
 
   const [entryDate, setEntryDate] = useState(getTodayDate());
   const [entryType, setEntryType] = useState<DumpEntryType>("ingredient");
@@ -285,7 +298,7 @@ export const StaffDumpPage = () => {
     setPendingEntries((current) => current.filter((row) => row.id !== entryId));
   };
 
-  const handleSubmitAll = async () => {
+  const submitPendingEntries = async () => {
     if (!pendingEntries.length) {
       toast({
         status: "warning",
@@ -348,14 +361,30 @@ export const StaffDumpPage = () => {
     });
   };
 
+  const handleSubmitAll = () => {
+    if (!pendingEntries.length) {
+      toast({
+        status: "warning",
+        title: "Add at least one wastage row before submit"
+      });
+      return;
+    }
+    openSubmitConfirm();
+  };
+
+  const handleConfirmSubmit = async () => {
+    closeSubmitConfirm();
+    await submitPendingEntries();
+  };
+
   return (
     <VStack align="stretch" spacing={4}>
       <Box p={4} bg="white" borderRadius="14px" border="1px solid rgba(132, 79, 52, 0.2)">
         <Text fontWeight={900} mb={1}>
-          Dump / Wastage Entry
+          Add Wastage Row
         </Text>
         <Text color="#6D584E" fontSize="sm" mb={4}>
-          Add multiple wastage rows and submit together. Stock is deducted in base unit automatically.
+          Step 1: Add one or more wastage rows. Step 2: Review queue and submit from Pending Queue section.
         </Text>
 
         <SimpleGrid columns={{ base: 1, md: 2, xl: 5 }} spacing={3}>
@@ -397,7 +426,12 @@ export const StaffDumpPage = () => {
           </FormControl>
 
           <FormControl>
-            <FormLabel fontWeight={700}>Volume / Unit</FormLabel>
+            <FormLabel fontWeight={700}>Quantity</FormLabel>
+            <Input type="number" min={0} value={quantity} onChange={(event) => setQuantity(event.target.value)} />
+          </FormControl>
+
+          <FormControl>
+            <FormLabel fontWeight={700}>Unit</FormLabel>
             <Select
               value={quantityUnit}
               onChange={(event) => setQuantityUnit(event.target.value)}
@@ -411,12 +445,18 @@ export const StaffDumpPage = () => {
               ))}
             </Select>
           </FormControl>
-
-          <FormControl>
-            <FormLabel fontWeight={700}>Quantity</FormLabel>
-            <Input type="number" min={0} value={quantity} onChange={(event) => setQuantity(event.target.value)} />
-          </FormControl>
         </SimpleGrid>
+
+        {selectedSource ? (
+          <Box mt={3} p={3} borderRadius="10px" bg="#FFF9EE" border="1px solid rgba(132, 79, 52, 0.2)">
+            <Text fontSize="sm" color="#705B52">
+              Base Unit: <Text as="span" fontWeight={700}>{selectedSource.baseUnit}</Text>
+              {selectedSource.type !== "item"
+                ? ` | Current Stock: ${formatQuantity(selectedSource.currentStock)} ${selectedSource.baseUnit}`
+                : ""}
+            </Text>
+          </Box>
+        ) : null}
 
         <FormControl mt={3}>
           <FormLabel fontWeight={700}>Note (Optional)</FormLabel>
@@ -437,21 +477,21 @@ export const StaffDumpPage = () => {
           >
             Add Wastage
           </Button>
-          <Button
-            color="white"
-            bg="#177245"
-            _hover={{ bg: "#125A37" }}
-            isLoading={submitting}
-            onClick={() => void handleSubmitAll()}
-          >
-            Submit All ({pendingEntries.length})
-          </Button>
           <Button variant="outline" onClick={() => void loadOptions()} isLoading={loadingOptions}>
             Refresh Stock
           </Button>
         </HStack>
+      </Box>
 
-        <Box mt={4} p={3} border="1px solid rgba(132, 79, 52, 0.2)" borderRadius="12px" bg="#FFF9EE">
+      <Box p={4} bg="white" borderRadius="14px" border="1px solid rgba(132, 79, 52, 0.2)">
+        <HStack justify="space-between" flexWrap="wrap" gap={3} mb={3}>
+          <Text fontWeight={900}>Pending Wastage Queue</Text>
+          <Button variant="outline" onClick={() => setPendingEntries([])} isDisabled={!pendingEntries.length}>
+            Clear Queue
+          </Button>
+        </HStack>
+
+        <Box p={3} border="1px solid rgba(132, 79, 52, 0.2)" borderRadius="12px" bg="#FFF9EE">
           <HStack justify="space-between" flexWrap="wrap" gap={2}>
             <Text fontWeight={800}>Wastage Rows ({pendingEntries.length})</Text>
             <Text fontWeight={900} color="#A32626">
@@ -495,11 +535,27 @@ export const StaffDumpPage = () => {
               ))}
             </VStack>
           ) : (
-            <Text mt={3} color="#705B52" fontSize="sm">
-              Add wastage rows and submit together.
-            </Text>
-          )}
+              <Text mt={3} color="#705B52" fontSize="sm">
+                Add wastage rows and submit together.
+              </Text>
+            )}
         </Box>
+
+        {pendingEntries.length ? (
+          <>
+            <HStack justify="flex-end" mt={4}>
+              <Button
+                color="white"
+                bg="#177245"
+                _hover={{ bg: "#125A37" }}
+                isLoading={submitting}
+                onClick={handleSubmitAll}
+              >
+                Submit Dump ({pendingEntries.length})
+              </Button>
+            </HStack>
+          </>
+        ) : null}
       </Box>
 
       {lastEntry ? (
@@ -531,6 +587,42 @@ export const StaffDumpPage = () => {
           ) : null}
         </Box>
       ) : null}
+
+      <AlertDialog isOpen={isConfirmOpen} leastDestructiveRef={cancelRef} onClose={closeSubmitConfirm} isCentered>
+        <AlertDialogOverlay>
+          <AlertDialogContent>
+            <AlertDialogHeader fontSize="lg" fontWeight={800}>
+              Confirm Dump Submission
+            </AlertDialogHeader>
+            <AlertDialogBody>
+              <Text>
+                You are about to submit <Text as="span" fontWeight={800}>{pendingEntries.length}</Text> wastage rows.
+              </Text>
+              <Text mt={2} color="#A32626" fontWeight={800}>
+                Estimated Total Loss: {formatCurrency(totalEstimatedLoss)}
+              </Text>
+              <Text mt={2} fontSize="sm" color="#705B52">
+                Please confirm to submit these entries.
+              </Text>
+            </AlertDialogBody>
+            <AlertDialogFooter>
+              <Button ref={cancelRef} onClick={closeSubmitConfirm}>
+                Cancel
+              </Button>
+              <Button
+                ml={3}
+                color="white"
+                bg="#177245"
+                _hover={{ bg: "#125A37" }}
+                isLoading={submitting}
+                onClick={() => void handleConfirmSubmit()}
+              >
+                Confirm Submit
+              </Button>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialogOverlay>
+      </AlertDialog>
     </VStack>
   );
 };

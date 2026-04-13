@@ -3,7 +3,9 @@ import { Router } from "express";
 import { UserRole } from "../../constants/roles";
 import { asyncHandler } from "../../middlewares/async-handler";
 import { authenticate, authorizeRoles } from "../../middlewares/auth.middleware";
+import { authorizeModuleAccess } from "../../middlewares/module-access.middleware";
 import { validateRequest } from "../../middlewares/validate.middleware";
+import { itemBulkUpload } from "./items-bulk-upload.middleware";
 import { ItemsController } from "./items.controller";
 import { itemImageUpload } from "./items-upload.middleware";
 import {
@@ -31,13 +33,15 @@ import {
 const router = Router();
 const itemsController = new ItemsController();
 
-router.use(authenticate, authorizeRoles(UserRole.ADMIN));
+router.use(authenticate, authorizeRoles(UserRole.ADMIN), authorizeModuleAccess("items-entry"));
 
 router.get("/meta/ingredients", asyncHandler(itemsController.getMetaIngredients));
 router.get("/meta/categories", asyncHandler(itemsController.getMetaCategories));
 router.get("/meta/units", asyncHandler(itemsController.getMetaUnits));
 router.get("/meta/items", asyncHandler(itemsController.getMetaItems));
 router.post("/upload-image", itemImageUpload.single("image"), asyncHandler(itemsController.uploadImage));
+router.get("/bulk/template", asyncHandler(itemsController.downloadItemBulkTemplate));
+router.post("/bulk/import", itemBulkUpload.single("file"), asyncHandler(itemsController.bulkImportItems));
 
 router.get("/categories", validateRequest(itemCategoryListSchema), asyncHandler(itemsController.listCategories));
 router.post("/categories", validateRequest(createItemCategorySchema), asyncHandler(itemsController.createCategory));

@@ -1,4 +1,4 @@
-import { In, QueryFailedError } from "typeorm";
+import { EntityManager, In, QueryFailedError } from "typeorm";
 
 import { AppDataSource } from "../../database/data-source";
 import { AppError } from "../../errors/app-error";
@@ -7,7 +7,7 @@ import { IngredientCategory } from "./ingredient-category.entity";
 import { Ingredient } from "./ingredient.entity";
 import { IngredientStockLog } from "./ingredient-stock-log.entity";
 import { IngredientStock } from "./ingredient-stock.entity";
-import { IngredientStockLogType, type IngredientUnit } from "./ingredients.constants";
+import { INGREDIENT_UNITS, IngredientStockLogType, type IngredientUnit } from "./ingredients.constants";
 import { ItemIngredient } from "../items/item-ingredient.entity";
 import { AddOnIngredient } from "../items/add-on-ingredient.entity";
 import { InvoiceUsageEvent } from "../invoices/invoice-usage-event.entity";
@@ -50,6 +50,36 @@ type AllocationStatsFilters = {
 };
 
 type StockLogListFilters = PaginationQuery;
+
+type BulkIngredientImportRow = {
+  rowNumber: number;
+  categoryName: string;
+  categoryDescription: string | null;
+  ingredientName: string;
+  unit: IngredientUnit;
+  minStock: number;
+};
+
+type BulkIngredientImportSummary = {
+  totalRows: number;
+  parsedRows: number;
+  insertedCategories: number;
+  insertedIngredients: number;
+  skippedExistingIngredients: number;
+  skippedDuplicateRows: number;
+  invalidRows: number;
+  invalidRowDetails: Array<{ rowNumber: number; reason: string }>;
+};
+
+const BULK_INGREDIENT_TEMPLATE_HEADERS = [
+  "category_name",
+  "category_description",
+  "ingredient_name",
+  "unit",
+  "min_stock"
+] as const;
+const VALID_INGREDIENT_UNIT_SET = new Set<string>(INGREDIENT_UNITS.map((unit) => unit.toLowerCase()));
+const MAX_BULK_INVALID_ROW_DETAILS = 40;
 
 const getNumericValue = (value: string | number | null | undefined) => {
   if (value === null || value === undefined) {
@@ -123,16 +153,96 @@ const normalizeDateInput = (value: string | Date, label: string) => {
   return getDateOnlyString(parsed);
 };
 
-const getStartOfDay = (date: Date) => {
-  const start = new Date(date);
-  start.setHours(0, 0, 0, 0);
-  return start;
+const chunkArray = <T>(values: T[], chunkSize = 500) => {
+  if (chunkSize <= 0) {
+    return [values];
+  }
+
+  const chunks: T[][] = [];
+  for (let index = 0; index < values.length; index += chunkSize) {
+    chunks.push(values.slice(index, index + chunkSize));
+  }
+  return chunks;
 };
 
-const getEndOfDay = (date: Date) => {
-  const end = new Date(date);
-  end.setHours(23, 59, 59, 999);
-  return end;
+const normalizeName = (value: string) => value.trim().replace(/\s+/g, " ");
+const normalizeLookupKey = (value: string) => normalizeName(value).toLowerCase();
+const normalizeHeaderKey = (value: string) => value.trim().replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+
+const escapeCsvValue = (value: string | number | null) => {
+  const text = value === null || value === undefined ? "" : String(value);
+  return `"${text.replace(/"/g, "\"\"")}"`;
+};
+
+const parseCsvNumber = (
+  value: string | undefined,
+  fallback: number,
+  fieldLabel: string,
+  rowNumber: number
+) => {
+  if (!value || !value.trim()) {
+    return fallback;
+  }
+
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    throw new AppError(422, `Row ${rowNumber}: ${fieldLabel} must be a valid number.`);
+  }
+
+  if (parsed < 0) {
+    throw new AppError(422, `Row ${rowNumber}: ${fieldLabel} cannot be negative.`);
+  }
+
+  return parsed;
+};
+
+const parseCsvRows = (content: string) => {
+  const rows: string[][] = [];
+  let currentRow: string[] = [];
+  let currentCell = "";
+  let inQuotes = false;
+
+  for (let index = 0; index < content.length; index += 1) {
+    const char = content[index];
+
+    if (char === "\"") {
+      const nextChar = content[index + 1];
+      if (inQuotes && nextChar === "\"") {
+        currentCell += "\"";
+        index += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+
+    if (!inQuotes && char === ",") {
+      currentRow.push(currentCell);
+      currentCell = "";
+      continue;
+    }
+
+    if (!inQuotes && (char === "\n" || char === "\r")) {
+      if (char === "\r" && content[index + 1] === "\n") {
+        index += 1;
+      }
+
+      currentRow.push(currentCell);
+      rows.push(currentRow);
+      currentRow = [];
+      currentCell = "";
+      continue;
+    }
+
+    currentCell += char;
+  }
+
+  if (currentCell.length > 0 || currentRow.length > 0) {
+    currentRow.push(currentCell);
+    rows.push(currentRow);
+  }
+
+  return rows;
 };
 
 export class IngredientsService {
@@ -234,6 +344,353 @@ export class IngredientsService {
       createdAt: category.createdAt,
       updatedAt: category.updatedAt
     };
+  }
+
+  getBulkImportTemplate() {
+    const rows = [
+      [...BULK_INGREDIENT_TEMPLATE_HEADERS],
+      ["Beverages", "Lemon based ingredients", "Lemon", "kg", "1"],
+      ["Bakery", "", "Bread Slice", "pcs", "20"]
+    ];
+
+    const csv = rows.map((row) => row.map((cell) => escapeCsvValue(cell)).join(",")).join("\n");
+    return {
+      fileName: "ingredient_bulk_template.csv",
+      content: `\uFEFF${csv}`
+    };
+  }
+
+  private parseBulkRowsFromCsv(csvBuffer: Buffer) {
+    const textContent = csvBuffer.toString("utf-8").replace(/^\uFEFF/, "").trim();
+    if (!textContent) {
+      throw new AppError(422, "Uploaded CSV file is empty.");
+    }
+
+    const parsedCsvRows = parseCsvRows(textContent);
+    if (!parsedCsvRows.length) {
+      throw new AppError(422, "Uploaded CSV file is empty.");
+    }
+
+    const headerRow = parsedCsvRows[0].map((cell) => cell.trim());
+    const headerAliases = new Map<string, string>([
+      ["categoryname", "category_name"],
+      ["category", "category_name"],
+      ["categorydescription", "category_description"],
+      ["ingredientname", "ingredient_name"],
+      ["ingredient", "ingredient_name"],
+      ["unit", "unit"],
+      ["minstock", "min_stock"],
+      ["minimumstock", "min_stock"]
+    ]);
+
+    const headerIndexMap = new Map<string, number>();
+    headerRow.forEach((header, index) => {
+      const alias = headerAliases.get(normalizeHeaderKey(header));
+      if (alias) {
+        headerIndexMap.set(alias, index);
+      }
+    });
+
+    const requiredHeaders: Array<(typeof BULK_INGREDIENT_TEMPLATE_HEADERS)[number]> = [
+      "category_name",
+      "ingredient_name",
+      "unit"
+    ];
+    const missingHeaders = requiredHeaders.filter((header) => !headerIndexMap.has(header));
+    if (missingHeaders.length) {
+      throw new AppError(
+        422,
+        `Missing required column(s): ${missingHeaders.join(", ")}. Please use the downloadable template.`
+      );
+    }
+
+    const readValue = (row: string[], header: (typeof BULK_INGREDIENT_TEMPLATE_HEADERS)[number]) => {
+      const columnIndex = headerIndexMap.get(header);
+      if (columnIndex === undefined) {
+        return undefined;
+      }
+      return row[columnIndex];
+    };
+
+    const nonEmptyRows = parsedCsvRows
+      .slice(1)
+      .map((row, index) => ({ row, rowNumber: index + 2 }))
+      .filter(({ row }) => row.some((cell) => cell.trim().length > 0));
+
+    const validRows: BulkIngredientImportRow[] = [];
+    const invalidRowDetails: Array<{ rowNumber: number; reason: string }> = [];
+    const seenIngredientKeys = new Set<string>();
+    let skippedDuplicateRows = 0;
+
+    nonEmptyRows.forEach(({ row, rowNumber }) => {
+      try {
+        const categoryName = normalizeName(readValue(row, "category_name") ?? "");
+        const ingredientName = normalizeName(readValue(row, "ingredient_name") ?? "");
+        const unitValue = (readValue(row, "unit") ?? "").trim().toLowerCase();
+        const minStock = parseCsvNumber(readValue(row, "min_stock"), 0, "Min stock", rowNumber);
+        const categoryDescriptionRaw = readValue(row, "category_description");
+        const categoryDescription = categoryDescriptionRaw
+          ? normalizeName(categoryDescriptionRaw).slice(0, 255) || null
+          : null;
+
+        if (categoryName.length < 2 || categoryName.length > 80) {
+          throw new AppError(422, "Category name must be between 2 and 80 characters.");
+        }
+        if (ingredientName.length < 2 || ingredientName.length > 120) {
+          throw new AppError(422, "Ingredient name must be between 2 and 120 characters.");
+        }
+        if (!unitValue || !VALID_INGREDIENT_UNIT_SET.has(unitValue)) {
+          throw new AppError(422, "Unit is invalid.");
+        }
+
+        const ingredientLookupKey = normalizeLookupKey(ingredientName);
+        if (seenIngredientKeys.has(ingredientLookupKey)) {
+          skippedDuplicateRows += 1;
+          return;
+        }
+
+        seenIngredientKeys.add(ingredientLookupKey);
+        validRows.push({
+          rowNumber,
+          categoryName,
+          categoryDescription,
+          ingredientName,
+          unit: unitValue as IngredientUnit,
+          minStock: toFixedQuantity(minStock)
+        });
+      } catch (error) {
+        const reason =
+          error instanceof AppError ? error.message.replace(/^Row \d+:\s*/i, "") : "Row validation failed.";
+        if (invalidRowDetails.length < MAX_BULK_INVALID_ROW_DETAILS) {
+          invalidRowDetails.push({ rowNumber, reason });
+        }
+      }
+    });
+
+    return {
+      totalRows: nonEmptyRows.length,
+      validRows,
+      skippedDuplicateRows,
+      invalidRows: nonEmptyRows.length - validRows.length - skippedDuplicateRows,
+      invalidRowDetails
+    };
+  }
+
+  private async getCategoryMapByNameKeys(manager: EntityManager, nameKeys: string[]) {
+    const categoryMap = new Map<string, { id: string; name: string; isActive: boolean }>();
+    if (!nameKeys.length) {
+      return categoryMap;
+    }
+
+    for (const chunk of chunkArray(nameKeys)) {
+      const rows = await manager
+        .getRepository(IngredientCategory)
+        .createQueryBuilder("category")
+        .select("category.id", "id")
+        .addSelect("category.name", "name")
+        .addSelect("category.isActive", "isActive")
+        .where("LOWER(category.name) IN (:...nameKeys)", { nameKeys: chunk })
+        .getRawMany<{ id: string; name: string; isActive: boolean }>();
+
+      rows.forEach((row) => {
+        categoryMap.set(normalizeLookupKey(row.name), {
+          id: row.id,
+          name: row.name,
+          isActive: Boolean(row.isActive)
+        });
+      });
+    }
+
+    return categoryMap;
+  }
+
+  private async getExistingIngredientNameKeySet(manager: EntityManager, nameKeys: string[]) {
+    const ingredientNameKeySet = new Set<string>();
+    if (!nameKeys.length) {
+      return ingredientNameKeySet;
+    }
+
+    for (const chunk of chunkArray(nameKeys)) {
+      const rows = await manager
+        .getRepository(Ingredient)
+        .createQueryBuilder("ingredient")
+        .select("ingredient.name", "name")
+        .where("LOWER(ingredient.name) IN (:...nameKeys)", { nameKeys: chunk })
+        .getRawMany<{ name: string }>();
+
+      rows.forEach((row) => ingredientNameKeySet.add(normalizeLookupKey(row.name)));
+    }
+
+    return ingredientNameKeySet;
+  }
+
+  async bulkImportIngredientsFromCsv(csvBuffer: Buffer): Promise<BulkIngredientImportSummary> {
+    const parsedCsv = this.parseBulkRowsFromCsv(csvBuffer);
+    if (!parsedCsv.validRows.length) {
+      return {
+        totalRows: parsedCsv.totalRows,
+        parsedRows: 0,
+        insertedCategories: 0,
+        insertedIngredients: 0,
+        skippedExistingIngredients: 0,
+        skippedDuplicateRows: parsedCsv.skippedDuplicateRows,
+        invalidRows: parsedCsv.invalidRows,
+        invalidRowDetails: parsedCsv.invalidRowDetails
+      };
+    }
+
+    return AppDataSource.transaction(async (manager) => {
+      const categoryByKey = new Map<
+        string,
+        { categoryName: string; categoryDescription: string | null }
+      >();
+
+      parsedCsv.validRows.forEach((row) => {
+        const categoryKey = normalizeLookupKey(row.categoryName);
+        if (!categoryByKey.has(categoryKey)) {
+          categoryByKey.set(categoryKey, {
+            categoryName: row.categoryName,
+            categoryDescription: row.categoryDescription
+          });
+        }
+      });
+
+      const categoryNameKeys = Array.from(categoryByKey.keys());
+      const ingredientNameKeys = Array.from(
+        new Set(parsedCsv.validRows.map((row) => normalizeLookupKey(row.ingredientName)))
+      );
+
+      let categoryMap = await this.getCategoryMapByNameKeys(manager, categoryNameKeys);
+      const missingCategoryValues = categoryNameKeys
+        .filter((nameKey) => !categoryMap.has(nameKey))
+        .map((nameKey) => {
+          const category = categoryByKey.get(nameKey)!;
+          return {
+            name: category.categoryName,
+            description: category.categoryDescription,
+            isActive: true
+          };
+        });
+
+      let insertedCategories = 0;
+      if (missingCategoryValues.length) {
+        const categoryInsertResult = await manager
+          .createQueryBuilder()
+          .insert()
+          .into(IngredientCategory)
+          .values(missingCategoryValues)
+          .orIgnore()
+          .execute();
+        insertedCategories = categoryInsertResult.identifiers.length;
+        categoryMap = await this.getCategoryMapByNameKeys(manager, categoryNameKeys);
+      }
+
+      const existingIngredientNameKeySet = await this.getExistingIngredientNameKeySet(manager, ingredientNameKeys);
+      const ingredientInsertValues: Array<{
+        name: string;
+        categoryId: string;
+        unit: IngredientUnit;
+        perUnitPrice: number;
+        minStock: number;
+        isActive: boolean;
+      }> = [];
+      let skippedExistingIngredients = 0;
+
+      parsedCsv.validRows.forEach((row) => {
+        const ingredientNameKey = normalizeLookupKey(row.ingredientName);
+        if (existingIngredientNameKeySet.has(ingredientNameKey)) {
+          skippedExistingIngredients += 1;
+          return;
+        }
+
+        const category = categoryMap.get(normalizeLookupKey(row.categoryName));
+        if (!category) {
+          return;
+        }
+
+        ingredientInsertValues.push({
+          name: row.ingredientName,
+          categoryId: category.id,
+          unit: row.unit,
+          perUnitPrice: 0,
+          minStock: row.minStock,
+          isActive: true
+        });
+        existingIngredientNameKeySet.add(ingredientNameKey);
+      });
+
+      if (!ingredientInsertValues.length) {
+        return {
+          totalRows: parsedCsv.totalRows,
+          parsedRows: parsedCsv.validRows.length,
+          insertedCategories,
+          insertedIngredients: 0,
+          skippedExistingIngredients,
+          skippedDuplicateRows: parsedCsv.skippedDuplicateRows,
+          invalidRows: parsedCsv.invalidRows,
+          invalidRowDetails: parsedCsv.invalidRowDetails
+        };
+      }
+
+      const ingredientInsertResult = await manager
+        .createQueryBuilder()
+        .insert()
+        .into(Ingredient)
+        .values(ingredientInsertValues)
+        .orIgnore()
+        .returning(["id", "name"])
+        .execute();
+
+      const insertedIngredients = Array.isArray(ingredientInsertResult.raw)
+        ? ingredientInsertResult.raw
+            .map((row) => ({
+              id: typeof row.id === "string" ? row.id : "",
+              name: typeof row.name === "string" ? row.name : ""
+            }))
+            .filter((row) => row.id && row.name)
+        : [];
+
+      if (!insertedIngredients.length) {
+        return {
+          totalRows: parsedCsv.totalRows,
+          parsedRows: parsedCsv.validRows.length,
+          insertedCategories,
+          insertedIngredients: 0,
+          skippedExistingIngredients: skippedExistingIngredients + ingredientInsertValues.length,
+          skippedDuplicateRows: parsedCsv.skippedDuplicateRows,
+          invalidRows: parsedCsv.invalidRows,
+          invalidRowDetails: parsedCsv.invalidRowDetails
+        };
+      }
+
+      const skippedDuringInsert = Math.max(ingredientInsertValues.length - insertedIngredients.length, 0);
+
+      const now = new Date();
+      const stockInsertValues = insertedIngredients.map((ingredient) => ({
+        ingredientId: ingredient.id,
+        totalStock: 0,
+        lastUpdatedAt: now
+      }));
+
+      await manager
+        .createQueryBuilder()
+        .insert()
+        .into(IngredientStock)
+        .values(stockInsertValues)
+        .orIgnore()
+        .execute();
+
+      return {
+        totalRows: parsedCsv.totalRows,
+        parsedRows: parsedCsv.validRows.length,
+        insertedCategories,
+        insertedIngredients: insertedIngredients.length,
+        skippedExistingIngredients: skippedExistingIngredients + skippedDuringInsert,
+        skippedDuplicateRows: parsedCsv.skippedDuplicateRows,
+        invalidRows: parsedCsv.invalidRows,
+        invalidRowDetails: parsedCsv.invalidRowDetails
+      };
+    });
   }
 
   async listCategories(filters: CategoryListFilters) {
@@ -1177,7 +1634,7 @@ export class IngredientsService {
       return [];
     }
 
-    const [allocations, usageRows, stocks] = await Promise.all([
+    const [allocations, usageRows, stocks, purchaseRows, dumpRows] = await Promise.all([
       this.allocationRepository.find({
         where: { ingredientId: In(ingredientIds), date: reportDate }
       }),
@@ -1191,13 +1648,71 @@ export class IngredientsService {
         .getRawMany<{ ingredientId: string; usedQuantity: string }>(),
       this.stockRepository.find({
         where: { ingredientId: In(ingredientIds) }
-      })
+      }),
+      AppDataSource.query(
+        `
+        SELECT
+          line."ingredientId" AS "ingredientId",
+          SUM(COALESCE(line."stockAdded", 0)) AS "quantity"
+        FROM "purchase_order_lines" line
+        INNER JOIN "purchase_orders" po ON po."id" = line."purchaseOrderId"
+        WHERE line."lineType" = 'ingredient'
+          AND line."ingredientId" IS NOT NULL
+          AND line."ingredientId" = ANY($2::uuid[])
+          AND po."purchaseDate" = $1
+        GROUP BY line."ingredientId"
+        `,
+        [reportDate, ingredientIds]
+      ),
+      AppDataSource.query(
+        `
+        WITH expanded AS (
+          SELECT
+            COALESCE(NULLIF((impact->>'ingredientId'), ''), dump."ingredientId"::text) AS "ingredientId",
+            COALESCE(
+              CASE WHEN impact ? 'quantity' THEN NULLIF(impact->>'quantity', '')::numeric ELSE NULL END,
+              dump."baseQuantity"
+            ) AS "quantity"
+          FROM "dump_entries" dump
+          LEFT JOIN LATERAL jsonb_array_elements(
+            CASE
+              WHEN jsonb_typeof(dump."ingredientImpacts") = 'array' THEN dump."ingredientImpacts"
+              ELSE '[]'::jsonb
+            END
+          ) impact ON TRUE
+          WHERE dump."entryDate" = $1
+            AND (
+              dump."entryType" = 'ingredient'
+              OR (impact->>'ingredientId') IS NOT NULL
+            )
+        )
+        SELECT
+          expanded."ingredientId" AS "ingredientId",
+          SUM(COALESCE(expanded."quantity", 0)) AS "quantity"
+        FROM expanded
+        WHERE expanded."ingredientId" = ANY($2::text[])
+        GROUP BY expanded."ingredientId"
+        `,
+        [reportDate, ingredientIds]
+      )
     ]);
 
     const allocationMap = new Map(allocations.map((allocation) => [allocation.ingredientId, allocation]));
     const stockMap = new Map(stocks.map((stock) => [stock.ingredientId, toFixedQuantity(getNumericValue(stock.totalStock))]));
     const usageMap = new Map(
       usageRows.map((row) => [row.ingredientId, toFixedQuantity(getNumericValue(row.usedQuantity))])
+    );
+    const purchaseMap = new Map(
+      (purchaseRows as Array<Record<string, unknown>>).map((row) => [
+        String(row.ingredientId ?? ""),
+        toFixedQuantity(getNumericValue(row.quantity as string | number | null | undefined))
+      ])
+    );
+    const dumpMap = new Map(
+      (dumpRows as Array<Record<string, unknown>>).map((row) => [
+        String(row.ingredientId ?? ""),
+        toFixedQuantity(getNumericValue(row.quantity as string | number | null | undefined))
+      ])
     );
 
     return ingredients.map((ingredient) => {
@@ -1207,8 +1722,12 @@ export class IngredientsService {
       const allocationUsed = toFixedQuantity(getNumericValue(allocation?.usedQuantity));
       const usageUsed = usageMap.get(ingredient.id) ?? 0;
       const usedQuantity = toFixedQuantity(Math.max(allocationUsed, usageUsed));
+      const purchaseQuantity = purchaseMap.get(ingredient.id) ?? 0;
+      const dumpQuantity = dumpMap.get(ingredient.id) ?? 0;
       const hasAllocation = allocatedQuantity > 0;
-      const openingQuantity = hasAllocation ? allocatedQuantity : toFixedQuantity(currentStock + usedQuantity);
+      const openingQuantity = hasAllocation
+        ? allocatedQuantity
+        : toFixedQuantity(Math.max(currentStock + usedQuantity + dumpQuantity - purchaseQuantity, 0));
       const expectedRemainingQuantity = hasAllocation
         ? toFixedQuantity(Math.max(allocatedQuantity - usedQuantity, 0))
         : currentStock;
@@ -1231,7 +1750,7 @@ export class IngredientsService {
     const previousDate = getPreviousDateString(today);
     const control = await this.getOrCreatePosBillingControl();
 
-    const [reports, yesterdayUsageCount] = await Promise.all([
+    const [reports, oldestPendingCloseDate] = await Promise.all([
       this.closingReportRepository.find({
         where: {
           staffId: userId,
@@ -1240,16 +1759,26 @@ export class IngredientsService {
       }),
       this.usageEventRepository
         .createQueryBuilder("usage")
+        .select("usage.usageDate", "usageDate")
+        .leftJoin(
+          StaffClosingReport,
+          "report",
+          'report."staffId" = :staffId AND report."reportDate" = usage."usageDate"',
+          { staffId: userId }
+        )
         .where("usage.staffId = :staffId", { staffId: userId })
-        .andWhere("usage.usageDate = :usageDate", { usageDate: previousDate })
-        .getCount()
+        .andWhere("usage.usageDate < :today", { today })
+        .andWhere("usage.ingredientId IS NOT NULL")
+        .andWhere("report.id IS NULL")
+        .groupBy("usage.usageDate")
+        .orderBy("usage.usageDate", "ASC")
+        .limit(1)
+        .getRawOne<{ usageDate: string }>()
     ]);
 
     const hasClosedPreviousBusinessDate = reports.some((report) => report.reportDate === previousDate);
     const hasClosedTodayBusinessDate = reports.some((report) => report.reportDate === today);
-    const pendingCarryForward = !hasClosedPreviousBusinessDate && yesterdayUsageCount > 0;
-
-    const pendingCloseDate = pendingCarryForward ? previousDate : hasClosedTodayBusinessDate ? null : today;
+    const pendingCloseDate = oldestPendingCloseDate?.usageDate ?? (hasClosedTodayBusinessDate ? null : today);
 
     if (!control.isBillingEnabled) {
       return {
@@ -1264,10 +1793,10 @@ export class IngredientsService {
       };
     }
 
-    if (pendingCarryForward) {
+    if (oldestPendingCloseDate?.usageDate) {
       return {
         canTakeOrders: false,
-        reason: `Previous business day (${previousDate}) closing is pending. Submit that closing first to continue billing.`,
+        reason: `Business day (${oldestPendingCloseDate.usageDate}) closing is pending. Submit that closing first to continue billing.`,
         pendingCloseDate,
         hasClosedPreviousBusinessDate,
         hasClosedTodayBusinessDate,
@@ -1280,7 +1809,7 @@ export class IngredientsService {
     if (hasClosedTodayBusinessDate) {
       return {
         canTakeOrders: false,
-        reason: "Today closing already submitted. Billing will unlock on the next business day.",
+        reason: "Today closing already submitted. Admin can reopen this date to continue billing.",
         pendingCloseDate,
         hasClosedPreviousBusinessDate,
         hasClosedTodayBusinessDate,
@@ -1344,17 +1873,7 @@ export class IngredientsService {
 
   async getClosingStatus(userId: string) {
     const gate = await this.resolveOrderGateStatus(userId);
-    const [todaySubmissionCount, draftItems] = await Promise.all([
-      this.closingReportRepository
-        .createQueryBuilder("report")
-        .where("report.staffId = :staffId", { staffId: userId })
-        .andWhere("report.submittedAt BETWEEN :start AND :end", {
-          start: getStartOfDay(new Date()),
-          end: getEndOfDay(new Date())
-        })
-        .getCount(),
-      this.getClosingDraftItems(gate.pendingCloseDate ?? gate.today)
-    ]);
+    const draftItems = await this.getClosingDraftItems(gate.pendingCloseDate ?? gate.today);
 
     return {
       canTakeOrders: gate.canTakeOrders,
@@ -1362,8 +1881,8 @@ export class IngredientsService {
       pendingCloseDate: gate.pendingCloseDate,
       hasClosedPreviousBusinessDate: gate.hasClosedPreviousBusinessDate,
       hasClosedTodayBusinessDate: gate.hasClosedTodayBusinessDate,
-      todayClosingCount: todaySubmissionCount,
-      maxClosingsPerDay: 2,
+      todayClosingCount: gate.hasClosedTodayBusinessDate ? 1 : 0,
+      maxClosingsPerDay: 1,
       posBillingControl: {
         isBillingEnabled: gate.control.isBillingEnabled,
         enforceDailyAllocation: gate.control.enforceDailyAllocation,
@@ -1396,19 +1915,6 @@ export class IngredientsService {
         409,
         `Please submit pending closing for ${gate.pendingCloseDate} first before closing ${reportDate}.`
       );
-    }
-
-    const todaySubmissionCount = await this.closingReportRepository
-      .createQueryBuilder("report")
-      .where("report.staffId = :staffId", { staffId: userId })
-      .andWhere("report.submittedAt BETWEEN :start AND :end", {
-        start: getStartOfDay(new Date()),
-        end: getEndOfDay(new Date())
-      })
-      .getCount();
-
-    if (todaySubmissionCount >= 2) {
-      throw new AppError(409, "Maximum 2 closings are allowed per day.");
     }
 
     const existing = await this.closingReportRepository.findOne({
@@ -1459,8 +1965,8 @@ export class IngredientsService {
     const report = this.closingReportRepository.create({
       staffId: userId,
       reportDate,
-      closingSlot: todaySubmissionCount + 1,
-      isCarryForwardClosing: reportDate === gate.previousDate,
+      closingSlot: 1,
+      isCarryForwardClosing: false,
       totalIngredients: items.length,
       totalExpectedRemaining,
       totalReportedRemaining,
@@ -1486,6 +1992,29 @@ export class IngredientsService {
         note: saved.note,
         submittedAt: saved.submittedAt,
         items: saved.items
+      },
+      status
+    };
+  }
+
+  async reopenClosingReport(reportId: string, reopenedByUserId: string) {
+    const report = await this.closingReportRepository.findOne({
+      where: { id: reportId }
+    });
+
+    if (!report) {
+      throw new AppError(404, "Closing report not found.");
+    }
+
+    await this.closingReportRepository.delete({ id: report.id });
+    const status = await this.getClosingStatus(report.staffId);
+
+    return {
+      reopened: {
+        id: report.id,
+        staffId: report.staffId,
+        reportDate: report.reportDate,
+        reopenedByUserId
       },
       status
     };
@@ -1716,37 +2245,54 @@ export class IngredientsService {
     });
 
     const flattenedItems = reports.flatMap((report) =>
-      (report.items ?? []).map((item) => ({
-        reportItemId: `${report.id}-${item.ingredientId}`,
-        reportId: report.id,
-        reportDate: report.reportDate,
-        staffId: report.staffId,
-        staffName: report.staff?.fullName ?? "-",
-        submittedAt: report.submittedAt,
-        ingredientId: item.ingredientId,
-        ingredientName: item.ingredientName,
-        unit: item.unit,
-        openingStockQuantity: toFixedQuantity(getNumericValue(item.allocatedQuantity)),
-        purchaseStockQuantity: toFixedQuantity(
-          purchaseByKey.get(movementKey(item.ingredientId, report.reportDate)) ?? 0
-        ),
-        transferredInQuantity: toFixedQuantity(
-          transferInByKey.get(movementKey(item.ingredientId, report.reportDate)) ?? 0
-        ),
-        transferredOutQuantity: toFixedQuantity(
-          transferOutByKey.get(movementKey(item.ingredientId, report.reportDate)) ?? 0
-        ),
-        consumptionQuantity: toFixedQuantity(getNumericValue(item.usedQuantity)),
-        dumpQuantity: toFixedQuantity(dumpByKey.get(movementKey(item.ingredientId, report.reportDate)) ?? 0),
-        expectedStockQuantity: toFixedQuantity(getNumericValue(item.expectedRemainingQuantity)),
-        enteredStockQuantity: toFixedQuantity(getNumericValue(item.reportedRemainingQuantity)),
-        allocatedQuantity: toFixedQuantity(getNumericValue(item.allocatedQuantity)),
-        usedQuantity: toFixedQuantity(getNumericValue(item.usedQuantity)),
-        expectedRemainingQuantity: toFixedQuantity(getNumericValue(item.expectedRemainingQuantity)),
-        reportedRemainingQuantity: toFixedQuantity(getNumericValue(item.reportedRemainingQuantity)),
-        varianceQuantity: toFixedQuantity(getNumericValue(item.varianceQuantity)),
-        isMismatch: Math.abs(getNumericValue(item.varianceQuantity)) > 0.0001
-      }))
+      (report.items ?? []).map((item) => {
+        const key = movementKey(item.ingredientId, report.reportDate);
+        const purchaseStockQuantity = toFixedQuantity(purchaseByKey.get(key) ?? 0);
+        const transferredInQuantity = toFixedQuantity(transferInByKey.get(key) ?? 0);
+        const transferredOutQuantity = toFixedQuantity(transferOutByKey.get(key) ?? 0);
+        const dumpQuantity = toFixedQuantity(dumpByKey.get(key) ?? 0);
+        const consumptionQuantity = toFixedQuantity(getNumericValue(item.usedQuantity));
+        const expectedStockQuantity = toFixedQuantity(getNumericValue(item.expectedRemainingQuantity));
+        const openingFromSnapshot = toFixedQuantity(getNumericValue(item.allocatedQuantity));
+        const openingFromBalance = toFixedQuantity(
+          expectedStockQuantity -
+            purchaseStockQuantity -
+            transferredInQuantity +
+            transferredOutQuantity +
+            consumptionQuantity +
+            dumpQuantity
+        );
+        const openingStockQuantity =
+          Math.abs(openingFromSnapshot - openingFromBalance) > 0.001
+            ? toFixedQuantity(Math.max(openingFromBalance, 0))
+            : openingFromSnapshot;
+
+        return {
+          reportItemId: `${report.id}-${item.ingredientId}`,
+          reportId: report.id,
+          reportDate: report.reportDate,
+          staffId: report.staffId,
+          staffName: report.staff?.fullName ?? "-",
+          submittedAt: report.submittedAt,
+          ingredientId: item.ingredientId,
+          ingredientName: item.ingredientName,
+          unit: item.unit,
+          openingStockQuantity,
+          purchaseStockQuantity,
+          transferredInQuantity,
+          transferredOutQuantity,
+          consumptionQuantity,
+          dumpQuantity,
+          expectedStockQuantity,
+          enteredStockQuantity: toFixedQuantity(getNumericValue(item.reportedRemainingQuantity)),
+          allocatedQuantity: openingFromSnapshot,
+          usedQuantity: consumptionQuantity,
+          expectedRemainingQuantity: expectedStockQuantity,
+          reportedRemainingQuantity: toFixedQuantity(getNumericValue(item.reportedRemainingQuantity)),
+          varianceQuantity: toFixedQuantity(getNumericValue(item.varianceQuantity)),
+          isMismatch: Math.abs(getNumericValue(item.varianceQuantity)) > 0.0001
+        };
+      })
     );
 
     const totalItems = flattenedItems.length;

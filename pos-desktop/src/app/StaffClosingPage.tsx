@@ -37,9 +37,14 @@ export const StaffClosingPage = () => {
   const [historyTotalPages, setHistoryTotalPages] = useState(1);
 
   const pendingCloseDate = closingStatus?.pendingCloseDate ?? null;
-  const canSubmit =
-    Boolean(closingStatus?.pendingCloseDate) &&
-    (closingStatus?.todayClosingCount ?? 0) < (closingStatus?.maxClosingsPerDay ?? 2);
+  const todayDate = useMemo(() => {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, "0");
+    const day = String(now.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }, []);
+  const canSubmit = Boolean(closingStatus?.pendingCloseDate);
   const canSubmitWithShift = canSubmit && isPunchedIn === false;
 
   useEffect(() => {
@@ -255,10 +260,10 @@ export const StaffClosingPage = () => {
         </Box>
         <Box p={4} bg="white" borderRadius="14px" border="1px solid rgba(132, 79, 52, 0.2)">
           <Text color="#725D53" fontWeight={700} fontSize="sm">
-            Closings Today
+            Today Closing
           </Text>
           <Text mt={1} fontWeight={900} fontSize="xl">
-            {closingStatus?.todayClosingCount ?? 0} / {closingStatus?.maxClosingsPerDay ?? 2}
+            {closingStatus?.hasClosedTodayBusinessDate ? "Submitted" : "Pending"}
           </Text>
         </Box>
         <Box p={4} bg="white" borderRadius="14px" border="1px solid rgba(132, 79, 52, 0.2)">
@@ -415,7 +420,11 @@ export const StaffClosingPage = () => {
                   ? "Closing unavailable: please punch out first."
                   : isPunchedIn === null
                     ? "Closing unavailable: attendance status not verified."
-                    : "Closing unavailable: either no pending close date or today limit reached."}
+                    : pendingCloseDate
+                      ? "Closing unavailable right now."
+                      : closingStatus?.hasClosedTodayBusinessDate
+                        ? "Today closing already submitted. Ask admin to reopen if needed."
+                        : `No pending close date. Current business date (${todayDate}) is open.`}
               </Text>
             ) : null}
           </VStack>

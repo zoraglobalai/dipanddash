@@ -3,6 +3,7 @@ import { Router } from "express";
 import { UserRole } from "../../constants/roles";
 import { asyncHandler } from "../../middlewares/async-handler";
 import { authenticate, authorizeRoles } from "../../middlewares/auth.middleware";
+import { authorizeScopedAdminModuleAccess } from "../../middlewares/module-access.middleware";
 import { validateRequest } from "../../middlewares/validate.middleware";
 import { CustomersController } from "./customers.controller";
 import {
@@ -25,7 +26,8 @@ router.use(
     UserRole.ACCOUNTANT,
     UserRole.STAFF,
     UserRole.SNOOKER_STAFF
-  )
+  ),
+  authorizeScopedAdminModuleAccess("customer-data")
 );
 
 router.get(

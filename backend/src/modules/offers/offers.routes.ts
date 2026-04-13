@@ -3,6 +3,7 @@ import { Router } from "express";
 import { UserRole } from "../../constants/roles";
 import { asyncHandler } from "../../middlewares/async-handler";
 import { authenticate, authorizeRoles } from "../../middlewares/auth.middleware";
+import { authorizeModuleAccess } from "../../middlewares/module-access.middleware";
 import { validateRequest } from "../../middlewares/validate.middleware";
 import { OffersController } from "./offers.controller";
 import {
@@ -19,7 +20,7 @@ import {
 const router = Router();
 const offersController = new OffersController();
 
-router.use(authenticate, authorizeRoles(UserRole.ADMIN));
+router.use(authenticate, authorizeRoles(UserRole.ADMIN), authorizeModuleAccess("offers"));
 
 router.get("/stats", asyncHandler(offersController.getStats));
 router.get("/meta/item-categories", asyncHandler(offersController.getMetaItemCategories));
@@ -46,4 +47,3 @@ router.get(
 );
 
 export const offersRoutes = router;
-

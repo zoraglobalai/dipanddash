@@ -98,6 +98,20 @@ export type PaginationData = {
   totalPages: number;
 };
 
+export type BulkIngredientImportSummary = {
+  totalRows: number;
+  parsedRows: number;
+  insertedCategories: number;
+  insertedIngredients: number;
+  skippedExistingIngredients: number;
+  skippedDuplicateRows: number;
+  invalidRows: number;
+  invalidRowDetails: Array<{
+    rowNumber: number;
+    reason: string;
+  }>;
+};
+
 export type IngredientAllocationStats = {
   date: string;
   totals: {

@@ -3,6 +3,7 @@ import { Router } from "express";
 import { UserRole } from "../../constants/roles";
 import { asyncHandler } from "../../middlewares/async-handler";
 import { authenticate, authorizeRoles } from "../../middlewares/auth.middleware";
+import { authorizeAnyModuleAccess, authorizeScopedAdminModuleAccess } from "../../middlewares/module-access.middleware";
 import { validateRequest } from "../../middlewares/validate.middleware";
 import { DumpController } from "./dump.controller";
 import { createDumpEntrySchema, dumpAdminRecordsSchema, dumpAdminStatsSchema } from "./dump.validation";
@@ -11,6 +12,7 @@ const router = Router();
 const dumpController = new DumpController();
 
 router.use(authenticate);
+router.use(authorizeScopedAdminModuleAccess("dump-wastage"));
 
 router.get(
   "/options",
@@ -35,6 +37,7 @@ router.get(
 router.get(
   "/admin/stats",
   authorizeRoles(UserRole.ADMIN),
+  authorizeAnyModuleAccess("dump-wastage", "dashboard"),
   validateRequest(dumpAdminStatsSchema),
   asyncHandler(dumpController.getAdminStats)
 );

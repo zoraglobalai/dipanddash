@@ -7,3 +7,19 @@ export const loginSchema = z.object({
   })
 });
 
+export const changePasswordSchema = z.object({
+  body: z
+    .object({
+      currentPassword: z
+        .string()
+        .min(1, "Current password is required"),
+      newPassword: z
+        .string()
+        .min(8, "New password must be at least 8 characters")
+        .regex(/^(?=.*[A-Za-z])(?=.*\d).+$/, "New password must contain letters and numbers")
+    })
+    .refine((value) => value.currentPassword !== value.newPassword, {
+      message: "New password must be different from current password",
+      path: ["newPassword"]
+    })
+});

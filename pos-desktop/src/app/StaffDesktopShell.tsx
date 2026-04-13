@@ -13,7 +13,6 @@ import {
 } from "@chakra-ui/react";
 import { useEffect, useMemo, useState } from "react";
 import {
-  FiBarChart2,
   FiCheckCircle,
   FiChevronDown,
   FiChevronLeft,
@@ -21,7 +20,6 @@ import {
   FiClipboard,
   FiClock,
   FiCoffee,
-  FiFileText,
   FiGrid,
   FiHome,
   FiDollarSign,
@@ -51,10 +49,8 @@ import { StaffTablesPage } from "@/app/StaffTablesPage";
 import { StaffGamingBookingPage } from "@/app/StaffGamingBookingPage";
 import { SnookerDashboardPage } from "@/app/SnookerDashboardPage";
 import { StaffCashAuditPage } from "@/app/StaffCashAuditPage";
-import { StaffReportsPage } from "@/app/StaffReportsPage";
 import { StaffDumpPage } from "@/app/StaffDumpPage";
 import { StaffOutletTransferPage } from "@/app/StaffOutletTransferPage";
-import { StaffPurchasePage } from "@/app/StaffPurchasePage";
 import { PosTopBar } from "@/components/layout/PosTopBar";
 import { ShortcutHelpModal } from "@/components/pos/ShortcutHelpModal";
 import { useNetworkStatus } from "@/hooks/useNetworkStatus";
@@ -74,8 +70,6 @@ type StaffViewKey =
   | "cash-audit"
   | "dump"
   | "outlet-transfer"
-  | "purchase"
-  | "reports"
   | "profile"
   | "gaming-booking";
 
@@ -109,29 +103,21 @@ const MAIN_MENUS: StaffMenuConfig[] = [
   { key: "cash-audit", label: "Cash Audit", icon: FiDollarSign },
   { key: "dump", label: "Dump", icon: FiTrash2 },
   { key: "outlet-transfer", label: "Outlet Transfer", icon: FiRepeat },
-  { key: "purchase", label: "Purchase", icon: FiFileText },
-  { key: "reports", label: "Reports", icon: FiBarChart2 },
   { key: "profile", label: "Profile", icon: FiUser }
 ];
 
 const SNOOKER_STAFF_MENUS: StaffMenuConfig[] = [
   { key: "dashboard", label: "Dashboard", icon: FiGrid },
-  { key: "order", label: "Order", icon: FiClipboard },
   { key: "attendance", label: "Attendance", icon: FiClock },
   { key: "gaming-booking", label: "New Booking", icon: FiPlusSquare },
-  { key: "cash-audit", label: "Cash Audit", icon: FiDollarSign },
-  { key: "outlet-transfer", label: "Outlet Transfer", icon: FiRepeat },
-  { key: "purchase", label: "Purchase", icon: FiFileText }
+  { key: "cash-audit", label: "Cash Audit", icon: FiDollarSign }
 ];
 
 const SNOOKER_ALLOWED_VIEWS = new Set<StaffViewKey>([
   "dashboard",
-  "order",
   "attendance",
   "gaming-booking",
-  "cash-audit",
-  "outlet-transfer",
-  "purchase"
+  "cash-audit"
 ]);
 
 const PAGE_TITLES: Record<StaffViewKey, { title: string; subtitle: string }> = {
@@ -173,7 +159,7 @@ const PAGE_TITLES: Record<StaffViewKey, { title: string; subtitle: string }> = {
   },
   closing: {
     title: "Closing",
-    subtitle: "Submit end-of-day stock closing and lock/unlock billing with carry-forward rules."
+    subtitle: "Submit one stock closing report per business day. Pending previous day close must be submitted first."
   },
   "cash-audit": {
     title: "Cash Audit",
@@ -186,14 +172,6 @@ const PAGE_TITLES: Record<StaffViewKey, { title: string; subtitle: string }> = {
   "outlet-transfer": {
     title: "Outlet Transfer",
     subtitle: "Move stock between outlets with source and destination updates."
-  },
-  purchase: {
-    title: "Purchase",
-    subtitle: "Create and manage supplier purchases with line-wise stock updates."
-  },
-  reports: {
-    title: "Reports",
-    subtitle: "View assigned report templates with date filters and export."
   },
   profile: {
     title: "Profile",
@@ -221,8 +199,6 @@ export const StaffDesktopShell = () => {
     session?.role === "snooker_staff" ? "dashboard" : "new-order/take-away"
   );
   const isSnookerStaff = session?.role === "snooker_staff";
-  const canAccessPurchase =
-    session?.role === "admin" || (session?.assignedModules ?? []).includes("purchase");
   const isSidebarCollapsedResolved = isSidebarCollapsed;
   const expandedSidebarWidth = isSmallDesktopViewport
     ? "236px"
@@ -248,18 +224,11 @@ export const StaffDesktopShell = () => {
     if (activeView === "gaming-booking") {
       setActiveView("new-order/take-away");
     }
-    if (activeView === "purchase" && !canAccessPurchase) {
-      setActiveView("dashboard");
-    }
-  }, [activeView, canAccessPurchase, isSnookerStaff]);
+  }, [activeView, isSnookerStaff]);
 
   const visibleMenus = useMemo(() => {
-    const menus = isSnookerStaff ? SNOOKER_STAFF_MENUS : MAIN_MENUS;
-    if (canAccessPurchase) {
-      return menus;
-    }
-    return menus.filter((menu) => !("key" in menu && menu.key === "purchase"));
-  }, [canAccessPurchase, isSnookerStaff]);
+    return isSnookerStaff ? SNOOKER_STAFF_MENUS : MAIN_MENUS;
+  }, [isSnookerStaff]);
   const titleMeta =
     isSnookerStaff && activeView === "dashboard"
       ? {
@@ -316,10 +285,6 @@ export const StaffDesktopShell = () => {
         return <StaffDumpPage />;
       case "outlet-transfer":
         return <StaffOutletTransferPage />;
-      case "reports":
-        return <StaffReportsPage />;
-      case "purchase":
-        return <StaffPurchasePage />;
       default:
         return (
           <StaffPlaceholderPage

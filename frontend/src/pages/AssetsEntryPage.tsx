@@ -118,9 +118,7 @@ type ProductFormModalProps = {
     sku?: string;
     packSize?: string;
     unit: ProductUnit;
-    currentStock: number;
     minStock: number;
-    purchaseUnitPrice: number;
     defaultSupplierId?: string | null;
     isActive: boolean;
   }) => Promise<void>;
@@ -133,9 +131,7 @@ const ProductFormModal = ({ isOpen, onClose, loading, initialData, suppliers, un
     sku: "",
     packSize: "",
     unit: (units[0] ?? "pcs") as ProductUnit,
-    currentStock: "0",
     minStock: "0",
-    purchaseUnitPrice: "0",
     defaultSupplierId: "",
     isActive: true
   });
@@ -150,9 +146,7 @@ const ProductFormModal = ({ isOpen, onClose, loading, initialData, suppliers, un
       sku: initialData?.sku ?? "",
       packSize: initialData?.packSize ?? "",
       unit: (initialData?.unit ?? units[0] ?? "pcs") as ProductUnit,
-      currentStock: String(initialData?.currentStock ?? 0),
       minStock: String(initialData?.minStock ?? 0),
-      purchaseUnitPrice: String(initialData?.purchaseUnitPrice ?? 0),
       defaultSupplierId: initialData?.defaultSupplierId ?? "",
       isActive: initialData?.isActive ?? true
     });
@@ -185,16 +179,13 @@ const ProductFormModal = ({ isOpen, onClose, loading, initialData, suppliers, un
       sku: form.sku.trim() || undefined,
       packSize: form.packSize.trim() || undefined,
       unit: form.unit,
-      currentStock: Number(form.currentStock),
       minStock: Number(form.minStock),
-      purchaseUnitPrice: Number(form.purchaseUnitPrice),
       defaultSupplierId: form.defaultSupplierId || null,
       isActive: form.isActive
     });
   };
 
-  const hasInvalidNumber =
-    Number(form.currentStock) < 0 || Number(form.minStock) < 0 || Number(form.purchaseUnitPrice) < 0;
+  const hasInvalidNumber = Number(form.minStock) < 0;
 
   return (
     <Modal isOpen={isOpen} onClose={onClose} isCentered size="xl">
@@ -245,16 +236,6 @@ const ProductFormModal = ({ isOpen, onClose, loading, initialData, suppliers, un
                 searchPlaceholder="Search supplier"
               />
               <AppInput
-                label="Current Stock"
-                type="number"
-                min={0}
-                step="0.001"
-                value={form.currentStock}
-                onChange={(event) =>
-                  setForm((prev) => ({ ...prev, currentStock: (event.target as HTMLInputElement).value }))
-                }
-              />
-              <AppInput
                 label="Minimum Stock"
                 type="number"
                 min={0}
@@ -263,16 +244,6 @@ const ProductFormModal = ({ isOpen, onClose, loading, initialData, suppliers, un
                 onChange={(event) => setForm((prev) => ({ ...prev, minStock: (event.target as HTMLInputElement).value }))}
               />
             </SimpleGrid>
-            <AppInput
-              label="Purchase Unit Price"
-              type="number"
-              min={0}
-              step="0.01"
-              value={form.purchaseUnitPrice}
-              onChange={(event) =>
-                setForm((prev) => ({ ...prev, purchaseUnitPrice: (event.target as HTMLInputElement).value }))
-              }
-            />
             <FormControl display="flex" alignItems="center" justifyContent="space-between">
               <FormLabel mb={0}>Active Asset</FormLabel>
               <Checkbox
@@ -501,9 +472,7 @@ export const AssetsEntryPage = () => {
       sku?: string;
       packSize?: string;
       unit: ProductUnit;
-      currentStock: number;
       minStock: number;
-      purchaseUnitPrice: number;
       defaultSupplierId?: string | null;
       isActive: boolean;
     }) => {

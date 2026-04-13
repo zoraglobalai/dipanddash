@@ -30,7 +30,7 @@ export const AppLayout = () => {
   const { user, logout } = useAuth();
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
 
-  const navItems = useMemo(() => getNavItemsByRole(user?.role), [user?.role]);
+  const navItems = useMemo(() => getNavItemsByRole(user), [user]);
   const sidebarWidth = isSidebarCollapsed ? SIDEBAR_COLLAPSED_WIDTH : SIDEBAR_EXPANDED_WIDTH;
   const toggleSidebar = useCallback(() => setIsSidebarCollapsed((previous) => !previous), []);
 

@@ -6,6 +6,10 @@ import { AppError } from "../../errors/app-error";
 import { ItemsService } from "./items.service";
 
 type UploadRequest = Request & {
+  file?: Express.Multer.File;
+};
+
+type UploadImageRequest = Request & {
   file?: {
     filename: string;
   };
@@ -36,7 +40,7 @@ const parseBoolean = (value: unknown, fallback: boolean) => {
 export class ItemsController {
   private readonly itemsService = new ItemsService();
 
-  uploadImage = async (req: UploadRequest, res: Response): Promise<Response> => {
+  uploadImage = async (req: UploadImageRequest, res: Response): Promise<Response> => {
     if (!req.file) {
       throw new AppError(StatusCodes.BAD_REQUEST, "Please choose an image file to upload.");
     }
@@ -46,6 +50,22 @@ export class ItemsController {
       imageUrl,
       fileName: req.file.filename
     });
+  };
+
+  downloadItemBulkTemplate = async (_req: Request, res: Response): Promise<Response> => {
+    const template = this.itemsService.getItemBulkImportTemplate();
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${template.fileName}"`);
+    return res.status(StatusCodes.OK).send(template.content);
+  };
+
+  bulkImportItems = async (req: UploadRequest, res: Response): Promise<Response> => {
+    if (!req.file) {
+      throw new AppError(StatusCodes.BAD_REQUEST, "Please choose a CSV file to upload.");
+    }
+
+    const data = await this.itemsService.bulkImportItemsFromCsv(req.file.buffer);
+    return sendSuccess(res, StatusCodes.CREATED, "Item bulk import completed successfully", data);
   };
 
   listCategories = async (req: Request, res: Response): Promise<Response> => {

@@ -1,4 +1,4 @@
-import { comparePassword } from "../../utils/password";
+import { comparePassword, hashPassword } from "../../utils/password";
 import { UserService } from "../users/user.service";
 import { AppError } from "../../errors/app-error";
 import { AUTH_MESSAGES } from "../../constants/auth";
@@ -14,6 +14,7 @@ export type SessionUser = {
   fullName: string;
   email: string | null;
   role: UserRole;
+  isSuperAdmin: boolean;
   isActive: boolean;
   assignedReports: string[];
   assignedModules: string[];
@@ -23,6 +24,29 @@ export class AuthService {
   private readonly userService = new UserService();
   private readonly tokenService = new TokenService();
   private readonly sessionService = new SessionService();
+
+  private toSessionUser(user: {
+    id: string;
+    username: string;
+    fullName: string;
+    email: string | null;
+    role: UserRole;
+    isActive: boolean;
+    assignedReports?: string[];
+    assignedModules?: string[];
+  }): SessionUser {
+    return {
+      id: user.id,
+      username: user.username,
+      fullName: user.fullName,
+      email: user.email,
+      role: user.role,
+      isSuperAdmin: this.userService.isSuperAdminAccount(user),
+      isActive: user.isActive,
+      assignedReports: user.assignedReports ?? [],
+      assignedModules: user.assignedModules ?? []
+    };
+  }
 
   async login(username: string, password: string, context?: SessionContext): Promise<{
     user: SessionUser;
@@ -45,16 +69,7 @@ export class AuthService {
       throw new AppError(403, "Your account is inactive. Please contact an administrator.");
     }
 
-    const sessionUser: SessionUser = {
-      id: user.id,
-      username: user.username,
-      fullName: user.fullName,
-      email: user.email,
-      role: user.role,
-      isActive: user.isActive,
-      assignedReports: user.assignedReports ?? [],
-      assignedModules: user.assignedModules ?? []
-    };
+    const sessionUser = this.toSessionUser(user);
 
     const session = await this.sessionService.createPendingSession({
       userId: user.id,
@@ -136,16 +151,7 @@ export class AuthService {
       );
     }
 
-    const sessionUser: SessionUser = {
-      id: user.id,
-      username: user.username,
-      fullName: user.fullName,
-      email: user.email,
-      role: user.role,
-      isActive: user.isActive,
-      assignedReports: user.assignedReports ?? [],
-      assignedModules: user.assignedModules ?? []
-    };
+    const sessionUser = this.toSessionUser(user);
 
     const nextRefreshToken = this.tokenService.createRefreshToken({
       user: {
@@ -199,15 +205,32 @@ export class AuthService {
 
   async getMe(userId: string): Promise<SessionUser> {
     const user = await this.userService.findById(userId);
-    return {
-      id: user.id,
-      username: user.username,
-      fullName: user.fullName,
-      email: user.email,
-      role: user.role,
-      isActive: user.isActive,
-      assignedReports: user.assignedReports ?? [],
-      assignedModules: user.assignedModules ?? []
-    };
+    return this.toSessionUser(user);
+  }
+
+  async changePassword(userId: string, currentPassword: string, newPassword: string): Promise<void> {
+    const user = await this.userService.findByIdWithPassword(userId);
+    if (!user.isActive) {
+      throw new AppError(
+        StatusCodes.FORBIDDEN,
+        "Your account is inactive. Please contact an administrator."
+      );
+    }
+
+    const isCurrentPasswordValid = await comparePassword(currentPassword, user.passwordHash);
+    if (!isCurrentPasswordValid) {
+      throw new AppError(StatusCodes.BAD_REQUEST, "Current password is incorrect.");
+    }
+
+    const isSameAsCurrent = await comparePassword(newPassword, user.passwordHash);
+    if (isSameAsCurrent) {
+      throw new AppError(
+        StatusCodes.UNPROCESSABLE_ENTITY,
+        "New password must be different from current password."
+      );
+    }
+
+    const passwordHash = await hashPassword(newPassword);
+    await this.userService.updatePassword(userId, passwordHash);
   }
 }

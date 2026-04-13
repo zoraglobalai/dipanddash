@@ -7,6 +7,19 @@ export type ItemPagination = {
   totalPages: number;
 };
 
+export type BulkItemImportSummary = {
+  totalRows: number;
+  parsedRows: number;
+  parsedItems: number;
+  insertedCategories: number;
+  insertedItems: number;
+  insertedRecipeRows: number;
+  skippedExistingItems: number;
+  skippedDuplicateRows: number;
+  invalidRows: number;
+  invalidRowDetails: Array<{ rowNumber: number; reason: string }>;
+};
+
 export type ItemCategory = {
   id: string;
   name: string;

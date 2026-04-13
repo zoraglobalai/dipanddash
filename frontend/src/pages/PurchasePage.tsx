@@ -6,6 +6,7 @@ import {
   Grid,
   GridItem,
   HStack,
+  Input,
   Modal,
   ModalBody,
   ModalCloseButton,
@@ -25,8 +26,8 @@ import {
   VStack,
   useDisclosure
 } from "@chakra-ui/react";
-import { Edit2, Eye, Plus, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Download, Edit2, Eye, Plus, Trash2, Upload } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import { EmptyState } from "@/components/common/EmptyState";
@@ -50,6 +51,7 @@ import type {
   CreatePurchaseLineInput,
   ProductListItem,
   ProductListResponse,
+  ProductExpiryStatus,
   ProcurementMetaResponse,
   ProcurementStatsResponse,
   ProductUnit,
@@ -91,6 +93,48 @@ const getTodayDate = () => {
   return `${year}-${month}-${day}`;
 };
 
+const isExpiredDate = (value?: string | null) => Boolean(value && value < getTodayDate());
+
+const getExpiryBadge = (row: ProductListItem): { label: string; tone: "red" | "orange" | "green" | "neutral" } => {
+  const status = row.expiryStatus as ProductExpiryStatus;
+  if (status === "EXPIRED") {
+    const days = row.ageingDays ?? 0;
+    return { label: `Expired ${days}d ago`, tone: "red" };
+  }
+  if (status === "EXPIRING_SOON") {
+    const days = row.ageingDays ?? 0;
+    return { label: `Expiring in ${days}d`, tone: "orange" };
+  }
+  if (status === "FRESH") {
+    const days = row.ageingDays ?? 0;
+    return { label: `Expiring in ${days}d`, tone: "green" };
+  }
+  return { label: "No expiry", tone: "neutral" };
+};
+
+const extractFileNameFromDisposition = (contentDisposition?: string | null) => {
+  if (!contentDisposition) {
+    return null;
+  }
+
+  const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) {
+    return decodeURIComponent(utf8Match[1]);
+  }
+
+  const quotedMatch = contentDisposition.match(/filename="([^"]+)"/i);
+  if (quotedMatch?.[1]) {
+    return quotedMatch[1];
+  }
+
+  const plainMatch = contentDisposition.match(/filename=([^;]+)/i);
+  if (plainMatch?.[1]) {
+    return plainMatch[1].trim();
+  }
+
+  return null;
+};
+
 const createDraftLineId = () => Math.random().toString(36).slice(2, 10);
 
 type DraftPurchaseLine = {
@@ -102,6 +146,7 @@ type DraftPurchaseLine = {
   quantity: string;
   quantityUnit: string;
   unitPrice: string;
+  expiryDate: string;
   note: string;
 };
 
@@ -114,6 +159,7 @@ const createEmptyLine = (): DraftPurchaseLine => ({
   quantity: "1",
   quantityUnit: "",
   unitPrice: "0",
+  expiryDate: "",
   note: ""
 });
 
@@ -177,6 +223,7 @@ const PurchaseOrderModal = ({
             quantity: String(line.enteredQuantity ?? line.stockAdded),
             quantityUnit: line.enteredUnit ?? line.unit,
             unitPrice: String(line.unitPrice),
+            expiryDate: line.expiryDate ?? "",
             note: ""
           };
         })
@@ -330,6 +377,7 @@ const PurchaseOrderModal = ({
           quantity,
           quantityUnit: line.quantityUnit || undefined,
           unitPrice,
+          expiryDate: line.lineType === "product" ? line.expiryDate || undefined : undefined,
           note: line.note.trim() || undefined
         } as CreatePurchaseLineInput;
       })
@@ -432,7 +480,8 @@ const PurchaseOrderModal = ({
                             ingredientId: "",
                             productId: "",
                             quantityUnit: "",
-                            unitPrice: "0"
+                            unitPrice: "0",
+                            expiryDate: ""
                           })
                         }
                         isClearable={false}
@@ -520,6 +569,13 @@ const PurchaseOrderModal = ({
                           value={line.unitPrice}
                           onChange={(event) => updateLine(line.id, { unitPrice: (event.target as HTMLInputElement).value })}
                         />
+                        <AppInput
+                          label="Expiry Date (product only)"
+                          type="date"
+                          value={line.expiryDate}
+                          onChange={(event) => updateLine(line.id, { expiryDate: (event.target as HTMLInputElement).value })}
+                          isDisabled={line.lineType !== "product"}
+                        />
                         <Box
                           border="1px solid"
                           borderColor="rgba(133, 78, 48, 0.2)"
@@ -567,6 +623,7 @@ const PurchaseOrderModal = ({
                         <Text fontSize="sm" color="#725A50">
                           Stock: {selectedProduct.currentStock} {selectedProduct.unit} | Min: {selectedProduct.minStock}{" "}
                           {selectedProduct.unit} | Base Unit: {selectedProduct.unit}
+                          {line.expiryDate ? ` | Expiry: ${formatDate(line.expiryDate)}` : ""}
                         </Text>
                       ) : null}
                     </Box>
@@ -700,9 +757,7 @@ type ProductFormModalProps = {
     sku?: string;
     packSize?: string;
     unit: ProductUnit;
-    currentStock: number;
     minStock: number;
-    purchaseUnitPrice: number;
     defaultSupplierId?: string | null;
     isActive: boolean;
   }) => Promise<void>;
@@ -716,9 +771,7 @@ const ProductFormModal = ({ isOpen, onClose, loading, initialData, suppliers, un
     sku: "",
     packSize: "",
     unit: (units[0] ?? "pcs") as ProductUnit,
-    currentStock: "0",
     minStock: "0",
-    purchaseUnitPrice: "0",
     defaultSupplierId: "",
     isActive: true
   });
@@ -733,9 +786,7 @@ const ProductFormModal = ({ isOpen, onClose, loading, initialData, suppliers, un
       sku: initialData?.sku ?? "",
       packSize: initialData?.packSize ?? "",
       unit: (initialData?.unit ?? units[0] ?? "pcs") as ProductUnit,
-      currentStock: String(initialData?.currentStock ?? 0),
       minStock: String(initialData?.minStock ?? 0),
-      purchaseUnitPrice: String(initialData?.purchaseUnitPrice ?? 0),
       defaultSupplierId: initialData?.defaultSupplierId ?? "",
       isActive: initialData?.isActive ?? true
     });
@@ -768,9 +819,7 @@ const ProductFormModal = ({ isOpen, onClose, loading, initialData, suppliers, un
       sku: form.sku.trim() || undefined,
       packSize: form.packSize.trim() || undefined,
       unit: form.unit,
-      currentStock: Number(form.currentStock),
       minStock: Number(form.minStock),
-      purchaseUnitPrice: Number(form.purchaseUnitPrice),
       defaultSupplierId: form.defaultSupplierId || null,
       isActive: form.isActive
     });
@@ -822,14 +871,6 @@ const ProductFormModal = ({ isOpen, onClose, loading, initialData, suppliers, un
                   searchPlaceholder="Search supplier"
                 />
                 <AppInput
-                  label="Current Stock"
-                  type="number"
-                  min={0}
-                  step="0.001"
-                  value={form.currentStock}
-                  onChange={(event) => setForm((prev) => ({ ...prev, currentStock: (event.target as HTMLInputElement).value }))}
-                />
-                <AppInput
                   label="Minimum Stock"
                   type="number"
                   min={0}
@@ -838,14 +879,6 @@ const ProductFormModal = ({ isOpen, onClose, loading, initialData, suppliers, un
                   onChange={(event) => setForm((prev) => ({ ...prev, minStock: (event.target as HTMLInputElement).value }))}
                 />
               </SimpleGrid>
-              <AppInput
-                label="Purchase Unit Price"
-                type="number"
-                min={0}
-                step="0.01"
-                value={form.purchaseUnitPrice}
-                onChange={(event) => setForm((prev) => ({ ...prev, purchaseUnitPrice: (event.target as HTMLInputElement).value }))}
-              />
               <FormControl display="flex" alignItems="center" justifyContent="space-between">
                 <FormLabel mb={0}>Active Product</FormLabel>
                 <Checkbox
@@ -864,7 +897,7 @@ const ProductFormModal = ({ isOpen, onClose, loading, initialData, suppliers, un
             <AppButton
               onClick={() => void handleSave()}
               isLoading={loading}
-              isDisabled={!form.name.trim() || !form.category.trim() || Number(form.purchaseUnitPrice) < 0}
+              isDisabled={!form.name.trim() || !form.category.trim() || Number(form.minStock) < 0}
             >
               {initialData ? "Save Product" : "Create Product"}
             </AppButton>
@@ -932,9 +965,15 @@ export const PurchasePage = () => {
   const [productLimit, setProductLimit] = useState(5);
 
   const [mutationLoading, setMutationLoading] = useState(false);
+  const [purchaseBulkTemplateLoading, setPurchaseBulkTemplateLoading] = useState(false);
+  const [purchaseBulkUploadLoading, setPurchaseBulkUploadLoading] = useState(false);
+  const [productBulkTemplateLoading, setProductBulkTemplateLoading] = useState(false);
+  const [productBulkUploadLoading, setProductBulkUploadLoading] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<PurchaseOrderDetail | null>(null);
   const [editingOrder, setEditingOrder] = useState<PurchaseOrderDetail | null>(null);
   const [selectedProduct, setSelectedProduct] = useState<ProductListItem | null>(null);
+  const purchaseBulkInputRef = useRef<HTMLInputElement | null>(null);
+  const productBulkInputRef = useRef<HTMLInputElement | null>(null);
 
   const orderModal = useDisclosure();
   const orderDetailModal = useDisclosure();
@@ -1093,6 +1132,123 @@ export const PurchasePage = () => {
     }
   };
 
+  const openPurchaseBulkPicker = useCallback(() => {
+    purchaseBulkInputRef.current?.click();
+  }, []);
+
+  const openProductBulkPicker = useCallback(() => {
+    productBulkInputRef.current?.click();
+  }, []);
+
+  const handleDownloadPurchaseTemplate = useCallback(async () => {
+    setPurchaseBulkTemplateLoading(true);
+    try {
+      const response = await procurementService.downloadPurchaseBulkTemplate();
+      const fileName =
+        extractFileNameFromDisposition(response.headers["content-disposition"]) ?? "purchase_bulk_template.csv";
+      const blob = new Blob([response.data], { type: response.headers["content-type"] ?? "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = fileName;
+      anchor.click();
+      URL.revokeObjectURL(url);
+      toast.success("Purchase bulk template downloaded.");
+    } catch (error) {
+      toast.error("Unable to download purchase template", extractErrorMessage(error));
+    } finally {
+      setPurchaseBulkTemplateLoading(false);
+    }
+  }, [toast]);
+
+  const handlePurchaseBulkFileSelect = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const inputElement = event.target;
+      const selectedFile = inputElement.files?.[0];
+      inputElement.value = "";
+
+      if (!selectedFile) {
+        return;
+      }
+      if (!selectedFile.name.toLowerCase().endsWith(".csv")) {
+        toast.warning("Please upload a CSV file.");
+        return;
+      }
+
+      setPurchaseBulkUploadLoading(true);
+      try {
+        const response = await procurementService.importPurchaseBulkCsv(selectedFile);
+        toast.success(
+          `Imported ${response.data.purchaseNumber} with ${response.data.lineCount} lines (${response.data.ingredientLineCount} ingredients, ${response.data.productLineCount} products).`
+        );
+        await Promise.all([
+          loadOrders(),
+          loadProducts(),
+          loadStats(),
+          loadMeta(response.data.purchaseDate),
+          loadSuppliers()
+        ]);
+      } catch (error) {
+        toast.error("Unable to import purchase CSV", extractErrorMessage(error));
+      } finally {
+        setPurchaseBulkUploadLoading(false);
+      }
+    },
+    [loadMeta, loadOrders, loadProducts, loadStats, loadSuppliers, toast]
+  );
+
+  const handleDownloadProductTemplate = useCallback(async () => {
+    setProductBulkTemplateLoading(true);
+    try {
+      const response = await procurementService.downloadProductBulkTemplate();
+      const fileName =
+        extractFileNameFromDisposition(response.headers["content-disposition"]) ?? "product_bulk_template.csv";
+      const blob = new Blob([response.data], { type: response.headers["content-type"] ?? "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = fileName;
+      anchor.click();
+      URL.revokeObjectURL(url);
+      toast.success("Product bulk template downloaded.");
+    } catch (error) {
+      toast.error("Unable to download product template", extractErrorMessage(error));
+    } finally {
+      setProductBulkTemplateLoading(false);
+    }
+  }, [toast]);
+
+  const handleProductBulkFileSelect = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const inputElement = event.target;
+      const selectedFile = inputElement.files?.[0];
+      inputElement.value = "";
+
+      if (!selectedFile) {
+        return;
+      }
+      if (!selectedFile.name.toLowerCase().endsWith(".csv")) {
+        toast.warning("Please upload a CSV file.");
+        return;
+      }
+
+      setProductBulkUploadLoading(true);
+      try {
+        const response = await procurementService.importProductBulkCsv(selectedFile);
+        const summary = response.data;
+        toast.success(
+          `Product bulk import completed. Added ${summary.insertedProducts}, skipped existing ${summary.skippedExistingProducts}, duplicate rows ${summary.skippedDuplicateRows}, invalid rows ${summary.invalidRows}.`
+        );
+        await Promise.all([loadProducts(), loadStats(), loadMeta(meta?.date)]);
+      } catch (error) {
+        toast.error("Unable to import product CSV", extractErrorMessage(error));
+      } finally {
+        setProductBulkUploadLoading(false);
+      }
+    },
+    [loadMeta, loadProducts, loadStats, meta?.date, toast]
+  );
+
   const handleSaveOrder = async (
     payload: CreatePurchaseOrderInput & {
       invoiceImageFile?: File | null;
@@ -1140,9 +1296,7 @@ export const PurchasePage = () => {
     sku?: string;
     packSize?: string;
     unit: ProductUnit;
-    currentStock: number;
     minStock: number;
-    purchaseUnitPrice: number;
     defaultSupplierId?: string | null;
     isActive: boolean;
   }) => {
@@ -1205,6 +1359,21 @@ export const PurchasePage = () => {
         </AppCard>
       </SimpleGrid>
 
+      <Input
+        ref={purchaseBulkInputRef}
+        type="file"
+        accept=".csv,text/csv"
+        display="none"
+        onChange={(event) => void handlePurchaseBulkFileSelect(event)}
+      />
+      <Input
+        ref={productBulkInputRef}
+        type="file"
+        accept=".csv,text/csv"
+        display="none"
+        onChange={(event) => void handleProductBulkFileSelect(event)}
+      />
+
       <Tabs variant="soft-rounded" colorScheme="brand" index={activeTabIndex} onChange={setActiveTabIndex}>
         <Box
           display="flex"
@@ -1218,15 +1387,61 @@ export const PurchasePage = () => {
             <Tab>Purchase Orders</Tab>
             <Tab>Products</Tab>
           </TabList>
-          <AppButton
-            leftIcon={<Plus size={16} />}
-            onClick={activeTabIndex === 0 ? openCreateOrder : openCreateProduct}
-            alignSelf={{ base: "stretch", lg: "flex-end" }}
-            minW={{ lg: "170px" }}
-            whiteSpace="nowrap"
+          <HStack
+            spacing={2}
+            flexWrap={{ base: "wrap", lg: "nowrap" }}
+            justify={{ base: "stretch", lg: "flex-end" }}
+            align={{ base: "stretch", lg: "center" }}
           >
-            {activeTabIndex === 0 ? "New Purchase" : "Add Product"}
-          </AppButton>
+            {activeTabIndex === 0 ? (
+              <>
+                <AppButton
+                  variant="outline"
+                  leftIcon={<Download size={16} />}
+                  onClick={() => void handleDownloadPurchaseTemplate()}
+                  isLoading={purchaseBulkTemplateLoading}
+                >
+                  Template
+                </AppButton>
+                <AppButton
+                  variant="outline"
+                  leftIcon={<Upload size={16} />}
+                  onClick={openPurchaseBulkPicker}
+                  isLoading={purchaseBulkUploadLoading}
+                >
+                  Upload CSV
+                </AppButton>
+              </>
+            ) : (
+              <>
+                <AppButton
+                  variant="outline"
+                  leftIcon={<Download size={16} />}
+                  onClick={() => void handleDownloadProductTemplate()}
+                  isLoading={productBulkTemplateLoading}
+                >
+                  Template
+                </AppButton>
+                <AppButton
+                  variant="outline"
+                  leftIcon={<Upload size={16} />}
+                  onClick={openProductBulkPicker}
+                  isLoading={productBulkUploadLoading}
+                >
+                  Upload CSV
+                </AppButton>
+              </>
+            )}
+            <AppButton
+              leftIcon={<Plus size={16} />}
+              onClick={activeTabIndex === 0 ? openCreateOrder : openCreateProduct}
+              alignSelf={{ base: "stretch", lg: "flex-end" }}
+              minW={{ lg: "170px" }}
+              whiteSpace="nowrap"
+            >
+              {activeTabIndex === 0 ? "New Purchase" : "Add Product"}
+            </AppButton>
+          </HStack>
         </Box>
         <TabPanels pt={4}>
           <TabPanel px={0}>
@@ -1439,12 +1654,66 @@ export const PurchasePage = () => {
                 ) : (
                   <DataTable
                     columns={[
-                      { key: "name", header: "Product", render: (row: ProductListItem) => <Box><Text fontWeight={800}>{row.name}</Text><Text fontSize="sm" color="#7A6359">{row.sku || "-"}{row.packSize ? ` | ${row.packSize}` : ""}</Text></Box> },
+                      {
+                        key: "name",
+                        header: "Product",
+                        render: (row: ProductListItem) => (
+                          <Box>
+                            <Text fontWeight={800} color={row.expiryStatus === "EXPIRED" ? "red.700" : "#2D1D17"}>
+                              {row.name}
+                            </Text>
+                            <Text fontSize="sm" color="#7A6359">
+                              {row.sku || "-"}
+                              {row.packSize ? ` | ${row.packSize}` : ""}
+                            </Text>
+                          </Box>
+                        )
+                      },
                       { key: "category", header: "Category", render: (row: ProductListItem) => row.category },
                       { key: "stock", header: "Stock", render: (row: ProductListItem) => `${row.currentStock} ${row.unit}` },
                       { key: "minStock", header: "Min Stock", render: (row: ProductListItem) => `${row.minStock} ${row.unit}` },
                       { key: "price", header: "Unit Price", render: (row: ProductListItem) => formatCurrency(row.purchaseUnitPrice) },
                       { key: "valuation", header: "Valuation", render: (row: ProductListItem) => formatCurrency(row.valuation) },
+                      {
+                        key: "ageing",
+                        header: "Ageing",
+                        render: (row: ProductListItem) => {
+                          const badge = getExpiryBadge(row);
+                          const bgByTone = {
+                            red: "red.100",
+                            orange: "orange.100",
+                            green: "green.100",
+                            neutral: "gray.100"
+                          } as const;
+                          const colorByTone = {
+                            red: "red.700",
+                            orange: "orange.700",
+                            green: "green.700",
+                            neutral: "gray.700"
+                          } as const;
+                          return (
+                            <Box>
+                              <Box
+                                px={3}
+                                py={1}
+                                borderRadius="full"
+                                bg={bgByTone[badge.tone]}
+                                color={colorByTone[badge.tone]}
+                                fontSize="xs"
+                                fontWeight={700}
+                                w="fit-content"
+                              >
+                                {badge.label}
+                              </Box>
+                              {row.nextExpiryDate || row.latestExpiryDate ? (
+                                <Text mt={1} fontSize="xs" color="#7A6359">
+                                  {formatDate(row.nextExpiryDate ?? row.latestExpiryDate ?? "")}
+                                </Text>
+                              ) : null}
+                            </Box>
+                          );
+                        }
+                      },
                       { key: "status", header: "Status", render: (row: ProductListItem) => <Box px={3} py={1} borderRadius="full" bg={row.stockStatus === "LOW_STOCK" ? "red.100" : "green.100"} color={row.stockStatus === "LOW_STOCK" ? "red.700" : "green.700"} fontSize="xs" fontWeight={700} w="fit-content">{row.stockStatus === "LOW_STOCK" ? "Low Stock" : "Healthy"}</Box> },
                       { key: "actions", header: "Actions", render: (row: ProductListItem) => <HStack spacing={2}><ActionIconButton aria-label="Edit product" tooltip="Edit product" icon={<Edit2 size={16} />} variant="outline" onClick={() => openEditProduct(row)} /><ActionIconButton aria-label="Delete product" tooltip="Delete product" icon={<Trash2 size={16} />} variant="outline" colorScheme="accentRed" onClick={() => openDeleteProduct(row)} /></HStack> }
                     ]}
@@ -1533,7 +1802,38 @@ export const PurchasePage = () => {
                     </HStack>
                   </AppCard>
                 ) : null}
-                <DataTable columns={[{ key: "itemNameSnapshot", header: "Item" }, { key: "lineType", header: "Type", render: (row: any) => String(row.lineType).toUpperCase() }, { key: "stockAdded", header: "Added", render: (row: any) => `${row.enteredQuantity ?? row.stockAdded} ${row.enteredUnit ?? row.unit}` }, { key: "unitPrice", header: "Unit Price", render: (row: any) => formatCurrency(row.unitPrice) }, { key: "lineTotal", header: "Line Total", render: (row: any) => formatCurrency(row.lineTotal) }]} rows={selectedOrder.lines as any} />
+                <DataTable
+                  columns={[
+                    { key: "itemNameSnapshot", header: "Item" },
+                    { key: "lineType", header: "Type", render: (row: any) => String(row.lineType).toUpperCase() },
+                    {
+                      key: "stockAdded",
+                      header: "Added",
+                      render: (row: any) => `${row.enteredQuantity ?? row.stockAdded} ${row.enteredUnit ?? row.unit}`
+                    },
+                    { key: "unitPrice", header: "Unit Price", render: (row: any) => formatCurrency(row.unitPrice) },
+                    {
+                      key: "expiryDate",
+                      header: "Expiry",
+                      render: (row: any) => {
+                        if (row.lineType !== "product") {
+                          return "-";
+                        }
+                        if (!row.expiryDate) {
+                          return "No expiry";
+                        }
+                        const expired = isExpiredDate(row.expiryDate);
+                        return (
+                          <Box color={expired ? "red.700" : "#2D1D17"} fontWeight={expired ? 700 : 500}>
+                            {formatDate(row.expiryDate)}
+                          </Box>
+                        );
+                      }
+                    },
+                    { key: "lineTotal", header: "Line Total", render: (row: any) => formatCurrency(row.lineTotal) }
+                  ]}
+                  rows={selectedOrder.lines as any}
+                />
               </VStack>
             ) : null}
           </ModalBody>

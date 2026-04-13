@@ -1,13 +1,16 @@
 import { NAV_ITEMS } from "@/constants/nav";
+import type { AuthUser } from "@/types/auth";
 import { UserRole } from "@/types/role";
+import { hasAdminModuleAccess } from "@/utils/access";
 
-const filterNavByRole = (items: typeof NAV_ITEMS, role: UserRole) =>
+const filterNavByRoleAndModule = (items: typeof NAV_ITEMS, user: AuthUser) =>
   items.reduce<typeof NAV_ITEMS>((accumulator, item) => {
-    const hasRoleAccess = !item.roles || item.roles.includes(role);
+    const hasRoleAccess = !item.roles || item.roles.includes(user.role as UserRole);
+    const hasModulePermission = !item.moduleKey || hasAdminModuleAccess(user, item.moduleKey);
 
     if (item.children?.length) {
-      const filteredChildren = filterNavByRole(item.children, role);
-      if (hasRoleAccess || filteredChildren.length) {
+      const filteredChildren = filterNavByRoleAndModule(item.children, user);
+      if ((hasRoleAccess && hasModulePermission) || filteredChildren.length) {
         accumulator.push({
           ...item,
           children: filteredChildren
@@ -16,17 +19,17 @@ const filterNavByRole = (items: typeof NAV_ITEMS, role: UserRole) =>
       return accumulator;
     }
 
-    if (hasRoleAccess) {
+    if (hasRoleAccess && hasModulePermission) {
       accumulator.push(item);
     }
 
     return accumulator;
   }, []);
 
-export const getNavItemsByRole = (role?: UserRole) => {
-  if (!role) {
+export const getNavItemsByRole = (user?: AuthUser | null) => {
+  if (!user) {
     return [];
   }
 
-  return filterNavByRole(NAV_ITEMS, role);
+  return filterNavByRoleAndModule(NAV_ITEMS, user);
 };

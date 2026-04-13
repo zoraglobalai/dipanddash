@@ -3,6 +3,7 @@ import type { ApiSuccess } from "@/types/api";
 import type {
   AddOnDetail,
   AddOnListItem,
+  BulkItemImportSummary,
   ComboDetail,
   ComboItemRow,
   ComboListItem,
@@ -68,6 +69,22 @@ export const itemsService = {
   },
   getMetaItems: async () => {
     const response = await apiClient.get<ApiSuccess<{ items: ItemListItem[] }>>("/items/meta/items");
+    return response.data;
+  },
+  downloadBulkTemplate: async () => {
+    return apiClient.get<Blob>("/items/bulk/template", {
+      responseType: "blob"
+    });
+  },
+  bulkImportItems: async (file: File) => {
+    const formData = new FormData();
+    formData.append("file", file);
+
+    const response = await apiClient.post<ApiSuccess<BulkItemImportSummary>>("/items/bulk/import", formData, {
+      headers: {
+        "Content-Type": "multipart/form-data"
+      }
+    });
     return response.data;
   },
   getCategories: async (params?: { search?: string; includeInactive?: boolean; page?: number; limit?: number }) => {

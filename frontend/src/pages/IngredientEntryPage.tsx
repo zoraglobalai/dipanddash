@@ -3,6 +3,7 @@ import {
   FormControl,
   FormLabel,
   HStack,
+  Input,
   Select,
   SimpleGrid,
   Switch,
@@ -15,8 +16,8 @@ import {
   VStack,
   useDisclosure
 } from "@chakra-ui/react";
-import { Edit2, Eye, Plus, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { Download, Edit2, Eye, Plus, Trash2, Upload } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from "react";
 
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import { EmptyState } from "@/components/common/EmptyState";
@@ -86,14 +87,29 @@ const toDateInputValue = (value: Date) => {
   return `${year}-${month}-${day}`;
 };
 
-const getDefaultLedgerRange = () => {
-  const toDate = new Date();
-  const fromDate = new Date(toDate);
-  fromDate.setDate(fromDate.getDate() - 6);
-  return {
-    from: toDateInputValue(fromDate),
-    to: toDateInputValue(toDate)
-  };
+const getTodayLedgerDate = () => toDateInputValue(new Date());
+
+const extractFileNameFromDisposition = (contentDisposition?: string | null) => {
+  if (!contentDisposition) {
+    return null;
+  }
+
+  const utf8Match = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) {
+    return decodeURIComponent(utf8Match[1]);
+  }
+
+  const quotedMatch = contentDisposition.match(/filename="([^"]+)"/i);
+  if (quotedMatch?.[1]) {
+    return quotedMatch[1];
+  }
+
+  const plainMatch = contentDisposition.match(/filename=([^;]+)/i);
+  if (plainMatch?.[1]) {
+    return plainMatch[1].trim();
+  }
+
+  return null;
 };
 
 const PaginationControls = ({
@@ -159,7 +175,7 @@ const stockHealthBadge = (status: "HEALTHY" | "LOW_STOCK") => (
 
 export const IngredientEntryPage = () => {
   const toast = useAppToast();
-  const defaultLedgerRange = useMemo(() => getDefaultLedgerRange(), []);
+  const todayLedgerDate = useMemo(() => getTodayLedgerDate(), []);
 
   const [allCategories, setAllCategories] = useState<IngredientCategory[]>([]);
 
@@ -186,6 +202,9 @@ export const IngredientEntryPage = () => {
   const [ingredientPage, setIngredientPage] = useState(1);
   const [ingredientLimit, setIngredientLimit] = useState(5);
   const [selectedIngredient, setSelectedIngredient] = useState<IngredientListItem | null>(null);
+  const [bulkUploadLoading, setBulkUploadLoading] = useState(false);
+  const [bulkTemplateLoading, setBulkTemplateLoading] = useState(false);
+  const bulkUploadInputRef = useRef<HTMLInputElement | null>(null);
 
   const ingredientModal = useDisclosure();
   const deleteIngredientDialog = useDisclosure();
@@ -201,8 +220,6 @@ export const IngredientEntryPage = () => {
   const [ledgerLoading, setLedgerLoading] = useState(true);
   const [ledgerSearch, setLedgerSearch] = useState("");
   const debouncedLedgerSearch = useDebouncedValue(ledgerSearch, 400);
-  const [ledgerDateFrom, setLedgerDateFrom] = useState(defaultLedgerRange.from);
-  const [ledgerDateTo, setLedgerDateTo] = useState(defaultLedgerRange.to);
   const [ledgerPage, setLedgerPage] = useState(1);
   const [ledgerLimit, setLedgerLimit] = useState(12);
 
@@ -280,8 +297,8 @@ export const IngredientEntryPage = () => {
     try {
       const response = await reportsService.generate({
         reportKey: "stock_consumption_report",
-        dateFrom: ledgerDateFrom,
-        dateTo: ledgerDateTo,
+        dateFrom: todayLedgerDate,
+        dateTo: todayLedgerDate,
         search: debouncedLedgerSearch || undefined,
         page: ledgerPage,
         limit: ledgerLimit
@@ -316,7 +333,7 @@ export const IngredientEntryPage = () => {
     } finally {
       setLedgerLoading(false);
     }
-  }, [debouncedLedgerSearch, ledgerDateFrom, ledgerDateTo, ledgerLimit, ledgerPage, toast]);
+  }, [debouncedLedgerSearch, ledgerLimit, ledgerPage, toast, todayLedgerDate]);
 
   useEffect(() => {
     void fetchCategoryOptions();
@@ -348,7 +365,7 @@ export const IngredientEntryPage = () => {
 
   useEffect(() => {
     setLedgerPage(1);
-  }, [debouncedLedgerSearch, ledgerDateFrom, ledgerDateTo]);
+  }, [debouncedLedgerSearch]);
 
   const categoryOptions = useMemo(
     () => allCategories.map((category) => ({ label: category.name, value: category.id })),
@@ -427,6 +444,76 @@ export const IngredientEntryPage = () => {
       }
     },
     [fetchCategories, fetchIngredients, ingredientModal, selectedIngredient, toast]
+  );
+
+  const handleDownloadBulkTemplate = useCallback(async () => {
+    setBulkTemplateLoading(true);
+    try {
+      const response = await ingredientsService.downloadBulkTemplate();
+      const fileName =
+        extractFileNameFromDisposition(response.headers["content-disposition"]) ??
+        "ingredient_bulk_template.csv";
+
+      const blob = new Blob([response.data], { type: response.headers["content-type"] ?? "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = fileName;
+      anchor.click();
+      URL.revokeObjectURL(url);
+      toast.success("Ingredient bulk template downloaded.");
+    } catch (error) {
+      toast.error(extractErrorMessage(error, "Unable to download ingredient template."));
+    } finally {
+      setBulkTemplateLoading(false);
+    }
+  }, [toast]);
+
+  const openBulkUploadPicker = useCallback(() => {
+    bulkUploadInputRef.current?.click();
+  }, []);
+
+  const handleBulkFileSelect = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const inputElement = event.target;
+      const selectedFile = inputElement.files?.[0];
+      inputElement.value = "";
+
+      if (!selectedFile) {
+        return;
+      }
+
+      if (!selectedFile.name.toLowerCase().endsWith(".csv")) {
+        toast.warning("Please upload a CSV file. You can export your Excel sheet as CSV.");
+        return;
+      }
+
+      setBulkUploadLoading(true);
+      try {
+        const response = await ingredientsService.bulkImportIngredients(selectedFile);
+        const summary = response.data;
+
+        const skippedRows = summary.skippedExistingIngredients + summary.skippedDuplicateRows;
+        toast.success(
+          `Imported ${summary.insertedIngredients} new ingredient(s) and ${summary.insertedCategories} new category(s). Skipped ${skippedRows}, invalid ${summary.invalidRows}.`
+        );
+
+        if (summary.invalidRowDetails.length) {
+          const invalidPreview = summary.invalidRowDetails
+            .slice(0, 3)
+            .map((entry) => `Row ${entry.rowNumber}: ${entry.reason}`)
+            .join(" | ");
+          toast.warning(`Some rows were ignored: ${invalidPreview}`);
+        }
+
+        await Promise.all([fetchIngredients(), fetchCategories(), fetchCategoryOptions(), fetchStockInsights()]);
+      } catch (error) {
+        toast.error(extractErrorMessage(error, "Unable to complete ingredient bulk upload."));
+      } finally {
+        setBulkUploadLoading(false);
+      }
+    },
+    [fetchCategories, fetchCategoryOptions, fetchIngredients, fetchStockInsights, toast]
   );
 
   const handleDeleteIngredient = useCallback(async () => {
@@ -752,27 +839,15 @@ export const IngredientEntryPage = () => {
           <TabPanel px={0}>
             <AppCard
               title="Day-wise Ingredient Ledger"
-              subtitle="Track opening stock, purchase, dump, consumption, transfers, and remaining stock for each day."
+              subtitle="Track opening stock, purchase, dump, consumption, transfers, and remaining stock for current date."
             >
               <VStack spacing={4} align="stretch">
-                <SimpleGrid columns={{ base: 1, md: 2, xl: 5 }} spacing={4}>
+                <SimpleGrid columns={{ base: 1, md: 2, xl: 4 }} spacing={4}>
                   <AppInput
                     label="Search Ingredient"
                     placeholder="Filter ledger rows"
                     value={ledgerSearch}
                     onChange={(event) => setLedgerSearch((event.target as HTMLInputElement).value)}
-                  />
-                  <AppInput
-                    label="Date From"
-                    type="date"
-                    value={ledgerDateFrom}
-                    onChange={(event) => setLedgerDateFrom((event.target as HTMLInputElement).value)}
-                  />
-                  <AppInput
-                    label="Date To"
-                    type="date"
-                    value={ledgerDateTo}
-                    onChange={(event) => setLedgerDateTo((event.target as HTMLInputElement).value)}
                   />
                   <FormControl>
                     <FormLabel>Rows per page</FormLabel>
@@ -799,6 +874,9 @@ export const IngredientEntryPage = () => {
                     </AppButton>
                   </Box>
                 </SimpleGrid>
+                <Text fontSize="sm" color="#705B52">
+                  Showing stats for: {todayLedgerDate}
+                </Text>
 
                 {stockInsightsLoading || !stockInsights ? (
                   <SkeletonTable />
@@ -852,7 +930,7 @@ export const IngredientEntryPage = () => {
                     emptyState={
                       <EmptyState
                         title="No ledger rows found"
-                        description="Try a different date range or ingredient search."
+                        description={`No ingredient ledger rows found for ${todayLedgerDate}.`}
                       />
                     }
                   />
@@ -935,6 +1013,33 @@ export const IngredientEntryPage = () => {
           </TabPanel>
 
           <TabPanel px={0}>
+            <Input
+              ref={bulkUploadInputRef}
+              type="file"
+              accept=".csv,text/csv"
+              display="none"
+              onChange={(event) => void handleBulkFileSelect(event)}
+            />
+
+            <HStack justify="flex-end" spacing={2} flexWrap={{ base: "wrap", md: "nowrap" }} mb={4}>
+              <AppButton
+                variant="outline"
+                leftIcon={<Download size={16} />}
+                onClick={() => void handleDownloadBulkTemplate()}
+                isLoading={bulkTemplateLoading}
+              >
+                Template
+              </AppButton>
+              <AppButton
+                variant="outline"
+                leftIcon={<Upload size={16} />}
+                onClick={openBulkUploadPicker}
+                isLoading={bulkUploadLoading}
+              >
+                Upload CSV
+              </AppButton>
+            </HStack>
+
             <AppCard>
               <VStack spacing={4} align="stretch">
                 <SimpleGrid columns={{ base: 1, md: 4 }} spacing={4}>

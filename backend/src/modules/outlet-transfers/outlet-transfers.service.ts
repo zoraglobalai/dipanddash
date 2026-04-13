@@ -85,7 +85,7 @@ export class OutletTransfersService {
   private readonly transferRepository = AppDataSource.getRepository(OutletTransfer);
 
   private ensureRoleAllowed(role: UserRole) {
-    const allowed = [UserRole.ADMIN, UserRole.MANAGER, UserRole.STAFF, UserRole.SNOOKER_STAFF];
+    const allowed = [UserRole.ADMIN, UserRole.MANAGER, UserRole.STAFF];
     if (!allowed.includes(role)) {
       throw new AppError(403, "You are not allowed to perform outlet transfers.");
     }

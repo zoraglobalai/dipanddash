@@ -82,6 +82,7 @@ export const StockAuditPage = () => {
   const [staffId, setStaffId] = useState("");
   const [mismatchOnly, setMismatchOnly] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [reopeningReportId, setReopeningReportId] = useState<string | null>(null);
   const [data, setData] = useState<StockAuditData | null>(null);
 
   const fetchAudit = useCallback(async () => {
@@ -117,6 +118,25 @@ export const StockAuditPage = () => {
     setPage(1);
   }, [dateFrom, dateTo, limit, staffId]);
 
+  const handleReopenClosing = useCallback(
+    async (row: StockAuditData["reports"][number]) => {
+      setReopeningReportId(row.id);
+      try {
+        const response = await ingredientsService.reopenClosingReport(row.id);
+        toast.success(
+          response.message ||
+            `Closing reopened for ${row.staffName} on ${row.reportDate}.`
+        );
+        await fetchAudit();
+      } catch (error) {
+        toast.error(extractErrorMessage(error, "Unable to reopen closing report."));
+      } finally {
+        setReopeningReportId(null);
+      }
+    },
+    [fetchAudit, toast]
+  );
+
   const staffOptions = useMemo(() => {
     if (!data?.reports.length) {
       return [];
@@ -134,7 +154,6 @@ export const StockAuditPage = () => {
     () => [
       { key: "staffName", header: "Staff" },
       { key: "reportDate", header: "Business Date" },
-      { key: "closingSlot", header: "Slot" },
       {
         key: "totalIngredients",
         header: "Ingredients",
@@ -149,9 +168,24 @@ export const StockAuditPage = () => {
         key: "submittedAt",
         header: "Submitted At",
         render: (row: StockAuditData["reports"][number]) => new Date(row.submittedAt).toLocaleString("en-IN")
+      },
+      {
+        key: "actions",
+        header: "Actions",
+        render: (row: StockAuditData["reports"][number]) => (
+          <AppButton
+            size="sm"
+            variant="outline"
+            isLoading={reopeningReportId === row.id}
+            loadingText="Reopening..."
+            onClick={() => void handleReopenClosing(row)}
+          >
+            Reopen
+          </AppButton>
+        )
       }
     ],
-    []
+    [handleReopenClosing, reopeningReportId]
   );
 
   const itemRows = useMemo(() => {

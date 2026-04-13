@@ -45,9 +45,7 @@ const productBodySchema = z.object({
   sku: z.string().trim().max(40).optional(),
   packSize: z.string().trim().max(60).optional(),
   unit: z.enum(PRODUCT_UNITS),
-  currentStock: z.coerce.number().min(0, "Current stock cannot be negative").default(0),
   minStock: z.coerce.number().min(0, "Minimum stock cannot be negative").default(0),
-  purchaseUnitPrice: z.coerce.number().min(0, "Purchase price cannot be negative"),
   defaultSupplierId: z.string().uuid("Invalid supplier id").optional().nullable(),
   isActive: z.boolean().optional()
 });
@@ -88,6 +86,7 @@ const purchaseLineSchema = z
     quantity: z.coerce.number().positive("Quantity must be greater than zero"),
     quantityUnit: z.string().trim().optional(),
     unitPrice: z.coerce.number().min(0, "Unit price cannot be negative"),
+    expiryDate: z.string().regex(datePattern, "Expiry date must be in YYYY-MM-DD format").optional(),
     note: z.string().trim().max(255).optional()
   })
   .superRefine((value, ctx) => {
@@ -111,6 +110,13 @@ const purchaseLineSchema = z
           code: z.ZodIssueCode.custom,
           message: "Invalid unit for ingredient line",
           path: ["quantityUnit"]
+        });
+      }
+      if (value.expiryDate) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "expiryDate is not allowed for ingredient line",
+          path: ["expiryDate"]
         });
       }
     }

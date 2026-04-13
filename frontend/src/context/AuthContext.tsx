@@ -16,6 +16,7 @@ import { authService } from "@/services/auth.service";
 import { setRefreshHandler, setUnauthorizedHandler } from "@/lib/api-client";
 import { extractErrorMessage } from "@/utils/api-error";
 import { useAppToast } from "@/hooks/useAppToast";
+import { getFirstAccessibleAdminRoute } from "@/utils/access";
 
 type AuthContextValue = {
   user: AuthUser | null;
@@ -78,7 +79,7 @@ export const AuthProvider = ({ children }: PropsWithChildren) => {
       setUser(response.data.user);
       hasAnnouncedExpiry.current = false;
       toast.success(response.message);
-      navigate(APP_ROUTES.ADMIN_DASHBOARD, { replace: true });
+      navigate(getFirstAccessibleAdminRoute(response.data.user), { replace: true });
     },
     [navigate, toast]
   );

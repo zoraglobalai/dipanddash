@@ -232,6 +232,12 @@ export const closingReportListSchema = z.object({
   })
 });
 
+export const reopenClosingReportSchema = z.object({
+  params: z.object({
+    id: z.string().uuid("Invalid closing report id")
+  })
+});
+
 export const stockAuditSchema = z.object({
   query: z.object({
     dateFrom: dateLikeSchema.optional(),

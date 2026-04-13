@@ -2,6 +2,8 @@ import { apiClient } from "@/lib/api-client";
 import type { ApiSuccess } from "@/types/api";
 import type {
   CreatePurchaseOrderInput,
+  ProductBulkImportResult,
+  PurchaseBulkImportResult,
   ProcurementMetaResponse,
   ProcurementStatsResponse,
   ProcurementUnitsResponse,
@@ -66,9 +68,7 @@ export const procurementService = {
     sku?: string;
     packSize?: string;
     unit: string;
-    currentStock: number;
     minStock: number;
-    purchaseUnitPrice: number;
     defaultSupplierId?: string | null;
     isActive?: boolean;
   }) => {
@@ -84,9 +84,7 @@ export const procurementService = {
       sku?: string;
       packSize?: string;
       unit?: string;
-      currentStock?: number;
       minStock?: number;
-      purchaseUnitPrice?: number;
       defaultSupplierId?: string | null;
       isActive?: boolean;
     }
@@ -147,6 +145,46 @@ export const procurementService = {
 
     const response = await apiClient.post<ApiSuccess<{ imageUrl: string; fileName: string }>>(
       "/procurement/purchase-orders/upload-invoice",
+      formData,
+      {
+        headers: {
+          "Content-Type": "multipart/form-data"
+        }
+      }
+    );
+    return response.data;
+  },
+  downloadPurchaseBulkTemplate: async () => {
+    return apiClient.get<Blob>("/procurement/purchase-orders/bulk/template", {
+      responseType: "blob"
+    });
+  },
+  importPurchaseBulkCsv: async (file: File) => {
+    const formData = new FormData();
+    formData.append("file", file);
+
+    const response = await apiClient.post<ApiSuccess<PurchaseBulkImportResult>>(
+      "/procurement/purchase-orders/bulk/import",
+      formData,
+      {
+        headers: {
+          "Content-Type": "multipart/form-data"
+        }
+      }
+    );
+    return response.data;
+  },
+  downloadProductBulkTemplate: async () => {
+    return apiClient.get<Blob>("/procurement/products/bulk/template", {
+      responseType: "blob"
+    });
+  },
+  importProductBulkCsv: async (file: File) => {
+    const formData = new FormData();
+    formData.append("file", file);
+
+    const response = await apiClient.post<ApiSuccess<ProductBulkImportResult>>(
+      "/procurement/products/bulk/import",
       formData,
       {
         headers: {

@@ -11,7 +11,7 @@ const router = Router();
 const outletTransfersController = new OutletTransfersController();
 
 router.use(authenticate);
-router.use(authorizeRoles(UserRole.ADMIN, UserRole.MANAGER, UserRole.STAFF, UserRole.SNOOKER_STAFF));
+router.use(authorizeRoles(UserRole.ADMIN, UserRole.MANAGER, UserRole.STAFF));
 
 router.get("/options", validateRequest(transferOptionsSchema), asyncHandler(outletTransfersController.getOptions));
 router.get("/records", validateRequest(transferListSchema), asyncHandler(outletTransfersController.listTransfers));

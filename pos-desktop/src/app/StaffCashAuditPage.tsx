@@ -95,23 +95,14 @@ export const StaffCashAuditPage = () => {
     return Number(total.toFixed(2));
   }, [counts]);
 
-  const expectedCashAmount = toMoneyAmount(expectedBreakdown?.expectedCashAmount ?? 0);
-  const expectedCardAmount = toMoneyAmount(expectedBreakdown?.expectedCardAmount ?? 0);
-  const expectedUpiAmount = toMoneyAmount(expectedBreakdown?.expectedUpiAmount ?? 0);
-  const expectedTotalAmount = toMoneyAmount(expectedCashAmount + expectedCardAmount + expectedUpiAmount);
+  const systemCardAmount = toMoneyAmount(expectedBreakdown?.expectedCardAmount ?? 0);
+  const systemUpiAmount = toMoneyAmount(expectedBreakdown?.expectedUpiAmount ?? 0);
 
   const enteredCashTakenAmount = toNonNegativeAmount(staffCashTakenAmount);
-  const enteredCardSafeAmount = expectedCardAmount;
-  const enteredUpiSafeAmount = expectedUpiAmount;
+  const enteredCardSafeAmount = systemCardAmount;
+  const enteredUpiSafeAmount = systemUpiAmount;
   const enteredCashAmount = toMoneyAmount(totalCountedAmount + enteredCashTakenAmount);
   const enteredTotalAmount = toMoneyAmount(enteredCashAmount + enteredCardSafeAmount + enteredUpiSafeAmount);
-  const differenceCashAmount = toMoneyAmount(enteredCashAmount - expectedCashAmount);
-  const differenceCardAmount = toMoneyAmount(enteredCardSafeAmount - expectedCardAmount);
-  const differenceUpiAmount = toMoneyAmount(enteredUpiSafeAmount - expectedUpiAmount);
-  const differenceTotalAmount = toMoneyAmount(enteredTotalAmount - expectedTotalAmount);
-  const excessAmount = Math.max(differenceTotalAmount, 0);
-  const hasDifference = differenceTotalAmount !== 0;
-  const hasExcess = excessAmount > 0;
 
   useEffect(() => {
     void refreshStatus();
@@ -135,14 +126,6 @@ export const StaffCashAuditPage = () => {
       toast({
         status: "warning",
         title: "Cash taken cannot be negative"
-      });
-      return;
-    }
-
-    if (hasDifference && !note.trim()) {
-      toast({
-        status: "warning",
-        title: hasExcess ? "Reason note is required for excess amount" : "Reason note is required for difference"
       });
       return;
     }
@@ -223,43 +206,8 @@ export const StaffCashAuditPage = () => {
           Cash Audit Entry
         </Text>
         <Text color="#6D584E" fontSize="sm" mb={4}>
-          Denominations are entered manually; card and UPI are auto-filled from system totals.
+          Enter denomination counts and cash taken; card and UPI are shown from system totals.
         </Text>
-
-        <SimpleGrid columns={{ base: 1, md: 4 }} spacing={3} mb={4}>
-          <Box p={3} borderRadius="10px" border="1px solid rgba(132, 79, 52, 0.2)" bg="#FFF9EE">
-            <Text fontSize="xs" color="#705B52" fontWeight={700}>
-              Expected Cash
-            </Text>
-            <Text fontSize="lg" fontWeight={900} color="#2A1A14">
-              {loadingExpected ? "..." : formatCurrency(expectedCashAmount)}
-            </Text>
-          </Box>
-          <Box p={3} borderRadius="10px" border="1px solid rgba(132, 79, 52, 0.2)" bg="#FFF9EE">
-            <Text fontSize="xs" color="#705B52" fontWeight={700}>
-              Expected Card
-            </Text>
-            <Text fontSize="lg" fontWeight={900} color="#2A1A14">
-              {loadingExpected ? "..." : formatCurrency(expectedCardAmount)}
-            </Text>
-          </Box>
-          <Box p={3} borderRadius="10px" border="1px solid rgba(132, 79, 52, 0.2)" bg="#FFF9EE">
-            <Text fontSize="xs" color="#705B52" fontWeight={700}>
-              Expected UPI
-            </Text>
-            <Text fontSize="lg" fontWeight={900} color="#2A1A14">
-              {loadingExpected ? "..." : formatCurrency(expectedUpiAmount)}
-            </Text>
-          </Box>
-          <Box p={3} borderRadius="10px" border="1px solid rgba(132, 79, 52, 0.2)" bg="#FFF9EE">
-            <Text fontSize="xs" color="#705B52" fontWeight={700}>
-              Expected Total
-            </Text>
-            <Text fontSize="lg" fontWeight={900} color="#2A1A14">
-              {loadingExpected ? "..." : formatCurrency(expectedTotalAmount)}
-            </Text>
-          </Box>
-        </SimpleGrid>
 
         <SimpleGrid columns={{ base: 2, md: 3, xl: 5 }} spacing={3}>
           {CASH_AUDIT_DENOMINATIONS.map((denomination) => (
@@ -293,7 +241,7 @@ export const StaffCashAuditPage = () => {
             />
           </FormControl>
           <FormControl>
-            <FormLabel fontWeight={700}>Entered Card Amount</FormLabel>
+            <FormLabel fontWeight={700}>System Card Amount</FormLabel>
             <Input
               value={enteredCardSafeAmount > 0 ? String(enteredCardSafeAmount) : ""}
               isReadOnly
@@ -301,7 +249,7 @@ export const StaffCashAuditPage = () => {
             />
           </FormControl>
           <FormControl>
-            <FormLabel fontWeight={700}>Entered UPI Amount</FormLabel>
+            <FormLabel fontWeight={700}>System UPI Amount</FormLabel>
             <Input
               value={enteredUpiSafeAmount > 0 ? String(enteredUpiSafeAmount) : ""}
               isReadOnly
@@ -320,60 +268,33 @@ export const StaffCashAuditPage = () => {
         </SimpleGrid>
 
         <FormControl mt={4}>
-          <FormLabel fontWeight={700}>{hasDifference ? "Reason Note (Required)" : "Note (Optional)"}</FormLabel>
-          <Textarea
-            value={note}
-            onChange={(event) => setNote(event.target.value)}
-            placeholder={
-              hasExcess
-                ? "Reason for excess amount (e.g., previous shift carry / extra collection)"
-                : hasDifference
-                  ? "Reason for difference"
-                  : "Shift cash note"
-            }
-            rows={3}
-          />
+          <FormLabel fontWeight={700}>Note (Optional)</FormLabel>
+          <Textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="Shift cash note" rows={3} />
         </FormControl>
 
-        <SimpleGrid mt={4} columns={{ base: 1, xl: 2 }} spacing={3}>
+        <SimpleGrid mt={4} columns={{ base: 1, xl: 1 }} spacing={3}>
           <Box p={3} borderRadius="10px" border="1px solid rgba(132, 79, 52, 0.2)" bg="rgba(255, 249, 238, 0.75)">
             <Text color="#705B52" fontSize="sm" fontWeight={700}>
               Entered Amounts
             </Text>
             <Text mt={1} fontSize="lg" fontWeight={800} color="#2A1A14">
-              Cash: {formatCurrency(enteredCashAmount)}
+              Counted Cash: {formatCurrency(totalCountedAmount)}
             </Text>
             <Text fontSize="lg" fontWeight={800} color="#2A1A14">
-              Card: {formatCurrency(enteredCardSafeAmount)}
+              Staff Cash Taken: {formatCurrency(enteredCashTakenAmount)}
             </Text>
             <Text fontSize="lg" fontWeight={800} color="#2A1A14">
-              UPI: {formatCurrency(enteredUpiSafeAmount)}
+              Total Cash Entered: {formatCurrency(enteredCashAmount)}
+            </Text>
+            <Text fontSize="lg" fontWeight={800} color="#2A1A14">
+              System Card: {formatCurrency(enteredCardSafeAmount)}
+            </Text>
+            <Text fontSize="lg" fontWeight={800} color="#2A1A14">
+              System UPI: {formatCurrency(enteredUpiSafeAmount)}
             </Text>
             <Text mt={2} fontSize="2xl" fontWeight={900} color="#2A1A14">
-              Total: {formatCurrency(enteredTotalAmount)}
+              Grand Total Entered: {formatCurrency(enteredTotalAmount)}
             </Text>
-          </Box>
-          <Box p={3} borderRadius="10px" border="1px solid rgba(132, 79, 52, 0.2)" bg="rgba(255, 249, 238, 0.75)">
-            <Text color="#705B52" fontSize="sm" fontWeight={700}>
-              Difference (Entered - Expected)
-            </Text>
-            <Text mt={1} fontSize="lg" fontWeight={800} color="#2A1A14">
-              Cash: {formatCurrency(differenceCashAmount)}
-            </Text>
-            <Text fontSize="lg" fontWeight={800} color="#2A1A14">
-              Card: {formatCurrency(differenceCardAmount)}
-            </Text>
-            <Text fontSize="lg" fontWeight={800} color="#2A1A14">
-              UPI: {formatCurrency(differenceUpiAmount)}
-            </Text>
-            <Text mt={2} fontSize="2xl" fontWeight={900} color={differenceTotalAmount >= 0 ? "#177245" : "#A32626"}>
-              Total: {formatCurrency(differenceTotalAmount)}
-            </Text>
-            {hasExcess ? (
-              <Text mt={1} fontSize="sm" fontWeight={700} color="#177245">
-                Excess Amount: {formatCurrency(excessAmount)}
-              </Text>
-            ) : null}
           </Box>
         </SimpleGrid>
 

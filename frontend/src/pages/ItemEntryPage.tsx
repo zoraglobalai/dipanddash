@@ -4,6 +4,7 @@ import {
   FormLabel,
   HStack,
   Image,
+  Input,
   Select,
   SimpleGrid,
   Switch,
@@ -16,8 +17,8 @@ import {
   VStack,
   useDisclosure
 } from "@chakra-ui/react";
-import { Edit2, Plus, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { Download, Edit2, Plus, Trash2, Upload } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from "react";
 
 import logo from "@/assets/logo.png";
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
@@ -58,6 +59,21 @@ const defaultPagination: ItemPagination = {
   limit: 5,
   total: 0,
   totalPages: 1
+};
+
+const extractFileNameFromDisposition = (contentDisposition?: string | null) => {
+  if (!contentDisposition) {
+    return null;
+  }
+  const encodedMatch = contentDisposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (encodedMatch?.[1]) {
+    return decodeURIComponent(encodedMatch[1]);
+  }
+  const plainMatch = contentDisposition.match(/filename="?([^";]+)"?/i);
+  if (plainMatch?.[1]) {
+    return plainMatch[1];
+  }
+  return null;
 };
 
 const PaginationControls = ({
@@ -136,10 +152,13 @@ export const ItemEntryPage = () => {
   const [itemPage, setItemPage] = useState(1);
   const [itemLimit, setItemLimit] = useState(5);
   const [itemMutationLoading, setItemMutationLoading] = useState(false);
+  const [itemBulkTemplateLoading, setItemBulkTemplateLoading] = useState(false);
+  const [itemBulkUploadLoading, setItemBulkUploadLoading] = useState(false);
   const [selectedItem, setSelectedItem] = useState<ItemDetail | null>(null);
   const [selectedItemRow, setSelectedItemRow] = useState<ItemListItem | null>(null);
   const itemModal = useDisclosure();
   const deleteItemDialog = useDisclosure();
+  const itemBulkUploadInputRef = useRef<HTMLInputElement | null>(null);
 
   const [addOnRows, setAddOnRows] = useState<AddOnListItem[]>([]);
   const [addOnPagination, setAddOnPagination] = useState<ItemPagination>(defaultPagination);
@@ -315,6 +334,64 @@ export const ItemEntryPage = () => {
   const refreshAll = useCallback(async () => {
     await Promise.all([fetchMeta(), fetchCategories(), fetchItems(), fetchAddOns(), fetchCombos(), fetchComboItemOptions()]);
   }, [fetchAddOns, fetchCategories, fetchComboItemOptions, fetchCombos, fetchItems, fetchMeta]);
+
+  const openItemBulkUploadPicker = useCallback(() => {
+    itemBulkUploadInputRef.current?.click();
+  }, []);
+
+  const handleDownloadItemBulkTemplate = useCallback(async () => {
+    setItemBulkTemplateLoading(true);
+    try {
+      const response = await itemsService.downloadBulkTemplate();
+      const fileName =
+        extractFileNameFromDisposition(response.headers["content-disposition"]) ?? "item_bulk_template.csv";
+      const blob = new Blob([response.data], {
+        type: response.headers["content-type"] ?? "text/csv;charset=utf-8;"
+      });
+      const url = window.URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = fileName;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.URL.revokeObjectURL(url);
+      toast.success("Item bulk template downloaded.");
+    } catch (error) {
+      toast.error(extractErrorMessage(error, "Unable to download item template."));
+    } finally {
+      setItemBulkTemplateLoading(false);
+    }
+  }, [toast]);
+
+  const handleItemBulkFileSelect = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const selectedFile = event.target.files?.[0];
+      event.target.value = "";
+      if (!selectedFile) {
+        return;
+      }
+      if (!selectedFile.name.toLowerCase().endsWith(".csv")) {
+        toast.warning("Please upload a CSV file. You can export your Excel sheet as CSV.");
+        return;
+      }
+
+      setItemBulkUploadLoading(true);
+      try {
+        const response = await itemsService.bulkImportItems(selectedFile);
+        const summary = response.data;
+        toast.success(
+          `Item bulk import completed. Added ${summary.insertedItems} items, added categories ${summary.insertedCategories}, skipped existing ${summary.skippedExistingItems}, duplicate rows ${summary.skippedDuplicateRows}, invalid rows ${summary.invalidRows}.`
+        );
+        await Promise.all([fetchItems(), fetchCategories(), fetchMeta(), fetchComboItemOptions(), fetchCombos()]);
+      } catch (error) {
+        toast.error(extractErrorMessage(error, "Unable to complete item bulk upload."));
+      } finally {
+        setItemBulkUploadLoading(false);
+      }
+    },
+    [fetchCategories, fetchComboItemOptions, fetchCombos, fetchItems, fetchMeta, toast]
+  );
 
   const handleCategorySubmit = useCallback(
     async (values: { name: string; description?: string }) => {
@@ -1029,9 +1106,46 @@ export const ItemEntryPage = () => {
           </TabPanel>
 
           <TabPanel px={0}>
+            <Input
+              ref={itemBulkUploadInputRef}
+              type="file"
+              accept=".csv,text/csv"
+              display="none"
+              onChange={(event) => void handleItemBulkFileSelect(event)}
+            />
+
+            <HStack justify="flex-end" spacing={2} flexWrap={{ base: "wrap", md: "nowrap" }} mb={4}>
+              <AppButton
+                variant="outline"
+                leftIcon={<Download size={16} />}
+                onClick={() => void handleDownloadItemBulkTemplate()}
+                isLoading={itemBulkTemplateLoading}
+              >
+                Template
+              </AppButton>
+              <AppButton
+                variant="outline"
+                leftIcon={<Upload size={16} />}
+                onClick={openItemBulkUploadPicker}
+                isLoading={itemBulkUploadLoading}
+              >
+                Upload CSV
+              </AppButton>
+              <AppButton
+                leftIcon={<Plus size={16} />}
+                isDisabled={!metaCategories.length || !metaIngredients.length}
+                onClick={() => {
+                  setSelectedItem(null);
+                  itemModal.onOpen();
+                }}
+              >
+                Add Item
+              </AppButton>
+            </HStack>
+
             <AppCard>
               <VStack spacing={4} align="stretch">
-                <SimpleGrid columns={{ base: 1, md: 4 }} spacing={4}>
+                <SimpleGrid columns={{ base: 1, md: 3 }} spacing={4}>
                   <AppInput
                     label="Search Item"
                     placeholder="Search by item name"
@@ -1064,18 +1178,6 @@ export const ItemEntryPage = () => {
                       <option value="20">20</option>
                     </Select>
                   </FormControl>
-                  <Box alignSelf="end">
-                    <AppButton
-                      leftIcon={<Plus size={16} />}
-                      isDisabled={!metaCategories.length || !metaIngredients.length}
-                      onClick={() => {
-                        setSelectedItem(null);
-                        itemModal.onOpen();
-                      }}
-                    >
-                      Add Item
-                    </AppButton>
-                  </Box>
                 </SimpleGrid>
 
                 {itemLoading ? (

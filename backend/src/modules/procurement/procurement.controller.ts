@@ -8,9 +8,7 @@ import { ProcurementService } from "./procurement.service";
 import { procurementUnitsData } from "./procurement.validation";
 
 type UploadRequest = Request & {
-  file?: {
-    filename: string;
-  };
+  file?: Express.Multer.File;
 };
 
 const parsePositiveInt = (value: unknown, fallback: number) => {
@@ -46,6 +44,42 @@ export class ProcurementController {
       imageUrl,
       fileName: req.file.filename
     });
+  };
+
+  downloadPurchaseBulkTemplate = async (_req: Request, res: Response): Promise<Response> => {
+    const template = this.procurementService.getPurchaseBulkImportTemplate();
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${template.fileName}"`);
+    return res.status(StatusCodes.OK).send(template.content);
+  };
+
+  bulkImportPurchaseOrder = async (req: UploadRequest, res: Response): Promise<Response> => {
+    if (!req.file) {
+      throw new AppError(StatusCodes.BAD_REQUEST, "Please choose a CSV file to upload.");
+    }
+    const userId = req.user?.id;
+    if (!userId) {
+      throw new AppError(StatusCodes.UNAUTHORIZED, AUTH_MESSAGES.UNAUTHORIZED);
+    }
+
+    const data = await this.procurementService.bulkImportPurchaseOrderFromCsv(req.file.buffer, userId);
+    return sendSuccess(res, StatusCodes.CREATED, "Purchase order imported successfully", data);
+  };
+
+  downloadProductBulkTemplate = async (_req: Request, res: Response): Promise<Response> => {
+    const template = this.procurementService.getProductBulkImportTemplate();
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${template.fileName}"`);
+    return res.status(StatusCodes.OK).send(template.content);
+  };
+
+  bulkImportProducts = async (req: UploadRequest, res: Response): Promise<Response> => {
+    if (!req.file) {
+      throw new AppError(StatusCodes.BAD_REQUEST, "Please choose a CSV file to upload.");
+    }
+
+    const data = await this.procurementService.bulkImportProductsFromCsv(req.file.buffer);
+    return sendSuccess(res, StatusCodes.CREATED, "Products imported successfully", data);
   };
 
   listSuppliers = async (req: Request, res: Response): Promise<Response> => {

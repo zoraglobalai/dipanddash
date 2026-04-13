@@ -4,9 +4,12 @@ import { UserRole } from "../../constants/roles";
 import { REPORT_KEYS } from "../reports/reports.constants";
 import { STAFF_ASSIGNABLE_MODULE_KEYS } from "../users/user-access.constants";
 
-const restrictedRoleSchema = z
+const assignableRoleSchema = z
   .nativeEnum(UserRole)
-  .refine((role) => role !== UserRole.ADMIN, "Admin role cannot be assigned in staff management");
+  .refine(
+    (role) => role === UserRole.ADMIN || role === UserRole.STAFF || role === UserRole.SNOOKER_STAFF,
+    "Role must be Admin, Staff or Snooker Staff."
+  );
 
 export const createStaffSchema = z.object({
   body: z.object({
@@ -30,7 +33,7 @@ export const createStaffSchema = z.object({
       .email("Please provide a valid email address")
       .optional()
       .or(z.literal("")),
-    role: restrictedRoleSchema,
+    role: assignableRoleSchema,
     assignedReports: z.array(z.enum(REPORT_KEYS)).optional().default([]),
     assignedModules: z.array(z.enum(STAFF_ASSIGNABLE_MODULE_KEYS)).optional().default([])
   })
@@ -54,7 +57,7 @@ export const updateStaffSchema = z.object({
         .email("Please provide a valid email address")
         .optional()
         .or(z.literal("")),
-      role: restrictedRoleSchema.optional(),
+      role: assignableRoleSchema.optional(),
       assignedReports: z.array(z.enum(REPORT_KEYS)).optional(),
       assignedModules: z.array(z.enum(STAFF_ASSIGNABLE_MODULE_KEYS)).optional()
     })

@@ -3,6 +3,7 @@ import { Router } from "express";
 import { UserRole } from "../../constants/roles";
 import { asyncHandler } from "../../middlewares/async-handler";
 import { authenticate, authorizeRoles } from "../../middlewares/auth.middleware";
+import { authorizeAnyModuleAccess } from "../../middlewares/module-access.middleware";
 import { validateRequest } from "../../middlewares/validate.middleware";
 import { AttendanceController } from "./attendance.controller";
 import {
@@ -22,6 +23,7 @@ router.get("/my-records", validateRequest(attendanceQuerySchema), asyncHandler(a
 router.get(
   "/admin-records",
   authorizeRoles(UserRole.ADMIN),
+  authorizeAnyModuleAccess("attendance", "dashboard"),
   validateRequest(attendanceAdminQuerySchema),
   asyncHandler(attendanceController.getAdminRecords)
 );

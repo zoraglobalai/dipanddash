@@ -1,5 +1,5 @@
 import type { ApiSuccess } from "@/types/api";
-import type { AuthUser, LoginPayload } from "@/types/auth";
+import type { AuthUser, ChangePasswordPayload, LoginPayload } from "@/types/auth";
 import { apiClient } from "@/lib/api-client";
 
 export const authService = {
@@ -56,6 +56,10 @@ export const authService = {
   },
   me: async () => {
     const response = await apiClient.get<ApiSuccess<{ user: AuthUser }>>("/auth/me");
+    return response.data;
+  },
+  changePassword: async (payload: ChangePasswordPayload) => {
+    const response = await apiClient.post<ApiSuccess<null>>("/auth/change-password", payload);
     return response.data;
   }
 };

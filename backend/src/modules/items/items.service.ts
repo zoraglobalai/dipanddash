@@ -1,10 +1,10 @@
-import { In } from "typeorm";
+import { EntityManager, In } from "typeorm";
 
 import { AppDataSource } from "../../database/data-source";
 import { AppError } from "../../errors/app-error";
 import { Ingredient } from "../ingredients/ingredient.entity";
 import { IngredientStock } from "../ingredients/ingredient-stock.entity";
-import { type IngredientUnit } from "../ingredients/ingredients.constants";
+import { INGREDIENT_UNITS, type IngredientUnit } from "../ingredients/ingredients.constants";
 import { AddOn } from "./add-on.entity";
 import { AddOnIngredient } from "./add-on-ingredient.entity";
 import { Combo } from "./combo.entity";
@@ -52,6 +52,67 @@ type ComboPayloadItem = {
   quantity: number;
 };
 
+type BulkItemImportRow = {
+  rowNumber: number;
+  categoryName: string;
+  categoryDescription: string | null;
+  itemName: string;
+  sellingPrice: number;
+  gstPercentage: number;
+  note: string | null;
+  ingredientName: string;
+  ingredientQuantity: number;
+  ingredientUnit: IngredientUnit;
+};
+
+type BulkItemGroupedRecipeRow = {
+  rowNumber: number;
+  ingredientName: string;
+  ingredientKey: string;
+  quantity: number;
+  unit: IngredientUnit;
+};
+
+type BulkItemGroupedRow = {
+  itemKey: string;
+  itemName: string;
+  categoryKey: string;
+  categoryName: string;
+  categoryDescription: string | null;
+  sellingPrice: number;
+  gstPercentage: number;
+  note: string | null;
+  recipeRows: BulkItemGroupedRecipeRow[];
+};
+
+type BulkItemImportSummary = {
+  totalRows: number;
+  parsedRows: number;
+  parsedItems: number;
+  insertedCategories: number;
+  insertedItems: number;
+  insertedRecipeRows: number;
+  skippedExistingItems: number;
+  skippedDuplicateRows: number;
+  invalidRows: number;
+  invalidRowDetails: Array<{ rowNumber: number; reason: string }>;
+};
+
+const BULK_ITEM_TEMPLATE_HEADERS = [
+  "category_name",
+  "category_description",
+  "item_name",
+  "selling_price",
+  "gst_percentage",
+  "note",
+  "ingredient_name",
+  "ingredient_quantity",
+  "ingredient_unit"
+] as const;
+
+const VALID_INGREDIENT_UNIT_SET = new Set<string>(INGREDIENT_UNITS.map((unit) => unit.toLowerCase()));
+const MAX_BULK_INVALID_ROW_DETAILS = 40;
+
 const getNumericValue = (value: string | number | null | undefined) => {
   if (value === null || value === undefined) {
     return 0;
@@ -78,6 +139,110 @@ const cleanOptionalText = (value?: string) => {
 
   const trimmed = value.trim();
   return trimmed.length ? trimmed : null;
+};
+
+const chunkArray = <T>(values: T[], chunkSize = 500) => {
+  if (chunkSize <= 0) {
+    return [values];
+  }
+
+  const chunks: T[][] = [];
+  for (let index = 0; index < values.length; index += chunkSize) {
+    chunks.push(values.slice(index, index + chunkSize));
+  }
+  return chunks;
+};
+
+const normalizeName = (value: string) => value.trim().replace(/\s+/g, " ");
+const normalizeLookupKey = (value: string) => normalizeName(value).toLowerCase();
+const normalizeHeaderKey = (value: string) => value.trim().replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+
+const escapeCsvValue = (value: string | number | null | undefined) => {
+  const text = value === null || value === undefined ? "" : String(value);
+  return `"${text.replace(/"/g, "\"\"")}"`;
+};
+
+const parseCsvRows = (content: string) => {
+  const rows: string[][] = [];
+  let currentRow: string[] = [];
+  let currentCell = "";
+  let inQuotes = false;
+
+  for (let index = 0; index < content.length; index += 1) {
+    const char = content[index];
+
+    if (char === "\"") {
+      const nextChar = content[index + 1];
+      if (inQuotes && nextChar === "\"") {
+        currentCell += "\"";
+        index += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+
+    if (!inQuotes && char === ",") {
+      currentRow.push(currentCell);
+      currentCell = "";
+      continue;
+    }
+
+    if (!inQuotes && (char === "\n" || char === "\r")) {
+      if (char === "\r" && content[index + 1] === "\n") {
+        index += 1;
+      }
+      currentRow.push(currentCell);
+      rows.push(currentRow);
+      currentRow = [];
+      currentCell = "";
+      continue;
+    }
+
+    currentCell += char;
+  }
+
+  if (currentCell.length > 0 || currentRow.length > 0) {
+    currentRow.push(currentCell);
+    rows.push(currentRow);
+  }
+
+  return rows;
+};
+
+const parseCsvNonNegativeNumber = (
+  value: string | undefined,
+  fallback: number,
+  fieldLabel: string,
+  rowNumber: number
+) => {
+  if (!value || !value.trim()) {
+    return fallback;
+  }
+
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    throw new AppError(422, `Row ${rowNumber}: ${fieldLabel} must be a valid number.`);
+  }
+  if (parsed < 0) {
+    throw new AppError(422, `Row ${rowNumber}: ${fieldLabel} cannot be negative.`);
+  }
+  return parsed;
+};
+
+const parseCsvPositiveNumber = (value: string | undefined, fieldLabel: string, rowNumber: number) => {
+  if (!value || !value.trim()) {
+    throw new AppError(422, `Row ${rowNumber}: ${fieldLabel} is required.`);
+  }
+
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    throw new AppError(422, `Row ${rowNumber}: ${fieldLabel} must be a valid number.`);
+  }
+  if (parsed <= 0) {
+    throw new AppError(422, `Row ${rowNumber}: ${fieldLabel} must be greater than zero.`);
+  }
+  return parsed;
 };
 
 const mapDuplicateIds = (ids: string[]) => {
@@ -239,6 +404,629 @@ export class ItemsService {
       createdAt: category.createdAt,
       updatedAt: category.updatedAt
     };
+  }
+
+  getItemBulkImportTemplate() {
+    const rows = [
+      [...BULK_ITEM_TEMPLATE_HEADERS],
+      [
+        "Juice",
+        "Fresh juice menu",
+        "Lemon Juice",
+        "99",
+        "2",
+        "Fresh and tangy",
+        "Lemon",
+        "1",
+        "count"
+      ],
+      ["Juice", "Fresh juice menu", "Lemon Juice", "99", "2", "Fresh and tangy", "Sugar", "20", "g"],
+      ["Burger", "", "Chicken Burger", "149", "5", "", "Chicken Patty", "1", "count"],
+      ["Burger", "", "Chicken Burger", "149", "5", "", "Burger Bun", "1", "count"]
+    ];
+
+    const csv = rows.map((row) => row.map((cell) => escapeCsvValue(cell)).join(",")).join("\n");
+    return {
+      fileName: "item_bulk_template.csv",
+      content: `\uFEFF${csv}`
+    };
+  }
+
+  private parseBulkItemsFromCsv(csvBuffer: Buffer) {
+    const textContent = csvBuffer.toString("utf-8").replace(/^\uFEFF/, "").trim();
+    if (!textContent) {
+      throw new AppError(422, "Uploaded CSV file is empty.");
+    }
+
+    const parsedCsvRows = parseCsvRows(textContent);
+    if (!parsedCsvRows.length) {
+      throw new AppError(422, "Uploaded CSV file is empty.");
+    }
+
+    const headerRow = parsedCsvRows[0].map((cell) => cell.trim());
+    const headerAliases = new Map<string, string>([
+      ["categoryname", "category_name"],
+      ["category", "category_name"],
+      ["categorydescription", "category_description"],
+      ["itemname", "item_name"],
+      ["item", "item_name"],
+      ["sellingprice", "selling_price"],
+      ["price", "selling_price"],
+      ["gstpercentage", "gst_percentage"],
+      ["gstpercent", "gst_percentage"],
+      ["gst", "gst_percentage"],
+      ["note", "note"],
+      ["ingredientname", "ingredient_name"],
+      ["ingredient", "ingredient_name"],
+      ["ingredientquantity", "ingredient_quantity"],
+      ["quantity", "ingredient_quantity"],
+      ["qty", "ingredient_quantity"],
+      ["ingredientunit", "ingredient_unit"],
+      ["unit", "ingredient_unit"]
+    ]);
+
+    const headerIndexMap = new Map<string, number>();
+    headerRow.forEach((header, index) => {
+      const alias = headerAliases.get(normalizeHeaderKey(header));
+      if (alias) {
+        headerIndexMap.set(alias, index);
+      }
+    });
+
+    const requiredHeaders: Array<(typeof BULK_ITEM_TEMPLATE_HEADERS)[number]> = [
+      "category_name",
+      "item_name",
+      "ingredient_name",
+      "ingredient_quantity",
+      "ingredient_unit"
+    ];
+    const missingHeaders = requiredHeaders.filter((header) => !headerIndexMap.has(header));
+    if (missingHeaders.length) {
+      throw new AppError(
+        422,
+        `Missing required column(s): ${missingHeaders.join(", ")}. Please use the downloadable template.`
+      );
+    }
+
+    const readValue = (row: string[], header: (typeof BULK_ITEM_TEMPLATE_HEADERS)[number]) => {
+      const columnIndex = headerIndexMap.get(header);
+      if (columnIndex === undefined) {
+        return undefined;
+      }
+      return row[columnIndex];
+    };
+
+    const nonEmptyRows = parsedCsvRows
+      .slice(1)
+      .map((row, index) => ({ row, rowNumber: index + 2 }))
+      .filter(({ row }) => row.some((cell) => cell.trim().length > 0));
+
+    const invalidRowDetails: Array<{ rowNumber: number; reason: string }> = [];
+    let invalidRows = 0;
+    let skippedDuplicateRows = 0;
+
+    const pushInvalidRow = (rowNumber: number, reason: string) => {
+      invalidRows += 1;
+      if (invalidRowDetails.length < MAX_BULK_INVALID_ROW_DETAILS) {
+        invalidRowDetails.push({ rowNumber, reason });
+      }
+    };
+
+    const validRows: BulkItemImportRow[] = [];
+    nonEmptyRows.forEach(({ row, rowNumber }) => {
+      try {
+        const categoryName = normalizeName(readValue(row, "category_name") ?? "");
+        const itemName = normalizeName(readValue(row, "item_name") ?? "");
+        const ingredientName = normalizeName(readValue(row, "ingredient_name") ?? "");
+        const ingredientUnitRaw = normalizeName(readValue(row, "ingredient_unit") ?? "").toLowerCase();
+        const ingredientQuantity = parseCsvPositiveNumber(
+          readValue(row, "ingredient_quantity"),
+          "Ingredient quantity",
+          rowNumber
+        );
+        const sellingPrice = parseCsvNonNegativeNumber(
+          readValue(row, "selling_price"),
+          0,
+          "Selling price",
+          rowNumber
+        );
+        const gstPercentage = parseCsvNonNegativeNumber(
+          readValue(row, "gst_percentage"),
+          0,
+          "GST percentage",
+          rowNumber
+        );
+        const noteRaw = readValue(row, "note");
+        const note = noteRaw ? normalizeName(noteRaw).slice(0, 500) || null : null;
+        const categoryDescriptionRaw = readValue(row, "category_description");
+        const categoryDescription = categoryDescriptionRaw
+          ? normalizeName(categoryDescriptionRaw).slice(0, 255) || null
+          : null;
+
+        if (categoryName.length < 2 || categoryName.length > 120) {
+          throw new AppError(422, "Category name must be between 2 and 120 characters.");
+        }
+        if (itemName.length < 2 || itemName.length > 160) {
+          throw new AppError(422, "Item name must be between 2 and 160 characters.");
+        }
+        if (ingredientName.length < 2 || ingredientName.length > 120) {
+          throw new AppError(422, "Ingredient name must be between 2 and 120 characters.");
+        }
+        if (!ingredientUnitRaw || !VALID_INGREDIENT_UNIT_SET.has(ingredientUnitRaw)) {
+          throw new AppError(422, "Ingredient unit is invalid.");
+        }
+
+        validRows.push({
+          rowNumber,
+          categoryName,
+          categoryDescription,
+          itemName,
+          sellingPrice: toMoney(sellingPrice),
+          gstPercentage: toMoney(gstPercentage),
+          note,
+          ingredientName,
+          ingredientQuantity: toFixed(ingredientQuantity),
+          ingredientUnit: ingredientUnitRaw as IngredientUnit
+        });
+      } catch (error) {
+        const reason =
+          error instanceof AppError ? error.message.replace(/^Row \d+:\s*/i, "") : "Row validation failed.";
+        pushInvalidRow(rowNumber, reason);
+      }
+    });
+
+    const itemMap = new Map<
+      string,
+      BulkItemGroupedRow & {
+        ingredientKeys: Set<string>;
+      }
+    >();
+
+    validRows.forEach((row) => {
+      const itemKey = normalizeLookupKey(row.itemName);
+      const categoryKey = normalizeLookupKey(row.categoryName);
+      const ingredientKey = normalizeLookupKey(row.ingredientName);
+
+      const existing = itemMap.get(itemKey);
+      if (!existing) {
+        itemMap.set(itemKey, {
+          itemKey,
+          itemName: row.itemName,
+          categoryKey,
+          categoryName: row.categoryName,
+          categoryDescription: row.categoryDescription,
+          sellingPrice: row.sellingPrice,
+          gstPercentage: row.gstPercentage,
+          note: row.note,
+          ingredientKeys: new Set([ingredientKey]),
+          recipeRows: [
+            {
+              rowNumber: row.rowNumber,
+              ingredientName: row.ingredientName,
+              ingredientKey,
+              quantity: row.ingredientQuantity,
+              unit: row.ingredientUnit
+            }
+          ]
+        });
+        return;
+      }
+
+      const isMismatch =
+        existing.categoryKey !== categoryKey ||
+        existing.sellingPrice !== row.sellingPrice ||
+        existing.gstPercentage !== row.gstPercentage ||
+        (existing.note ?? null) !== (row.note ?? null);
+
+      if (isMismatch) {
+        pushInvalidRow(
+          row.rowNumber,
+          "Rows for same item must have matching category, selling price, GST and note."
+        );
+        return;
+      }
+
+      if (existing.ingredientKeys.has(ingredientKey)) {
+        skippedDuplicateRows += 1;
+        return;
+      }
+
+      existing.ingredientKeys.add(ingredientKey);
+      existing.recipeRows.push({
+        rowNumber: row.rowNumber,
+        ingredientName: row.ingredientName,
+        ingredientKey,
+        quantity: row.ingredientQuantity,
+        unit: row.ingredientUnit
+      });
+    });
+
+    const groupedItems: BulkItemGroupedRow[] = Array.from(itemMap.values()).map((entry) => ({
+      itemKey: entry.itemKey,
+      itemName: entry.itemName,
+      categoryKey: entry.categoryKey,
+      categoryName: entry.categoryName,
+      categoryDescription: entry.categoryDescription,
+      sellingPrice: entry.sellingPrice,
+      gstPercentage: entry.gstPercentage,
+      note: entry.note,
+      recipeRows: entry.recipeRows
+    }));
+
+    return {
+      totalRows: nonEmptyRows.length,
+      parsedRows: groupedItems.reduce((sum, item) => sum + item.recipeRows.length, 0),
+      parsedItems: groupedItems.length,
+      groupedItems,
+      skippedDuplicateRows,
+      invalidRows,
+      invalidRowDetails
+    };
+  }
+
+  private async getCategoryMapByNameKeys(manager: EntityManager, categoryNameKeys: string[]) {
+    const categoryMap = new Map<string, { id: string; name: string; isActive: boolean }>();
+    if (!categoryNameKeys.length) {
+      return categoryMap;
+    }
+
+    for (const chunk of chunkArray(categoryNameKeys)) {
+      const rows = await manager
+        .getRepository(ItemCategory)
+        .createQueryBuilder("category")
+        .select("category.id", "id")
+        .addSelect("category.name", "name")
+        .addSelect("category.isActive", "isActive")
+        .where("LOWER(category.name) IN (:...nameKeys)", { nameKeys: chunk })
+        .getRawMany<{ id: string; name: string; isActive: boolean }>();
+
+      rows.forEach((row) => {
+        categoryMap.set(normalizeLookupKey(row.name), {
+          id: row.id,
+          name: row.name,
+          isActive: Boolean(row.isActive)
+        });
+      });
+    }
+
+    return categoryMap;
+  }
+
+  private async getExistingItemNameKeySet(manager: EntityManager, itemNameKeys: string[]) {
+    const existingItemNameKeySet = new Set<string>();
+    if (!itemNameKeys.length) {
+      return existingItemNameKeySet;
+    }
+
+    for (const chunk of chunkArray(itemNameKeys)) {
+      const rows = await manager
+        .getRepository(Item)
+        .createQueryBuilder("item")
+        .select("item.name", "name")
+        .where("LOWER(item.name) IN (:...itemNameKeys)", { itemNameKeys: chunk })
+        .getRawMany<{ name: string }>();
+
+      rows.forEach((row) => existingItemNameKeySet.add(normalizeLookupKey(row.name)));
+    }
+
+    return existingItemNameKeySet;
+  }
+
+  private async getIngredientMapByNameKeys(manager: EntityManager, ingredientNameKeys: string[]) {
+    const ingredientMap = new Map<
+      string,
+      { id: string; name: string; unit: IngredientUnit; perUnitPrice: number; isActive: boolean }
+    >();
+    if (!ingredientNameKeys.length) {
+      return ingredientMap;
+    }
+
+    for (const chunk of chunkArray(ingredientNameKeys)) {
+      const rows = await manager
+        .getRepository(Ingredient)
+        .createQueryBuilder("ingredient")
+        .select("ingredient.id", "id")
+        .addSelect("ingredient.name", "name")
+        .addSelect("ingredient.unit", "unit")
+        .addSelect("ingredient.perUnitPrice", "perUnitPrice")
+        .addSelect("ingredient.isActive", "isActive")
+        .where("LOWER(ingredient.name) IN (:...ingredientNameKeys)", { ingredientNameKeys: chunk })
+        .andWhere("ingredient.isActive = true")
+        .getRawMany<{
+          id: string;
+          name: string;
+          unit: IngredientUnit;
+          perUnitPrice: string | number;
+          isActive: boolean;
+        }>();
+
+      rows.forEach((row) => {
+        ingredientMap.set(normalizeLookupKey(row.name), {
+          id: row.id,
+          name: row.name,
+          unit: row.unit,
+          perUnitPrice: getNumericValue(row.perUnitPrice),
+          isActive: Boolean(row.isActive)
+        });
+      });
+    }
+
+    return ingredientMap;
+  }
+
+  async bulkImportItemsFromCsv(csvBuffer: Buffer): Promise<BulkItemImportSummary> {
+    const parsedCsv = this.parseBulkItemsFromCsv(csvBuffer);
+    if (!parsedCsv.groupedItems.length) {
+      return {
+        totalRows: parsedCsv.totalRows,
+        parsedRows: parsedCsv.parsedRows,
+        parsedItems: parsedCsv.parsedItems,
+        insertedCategories: 0,
+        insertedItems: 0,
+        insertedRecipeRows: 0,
+        skippedExistingItems: 0,
+        skippedDuplicateRows: parsedCsv.skippedDuplicateRows,
+        invalidRows: parsedCsv.invalidRows,
+        invalidRowDetails: parsedCsv.invalidRowDetails
+      };
+    }
+
+    return AppDataSource.transaction(async (manager) => {
+      const invalidRowDetails = [...parsedCsv.invalidRowDetails];
+      let invalidRows = parsedCsv.invalidRows;
+
+      const pushInvalidRow = (rowNumber: number, reason: string) => {
+        invalidRows += 1;
+        if (invalidRowDetails.length < MAX_BULK_INVALID_ROW_DETAILS) {
+          invalidRowDetails.push({ rowNumber, reason });
+        }
+      };
+
+      const categoryByKey = new Map<string, { name: string; description: string | null }>();
+      parsedCsv.groupedItems.forEach((row) => {
+        if (!categoryByKey.has(row.categoryKey)) {
+          categoryByKey.set(row.categoryKey, {
+            name: row.categoryName,
+            description: row.categoryDescription
+          });
+        }
+      });
+
+      const categoryNameKeys = Array.from(categoryByKey.keys());
+      const itemNameKeys = parsedCsv.groupedItems.map((row) => row.itemKey);
+      const ingredientNameKeys = Array.from(
+        new Set(parsedCsv.groupedItems.flatMap((item) => item.recipeRows.map((row) => row.ingredientKey)))
+      );
+
+      let categoryMap = await this.getCategoryMapByNameKeys(manager, categoryNameKeys);
+      const missingCategoryValues = categoryNameKeys
+        .filter((key) => !categoryMap.has(key))
+        .map((key) => {
+          const category = categoryByKey.get(key)!;
+          return {
+            name: category.name,
+            description: category.description,
+            isActive: true
+          };
+        });
+
+      let insertedCategories = 0;
+      if (missingCategoryValues.length) {
+        const categoryInsertResult = await manager
+          .createQueryBuilder()
+          .insert()
+          .into(ItemCategory)
+          .values(missingCategoryValues)
+          .orIgnore()
+          .execute();
+        insertedCategories = categoryInsertResult.identifiers.length;
+        categoryMap = await this.getCategoryMapByNameKeys(manager, categoryNameKeys);
+      }
+
+      const existingItemNameKeySet = await this.getExistingItemNameKeySet(manager, itemNameKeys);
+      const ingredientMap = await this.getIngredientMapByNameKeys(manager, ingredientNameKeys);
+
+      const ingredientIds = Array.from(new Set(Array.from(ingredientMap.values()).map((ingredient) => ingredient.id)));
+      const fallbackPriceMap = new Map(
+        Array.from(ingredientMap.values()).map((ingredient) => [ingredient.id, ingredient.perUnitPrice])
+      );
+      const latestPriceMap = await getLatestIngredientPurchasePriceMap(ingredientIds, fallbackPriceMap);
+
+      const itemsToInsert: Array<{
+        itemKey: string;
+        name: string;
+        categoryId: string;
+        sellingPrice: number;
+        gstPercentage: number;
+        note: string | null;
+        estimatedIngredientCost: number;
+        recipeRows: Array<{
+          ingredientId: string;
+          quantity: number;
+          unit: IngredientUnit;
+          normalizedQuantity: number;
+          costContribution: number;
+        }>;
+      }> = [];
+
+      let skippedExistingItems = 0;
+
+      parsedCsv.groupedItems.forEach((item) => {
+        if (existingItemNameKeySet.has(item.itemKey)) {
+          skippedExistingItems += 1;
+          return;
+        }
+
+        const category = categoryMap.get(item.categoryKey);
+        if (!category) {
+          item.recipeRows.forEach((row) => {
+            pushInvalidRow(row.rowNumber, `Category '${item.categoryName}' not found.`);
+          });
+          return;
+        }
+
+        const preparedRecipeRows: Array<{
+          ingredientId: string;
+          quantity: number;
+          unit: IngredientUnit;
+          normalizedQuantity: number;
+          costContribution: number;
+        }> = [];
+        let hasInvalidRecipeRow = false;
+        let totalEstimatedCost = 0;
+
+        item.recipeRows.forEach((recipeRow) => {
+          const ingredient = ingredientMap.get(recipeRow.ingredientKey);
+          if (!ingredient) {
+            hasInvalidRecipeRow = true;
+            pushInvalidRow(recipeRow.rowNumber, `Ingredient '${recipeRow.ingredientName}' not found or inactive.`);
+            return;
+          }
+
+          const normalizedQuantity = convertIngredientQuantity(recipeRow.quantity, recipeRow.unit, ingredient.unit);
+          if (normalizedQuantity === null) {
+            hasInvalidRecipeRow = true;
+            pushInvalidRow(
+              recipeRow.rowNumber,
+              `Ingredient unit '${recipeRow.unit}' is not compatible with '${ingredient.name}' base unit '${ingredient.unit}'.`
+            );
+            return;
+          }
+
+          const perUnitPrice = latestPriceMap.get(ingredient.id) ?? ingredient.perUnitPrice;
+          const costContribution = toFixed(normalizedQuantity * perUnitPrice);
+          totalEstimatedCost += costContribution;
+
+          preparedRecipeRows.push({
+            ingredientId: ingredient.id,
+            quantity: toFixed(recipeRow.quantity),
+            unit: recipeRow.unit,
+            normalizedQuantity: toFixed(normalizedQuantity, 6),
+            costContribution: toFixed(costContribution)
+          });
+        });
+
+        if (hasInvalidRecipeRow || !preparedRecipeRows.length) {
+          return;
+        }
+
+        itemsToInsert.push({
+          itemKey: item.itemKey,
+          name: item.itemName,
+          categoryId: category.id,
+          sellingPrice: toMoney(item.sellingPrice),
+          gstPercentage: toMoney(item.gstPercentage),
+          note: item.note,
+          estimatedIngredientCost: toFixed(totalEstimatedCost),
+          recipeRows: preparedRecipeRows
+        });
+        existingItemNameKeySet.add(item.itemKey);
+      });
+
+      if (!itemsToInsert.length) {
+        return {
+          totalRows: parsedCsv.totalRows,
+          parsedRows: parsedCsv.parsedRows,
+          parsedItems: parsedCsv.parsedItems,
+          insertedCategories,
+          insertedItems: 0,
+          insertedRecipeRows: 0,
+          skippedExistingItems,
+          skippedDuplicateRows: parsedCsv.skippedDuplicateRows,
+          invalidRows,
+          invalidRowDetails
+        };
+      }
+
+      const itemInsertResult = await manager
+        .createQueryBuilder()
+        .insert()
+        .into(Item)
+        .values(
+          itemsToInsert.map((item) => ({
+            name: item.name,
+            categoryId: item.categoryId,
+            sellingPrice: item.sellingPrice,
+            gstPercentage: item.gstPercentage,
+            imageUrl: null,
+            note: item.note,
+            estimatedIngredientCost: item.estimatedIngredientCost,
+            isActive: true
+          }))
+        )
+        .orIgnore()
+        .returning(["id", "name"])
+        .execute();
+
+      const insertedItems = Array.isArray(itemInsertResult.raw)
+        ? itemInsertResult.raw
+            .map((row) => ({
+              id: typeof row.id === "string" ? row.id : "",
+              name: typeof row.name === "string" ? row.name : ""
+            }))
+            .filter((row) => row.id && row.name)
+        : [];
+
+      if (!insertedItems.length) {
+        return {
+          totalRows: parsedCsv.totalRows,
+          parsedRows: parsedCsv.parsedRows,
+          parsedItems: parsedCsv.parsedItems,
+          insertedCategories,
+          insertedItems: 0,
+          insertedRecipeRows: 0,
+          skippedExistingItems: skippedExistingItems + itemsToInsert.length,
+          skippedDuplicateRows: parsedCsv.skippedDuplicateRows,
+          invalidRows,
+          invalidRowDetails
+        };
+      }
+
+      const insertedItemKeyToId = new Map(
+        insertedItems.map((item) => [normalizeLookupKey(item.name), item.id])
+      );
+      const skippedDuringInsert = Math.max(itemsToInsert.length - insertedItems.length, 0);
+
+      const recipeInsertValues = itemsToInsert.flatMap((item) => {
+        const insertedItemId = insertedItemKeyToId.get(item.itemKey);
+        if (!insertedItemId) {
+          return [];
+        }
+        return item.recipeRows.map((recipeRow) => ({
+          itemId: insertedItemId,
+          ingredientId: recipeRow.ingredientId,
+          quantity: recipeRow.quantity,
+          unit: recipeRow.unit,
+          normalizedQuantity: recipeRow.normalizedQuantity,
+          costContribution: recipeRow.costContribution
+        }));
+      });
+
+      let insertedRecipeRows = 0;
+      if (recipeInsertValues.length) {
+        const recipeInsertResult = await manager
+          .createQueryBuilder()
+          .insert()
+          .into(ItemIngredient)
+          .values(recipeInsertValues)
+          .orIgnore()
+          .execute();
+        insertedRecipeRows = recipeInsertResult.identifiers.length;
+      }
+
+      return {
+        totalRows: parsedCsv.totalRows,
+        parsedRows: parsedCsv.parsedRows,
+        parsedItems: parsedCsv.parsedItems,
+        insertedCategories,
+        insertedItems: insertedItems.length,
+        insertedRecipeRows,
+        skippedExistingItems: skippedExistingItems + skippedDuringInsert,
+        skippedDuplicateRows: parsedCsv.skippedDuplicateRows,
+        invalidRows,
+        invalidRowDetails
+      };
+    });
   }
 
   private async prepareRecipeRows(payloadIngredients: RecipePayload[]) {

@@ -7,6 +7,7 @@ declare module "express-serve-static-core" {
       username: string;
       fullName: string;
       role: UserRole;
+      isSuperAdmin: boolean;
       assignedReports: string[];
       assignedModules: string[];
     };

@@ -16,6 +16,7 @@ import { PurchaseOrder } from "./purchase-order.entity";
 @Entity({ name: "purchase_order_lines" })
 @Index("IDX_purchase_order_lines_order", ["purchaseOrderId"])
 @Index("IDX_purchase_order_lines_type", ["lineType"])
+@Index("IDX_purchase_order_lines_expiry_date", ["expiryDate"])
 export class PurchaseOrderLine {
   @PrimaryGeneratedColumn("uuid")
   id!: string;
@@ -76,6 +77,9 @@ export class PurchaseOrderLine {
 
   @Column({ type: "boolean", default: false })
   unitPriceUpdated!: boolean;
+
+  @Column({ type: "date", nullable: true })
+  expiryDate!: string | null;
 
   @CreateDateColumn({ type: "timestamptz" })
   createdAt!: Date;

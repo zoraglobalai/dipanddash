@@ -1,6 +1,7 @@
 import { apiClient } from "@/lib/api-client";
 import type { ApiSuccess } from "@/types/api";
 import type {
+  BulkIngredientImportSummary,
   IngredientAllocationStats,
   IngredientCategory,
   IngredientListItem,
@@ -29,6 +30,7 @@ type StockResponse = {
 
 type AllocationStatsResponse = IngredientAllocationStats;
 type StockAuditResponse = StockAuditData;
+type BulkImportResponse = BulkIngredientImportSummary;
 
 export const ingredientsService = {
   getCategories: async (params?: { search?: string; includeInactive?: boolean; page?: number; limit?: number }) => {
@@ -125,6 +127,35 @@ export const ingredientsService = {
   },
   getStockAudit: async (params: { dateFrom?: string; dateTo?: string; staffId?: string; page?: number; limit?: number }) => {
     const response = await apiClient.get<ApiSuccess<StockAuditResponse>>("/ingredients/stock-audit", { params });
+    return response.data;
+  },
+  reopenClosingReport: async (reportId: string) => {
+    const response = await apiClient.post<
+      ApiSuccess<{
+        reopened: {
+          id: string;
+          staffId: string;
+          reportDate: string;
+          reopenedByUserId: string;
+        };
+      }>
+    >(`/ingredients/closing/reports/${reportId}/reopen`);
+    return response.data;
+  },
+  downloadBulkTemplate: async () => {
+    return apiClient.get<Blob>("/ingredients/bulk/template", {
+      responseType: "blob"
+    });
+  },
+  bulkImportIngredients: async (file: File) => {
+    const formData = new FormData();
+    formData.append("file", file);
+
+    const response = await apiClient.post<ApiSuccess<BulkImportResponse>>("/ingredients/bulk/import", formData, {
+      headers: {
+        "Content-Type": "multipart/form-data"
+      }
+    });
     return response.data;
   }
 };

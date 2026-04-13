@@ -6,6 +6,7 @@ export type AuthUser = {
   fullName: string;
   email: string | null;
   role: UserRole;
+  isSuperAdmin: boolean;
   isActive: boolean;
   assignedReports: string[];
   assignedModules: string[];
@@ -14,4 +15,9 @@ export type AuthUser = {
 export type LoginPayload = {
   username: string;
   password: string;
+};
+
+export type ChangePasswordPayload = {
+  currentPassword: string;
+  newPassword: string;
 };

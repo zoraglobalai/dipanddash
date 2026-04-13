@@ -6,6 +6,10 @@ import { AUTH_MESSAGES } from "../../constants/auth";
 import { AppError } from "../../errors/app-error";
 import { IngredientsService } from "./ingredients.service";
 
+type UploadRequest = Request & {
+  file?: Express.Multer.File;
+};
+
 const parsePositiveInt = (value: unknown, fallback: number) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
@@ -81,6 +85,16 @@ export class IngredientsController {
     return sendSuccess(res, StatusCodes.OK, "Closing reports fetched successfully", data);
   };
 
+  reopenClosingReport = async (req: Request, res: Response): Promise<Response> => {
+    const userId = req.user?.id;
+    if (!userId) {
+      throw new AppError(StatusCodes.UNAUTHORIZED, AUTH_MESSAGES.UNAUTHORIZED);
+    }
+
+    const data = await this.ingredientsService.reopenClosingReport(req.params.id, userId);
+    return sendSuccess(res, StatusCodes.OK, "Closing report reopened successfully", data);
+  };
+
   getStockAudit = async (req: Request, res: Response): Promise<Response> => {
     const legacyDate = typeof req.query.date === "string" ? req.query.date : undefined;
     const dateFrom = typeof req.query.dateFrom === "string" ? req.query.dateFrom : legacyDate;
@@ -94,6 +108,22 @@ export class IngredientsController {
       limit: parsePositiveInt(req.query.limit, 20)
     });
     return sendSuccess(res, StatusCodes.OK, "Stock audit fetched successfully", data);
+  };
+
+  downloadBulkTemplate = async (_req: Request, res: Response): Promise<Response> => {
+    const template = this.ingredientsService.getBulkImportTemplate();
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${template.fileName}"`);
+    return res.status(StatusCodes.OK).send(template.content);
+  };
+
+  bulkImportIngredients = async (req: UploadRequest, res: Response): Promise<Response> => {
+    if (!req.file) {
+      throw new AppError(StatusCodes.BAD_REQUEST, "Please choose a CSV file to upload.");
+    }
+
+    const data = await this.ingredientsService.bulkImportIngredientsFromCsv(req.file.buffer);
+    return sendSuccess(res, StatusCodes.OK, "Ingredient bulk import completed successfully", data);
   };
 
   listCategories = async (req: Request, res: Response): Promise<Response> => {

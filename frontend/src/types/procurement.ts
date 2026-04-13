@@ -24,6 +24,7 @@ export type ProductUnit =
 export type PurchaseLineType = "ingredient" | "product";
 export type PurchaseOrderType = "ingredient" | "product" | "mixed";
 export type StockHealth = "LOW_STOCK" | "HEALTHY";
+export type ProductExpiryStatus = "NO_EXPIRY" | "FRESH" | "EXPIRING_SOON" | "EXPIRED";
 
 export type SupplierListItem = {
   id: string;
@@ -70,6 +71,10 @@ export type ProductListItem = {
   purchaseOrdersCount: number;
   totalPurchasedAmount: number;
   recentPurchaseDate: string | null;
+  nextExpiryDate: string | null;
+  latestExpiryDate: string | null;
+  expiryStatus: ProductExpiryStatus;
+  ageingDays: number | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -183,6 +188,7 @@ export type PurchaseOrderLine = {
   unitPrice: number;
   lineTotal: number;
   unitPriceUpdated: boolean;
+  expiryDate: string | null;
   createdAt: string;
 };
 
@@ -239,6 +245,30 @@ export type ProcurementUnitsResponse = {
   productUnits: readonly ProductUnit[];
 };
 
+export type PurchaseBulkImportResult = {
+  purchaseOrderId: string;
+  purchaseNumber: string;
+  purchaseDate: string;
+  supplierName: string;
+  lineCount: number;
+  ingredientLineCount: number;
+  productLineCount: number;
+  totalAmount: number;
+};
+
+export type ProductBulkImportResult = {
+  totalRows: number;
+  parsedRows: number;
+  insertedProducts: number;
+  skippedExistingProducts: number;
+  skippedDuplicateRows: number;
+  invalidRows: number;
+  invalidRowDetails: Array<{
+    rowNumber: number;
+    reason: string;
+  }>;
+};
+
 export type CreatePurchaseLineInput = {
   lineType: PurchaseLineType;
   ingredientId?: string;
@@ -246,6 +276,7 @@ export type CreatePurchaseLineInput = {
   quantity: number;
   quantityUnit?: string;
   unitPrice: number;
+  expiryDate?: string;
   note?: string;
 };
 

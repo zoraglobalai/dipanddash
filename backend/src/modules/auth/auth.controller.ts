@@ -155,4 +155,16 @@ export class AuthController {
     const user = await this.authService.getMe(userId);
     return sendSuccess(res, StatusCodes.OK, "Session restored successfully", { user });
   };
+
+  changePassword = async (req: Request, res: Response): Promise<Response> => {
+    const userId = req.user?.id;
+    if (!userId) {
+      throw new AppError(StatusCodes.UNAUTHORIZED, AUTH_MESSAGES.UNAUTHORIZED);
+    }
+
+    const { currentPassword, newPassword } = req.body;
+    await this.authService.changePassword(userId, currentPassword, newPassword);
+
+    return sendSuccess(res, StatusCodes.OK, "Password changed successfully");
+  };
 }

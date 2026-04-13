@@ -59,6 +59,7 @@ export const authenticate = async (req: Request, _res: Response, next: NextFunct
     username: user.username,
     fullName: user.fullName,
     role: user.role,
+    isSuperAdmin: userService.isSuperAdminAccount(user),
     assignedReports: user.assignedReports ?? [],
     assignedModules: user.assignedModules ?? []
   };
@@ -76,3 +77,11 @@ export const authorizeRoles =
 
     return next();
   };
+
+export const authorizeSuperAdminOnly = (req: Request, _res: Response, next: NextFunction) => {
+  if (!req.user?.isSuperAdmin) {
+    return next(new AppError(403, AUTH_MESSAGES.FORBIDDEN));
+  }
+
+  return next();
+};

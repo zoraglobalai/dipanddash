@@ -34,10 +34,10 @@ export const errorMiddleware = (
   if (parseError?.name === "MulterError") {
     const code = (parseError as { code?: string }).code;
     if (code === "LIMIT_FILE_SIZE") {
-      return sendError(res, StatusCodes.REQUEST_TOO_LONG, "Image size should be 5 MB or less.");
+      return sendError(res, StatusCodes.REQUEST_TOO_LONG, "Uploaded file size exceeds the allowed limit.");
     }
 
-    return sendError(res, StatusCodes.BAD_REQUEST, "Invalid image upload request.");
+    return sendError(res, StatusCodes.BAD_REQUEST, "Invalid upload request.");
   }
 
   if (error instanceof QueryFailedError) {

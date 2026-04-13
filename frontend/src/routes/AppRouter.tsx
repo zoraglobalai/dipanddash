@@ -7,6 +7,7 @@ import { UserRole } from "@/types/role";
 import { APP_ROUTES } from "@/constants/routes";
 import { ProtectedRoute } from "./ProtectedRoute";
 import { RoleGuard } from "./RoleGuard";
+import { ModuleGuard } from "./ModuleGuard";
 import { IndexRedirect } from "./IndexRedirect";
 
 const LoginPage = lazy(() => import("@/pages/LoginPage").then((module) => ({ default: module.LoginPage })));
@@ -101,153 +102,191 @@ export const AppRouter = () => {
             <Route
               path={APP_ROUTES.ADMIN_DASHBOARD}
               element={
-                <Suspended>
-                  <AdminDashboardPage />
-                </Suspended>
+                <ModuleGuard allow={["dashboard"]}>
+                  <Suspended>
+                    <AdminDashboardPage />
+                  </Suspended>
+                </ModuleGuard>
               }
             />
             <Route
               path={APP_ROUTES.STAFF_MANAGEMENT}
               element={
-                <Suspended>
-                  <StaffManagementPage />
-                </Suspended>
+                <ModuleGuard allow={["staff-management"]}>
+                  <Suspended>
+                    <StaffManagementPage />
+                  </Suspended>
+                </ModuleGuard>
               }
             />
             <Route
               path={APP_ROUTES.ATTENDANCE}
               element={
-                <Suspended>
-                  <AttendancePage />
-                </Suspended>
+                <ModuleGuard allow={["attendance"]}>
+                  <Suspended>
+                    <AttendancePage />
+                  </Suspended>
+                </ModuleGuard>
               }
             />
             <Route
               path={APP_ROUTES.ORDERS}
               element={
-                <Suspended>
-                  <AdminOrdersPage />
-                </Suspended>
+                <ModuleGuard allow={["orders", "invoices"]}>
+                  <Suspended>
+                    <AdminOrdersPage />
+                  </Suspended>
+                </ModuleGuard>
               }
             />
             <Route
               path={APP_ROUTES.ITEMS_ENTRY}
               element={
-                <Suspended>
-                  <ItemEntryPage />
-                </Suspended>
+                <ModuleGuard allow={["items-entry"]}>
+                  <Suspended>
+                    <ItemEntryPage />
+                  </Suspended>
+                </ModuleGuard>
               }
             />
             <Route
               path={APP_ROUTES.INGREDIENT_ENTRY}
               element={
-                <Suspended>
-                  <IngredientEntryPage />
-                </Suspended>
+                <ModuleGuard allow={["ingredient-entry"]}>
+                  <Suspended>
+                    <IngredientEntryPage />
+                  </Suspended>
+                </ModuleGuard>
               }
             />
             <Route
               path={APP_ROUTES.OFFERS}
               element={
-                <Suspended>
-                  <OffersPage />
-                </Suspended>
+                <ModuleGuard allow={["offers"]}>
+                  <Suspended>
+                    <OffersPage />
+                  </Suspended>
+                </ModuleGuard>
               }
             />
             <Route
               path={APP_ROUTES.SUPPLIERS}
               element={
-                <Suspended>
-                  <SuppliersPage />
-                </Suspended>
+                <ModuleGuard allow={["suppliers"]}>
+                  <Suspended>
+                    <SuppliersPage />
+                  </Suspended>
+                </ModuleGuard>
               }
             />
             <Route
               path={APP_ROUTES.PURCHASE}
               element={
-                <Suspended>
-                  <PurchasePage />
-                </Suspended>
+                <ModuleGuard allow={["purchase"]}>
+                  <Suspended>
+                    <PurchasePage />
+                  </Suspended>
+                </ModuleGuard>
               }
             />
             <Route
               path={APP_ROUTES.ASSETS_ENTRY}
               element={
-                <Suspended>
-                  <AssetsEntryPage />
-                </Suspended>
+                <ModuleGuard allow={["assets-entry"]}>
+                  <Suspended>
+                    <AssetsEntryPage />
+                  </Suspended>
+                </ModuleGuard>
               }
             />
             <Route
               path="/sales-statics"
               element={
-                <Suspended>
-                  <SalesStaticsPage />
-                </Suspended>
+                <ModuleGuard allow={["sales-statics", "dashboard"]}>
+                  <Suspended>
+                    <SalesStaticsPage />
+                  </Suspended>
+                </ModuleGuard>
               }
             />
             <Route
               path="/customer-data"
               element={
-                <Suspended>
-                  <CustomerDataPage />
-                </Suspended>
+                <ModuleGuard allow={["customer-data"]}>
+                  <Suspended>
+                    <CustomerDataPage />
+                  </Suspended>
+                </ModuleGuard>
               }
             />
             <Route
               path={APP_ROUTES.REPORTS}
               element={
-                <Suspended>
-                  <ReportsPage />
-                </Suspended>
+                <ModuleGuard allow={["reports"]}>
+                  <Suspended>
+                    <ReportsPage />
+                  </Suspended>
+                </ModuleGuard>
               }
             />
             <Route
               path={APP_ROUTES.INVOICES}
               element={
-                <Suspended>
-                  <InvoicesPage />
-                </Suspended>
+                <ModuleGuard allow={["invoices", "orders"]}>
+                  <Suspended>
+                    <InvoicesPage />
+                  </Suspended>
+                </ModuleGuard>
               }
             />
             <Route
               path={APP_ROUTES.STOCK_AUDIT}
               element={
-                <Suspended>
-                  <StockAuditPage />
-                </Suspended>
+                <ModuleGuard allow={["stock-audit"]}>
+                  <Suspended>
+                    <StockAuditPage />
+                  </Suspended>
+                </ModuleGuard>
               }
             />
             <Route
               path={APP_ROUTES.DUMP_WASTAGE}
               element={
-                <Suspended>
-                  <DumpWastagePage />
-                </Suspended>
+                <ModuleGuard allow={["dump-wastage"]}>
+                  <Suspended>
+                    <DumpWastagePage />
+                  </Suspended>
+                </ModuleGuard>
               }
             />
             <Route
               path={APP_ROUTES.CASH_AUDIT}
               element={
-                <Suspended>
-                  <CashAuditPage />
-                </Suspended>
+                <ModuleGuard allow={["cash-audit"]}>
+                  <Suspended>
+                    <CashAuditPage />
+                  </Suspended>
+                </ModuleGuard>
               }
             />
             <Route
               path={APP_ROUTES.OUTLETS}
               element={
-                <Suspended>
-                  <OutletsPage />
-                </Suspended>
+                <ModuleGuard allow={["outlets"]}>
+                  <Suspended>
+                    <OutletsPage />
+                  </Suspended>
+                </ModuleGuard>
               }
             />
             <Route
               path={APP_ROUTES.GAMING}
               element={
-                <Suspended>
-                  <GamingPage />
-                </Suspended>
+                <ModuleGuard allow={["gaming"]}>
+                  <Suspended>
+                    <GamingPage />
+                  </Suspended>
+                </ModuleGuard>
               }
             />
             {placeholderPaths.map((path) => (

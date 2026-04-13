@@ -3,6 +3,7 @@ import { Router } from "express";
 import { UserRole } from "../../constants/roles";
 import { asyncHandler } from "../../middlewares/async-handler";
 import { authenticate, authorizeRoles } from "../../middlewares/auth.middleware";
+import { authorizeAnyModuleAccess, authorizeModuleAccess } from "../../middlewares/module-access.middleware";
 import { validateRequest } from "../../middlewares/validate.middleware";
 import { CashAuditController } from "./cash-audit.controller";
 import {
@@ -42,6 +43,7 @@ router.post(
 router.get(
   "/admin/records",
   authorizeRoles(UserRole.ADMIN),
+  authorizeModuleAccess("cash-audit"),
   validateRequest(cashAuditAdminListSchema),
   asyncHandler(cashAuditController.listAdminRecords)
 );
@@ -49,6 +51,7 @@ router.get(
 router.get(
   "/admin/stats",
   authorizeRoles(UserRole.ADMIN),
+  authorizeAnyModuleAccess("cash-audit", "dashboard"),
   validateRequest(cashAuditAdminStatsSchema),
   asyncHandler(cashAuditController.getAdminStats)
 );

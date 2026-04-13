@@ -1,4 +1,5 @@
 import { UserRole } from "../../constants/roles";
+import { AppError } from "../../errors/app-error";
 import { hashPassword } from "../../utils/password";
 import { UserService } from "../users/user.service";
 import { REPORT_KEYS, type ReportKey } from "../reports/reports.constants";
@@ -6,6 +7,10 @@ import { STAFF_ASSIGNABLE_MODULE_KEYS, type StaffAssignableModuleKey } from "../
 
 export class StaffService {
   private readonly userService = new UserService();
+
+  private isPosDesktopRole(role: UserRole) {
+    return role === UserRole.STAFF || role === UserRole.SNOOKER_STAFF;
+  }
 
   private sanitizeAssignedReports(assignedReports?: string[]): ReportKey[] {
     if (!assignedReports?.length) {
@@ -63,6 +68,14 @@ export class StaffService {
     assignedModules?: string[];
   }) {
     const passwordHash = await hashPassword(payload.password);
+    const isPosDesktopUser = this.isPosDesktopRole(payload.role);
+    const assignedReports = isPosDesktopUser ? [] : this.sanitizeAssignedReports(payload.assignedReports);
+    const assignedModules = isPosDesktopUser ? [] : this.sanitizeAssignedModules(payload.assignedModules);
+
+    if (payload.role === UserRole.ADMIN && assignedModules.length === 0) {
+      throw new AppError(422, "At least one admin frontend module access must be selected.");
+    }
+
     return this.userService.createStaff({
       username: payload.username.toLowerCase(),
       fullName: payload.fullName,
@@ -70,8 +83,8 @@ export class StaffService {
       passwordHash,
       role: payload.role,
       isActive: true,
-      assignedReports: this.sanitizeAssignedReports(payload.assignedReports),
-      assignedModules: this.sanitizeAssignedModules(payload.assignedModules)
+      assignedReports,
+      assignedModules
     });
   }
 
@@ -85,18 +98,30 @@ export class StaffService {
       assignedModules?: string[];
     }
   ) {
+    const isPosDesktopUser = payload.role ? this.isPosDesktopRole(payload.role) : false;
+    const assignedReports =
+      payload.assignedReports === undefined
+        ? undefined
+        : isPosDesktopUser
+          ? []
+          : this.sanitizeAssignedReports(payload.assignedReports);
+    const assignedModules =
+      payload.assignedModules === undefined
+        ? undefined
+        : isPosDesktopUser
+          ? []
+          : this.sanitizeAssignedModules(payload.assignedModules);
+
+    if (payload.role === UserRole.ADMIN && assignedModules !== undefined && assignedModules.length === 0) {
+      throw new AppError(422, "At least one admin frontend module access must be selected.");
+    }
+
     return this.userService.updateStaff(id, {
       fullName: payload.fullName,
       email: payload.email ? payload.email.toLowerCase() : payload.email,
       role: payload.role,
-      assignedReports:
-        payload.assignedReports === undefined
-          ? undefined
-          : this.sanitizeAssignedReports(payload.assignedReports),
-      assignedModules:
-        payload.assignedModules === undefined
-          ? undefined
-          : this.sanitizeAssignedModules(payload.assignedModules)
+      assignedReports,
+      assignedModules
     });
   }
 

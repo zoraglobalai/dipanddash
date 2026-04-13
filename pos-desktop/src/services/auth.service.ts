@@ -31,7 +31,20 @@ type UserResponse = {
 
 const STAFF_SESSION_KEY = "staff_session_json";
 
-const allowedDesktopRoles = new Set(["staff", "snooker_staff", "manager", "accountant", "admin"]);
+const allowedDesktopRoles = new Set(["staff", "snooker_staff", "admin"]);
+
+const isAllowedDesktopSession = (session: StaffSession) => {
+  if (!allowedDesktopRoles.has(session.role)) {
+    return false;
+  }
+
+  // Scoped admin accounts are intended for admin frontend only.
+  if (session.role === "admin" && session.assignedModules.length > 0) {
+    return false;
+  }
+
+  return true;
+};
 
 const toSession = (user: UserResponse["user"]): StaffSession => ({
   userId: user.id,
@@ -100,7 +113,7 @@ export const authService = {
     });
 
     const session = toSession(response.data.data.user);
-    if (!allowedDesktopRoles.has(session.role)) {
+    if (!isAllowedDesktopSession(session)) {
       await this.logout();
       throw new Error("This account is not allowed in staff desktop POS.");
     }
@@ -120,7 +133,7 @@ export const authService = {
   async me() {
     const response = await apiClient.get<ApiSuccess<UserResponse>>("/auth/me");
     const session = toSession(response.data.data.user);
-    if (!allowedDesktopRoles.has(session.role)) {
+    if (!isAllowedDesktopSession(session)) {
       await this.logout();
       throw new Error("This account is not allowed in staff desktop POS.");
     }

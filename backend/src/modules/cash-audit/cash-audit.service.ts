@@ -493,9 +493,6 @@ export class CashAuditService {
     });
 
     const normalizedNote = normalizeText(payload.note);
-    if (enriched.differenceTotalAmount !== 0 && !normalizedNote) {
-      throw new AppError(422, "Reason note is required when there is a difference in cash audit.");
-    }
 
     let finalNote = normalizedNote;
     if (enriched.excessAmount > 0) {
@@ -505,7 +502,7 @@ export class CashAuditService {
     }
 
     if (finalNote && finalNote.length > 500) {
-      throw new AppError(422, "Difference note is too long.");
+      throw new AppError(422, "Note is too long.");
     }
 
     const entry = this.cashAuditRepository.create({

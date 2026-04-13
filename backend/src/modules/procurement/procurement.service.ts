@@ -10,6 +10,8 @@ import { IngredientStockLog } from "../ingredients/ingredient-stock-log.entity";
 import { IngredientStock } from "../ingredients/ingredient-stock.entity";
 import { Product } from "./product.entity";
 import {
+  PRODUCT_UNITS,
+  PURCHASE_LINE_TYPES,
   PURCHASE_ORDER_TYPES,
   type PurchaseLineType,
   type ProductUnit,
@@ -78,9 +80,7 @@ type CreateProductPayload = {
   sku?: string;
   packSize?: string;
   unit: ProductUnit;
-  currentStock: number;
   minStock: number;
-  purchaseUnitPrice: number;
   defaultSupplierId?: string | null;
   isActive?: boolean;
 };
@@ -94,6 +94,7 @@ type PurchaseOrderLinePayload = {
   quantity: number;
   quantityUnit?: string;
   unitPrice: number;
+  expiryDate?: string;
   note?: string;
 };
 
@@ -104,6 +105,61 @@ type CreatePurchaseOrderPayload = {
   invoiceImageUrl?: string;
   lines: PurchaseOrderLinePayload[];
 };
+
+type PurchaseBulkCsvRow = {
+  rowNumber: number;
+  supplierName: string;
+  purchaseDate: string;
+  purchaseNote: string;
+  lineType: PurchaseLineType;
+  itemName: string;
+  quantity: number;
+  quantityUnit?: string;
+  unitPrice: number;
+  expiryDate?: string;
+  lineNote?: string;
+};
+
+const PURCHASE_BULK_TEMPLATE_HEADERS = [
+  "supplier_name",
+  "purchase_date",
+  "purchase_note",
+  "line_type",
+  "item_name",
+  "quantity",
+  "quantity_unit",
+  "unit_price",
+  "expiry_date",
+  "line_note"
+] as const;
+
+const MAX_PURCHASE_BULK_INVALID_DETAILS = 30;
+
+type ProductBulkCsvRow = {
+  rowNumber: number;
+  productName: string;
+  category: string;
+  sku: string | null;
+  packSize: string | null;
+  unit: ProductUnit;
+  defaultSupplierName: string | null;
+  minStock: number;
+  isActive: boolean;
+};
+
+const PRODUCT_BULK_TEMPLATE_HEADERS = [
+  "product_name",
+  "category",
+  "sku",
+  "pack_size",
+  "unit",
+  "default_supplier_name",
+  "min_stock",
+  "is_active"
+] as const;
+
+const VALID_PRODUCT_UNIT_SET = new Set<string>(PRODUCT_UNITS.map((unit) => unit.toLowerCase()));
+const MAX_PRODUCT_BULK_INVALID_DETAILS = 40;
 
 const toNumber = (value: string | number | null | undefined) => {
   if (value === null || value === undefined) {
@@ -124,6 +180,25 @@ const getTodayDate = () => {
   return `${year}-${month}-${day}`;
 };
 
+const getDayDifference = (fromYmd: string, toYmd: string) => {
+  const [fromYear, fromMonth, fromDay] = fromYmd.split("-").map((value) => Number(value));
+  const [toYear, toMonth, toDay] = toYmd.split("-").map((value) => Number(value));
+  if (
+    !Number.isFinite(fromYear) ||
+    !Number.isFinite(fromMonth) ||
+    !Number.isFinite(fromDay) ||
+    !Number.isFinite(toYear) ||
+    !Number.isFinite(toMonth) ||
+    !Number.isFinite(toDay)
+  ) {
+    return 0;
+  }
+
+  const fromUtc = Date.UTC(fromYear, fromMonth - 1, fromDay);
+  const toUtc = Date.UTC(toYear, toMonth - 1, toDay);
+  return Math.round((toUtc - fromUtc) / (1000 * 60 * 60 * 24));
+};
+
 const getPaginationMeta = (page: number, limit: number, total: number) => ({
   page,
   limit,
@@ -135,6 +210,128 @@ const getStockStatus = (currentStock: number, minStock: number) =>
   currentStock <= minStock ? "LOW_STOCK" : "HEALTHY";
 
 const normalizeText = (value: string) => value.trim();
+const normalizeLookupKey = (value: string) => normalizeText(value).toLowerCase();
+const normalizeHeaderKey = (value: string) => value.trim().replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+const dateOnlyPattern = /^\d{4}-\d{2}-\d{2}$/;
+
+const escapeCsvValue = (value: string | number | null | undefined) => {
+  const text = value === null || value === undefined ? "" : String(value);
+  return `"${text.replace(/"/g, "\"\"")}"`;
+};
+
+const parseCsvRows = (content: string) => {
+  const rows: string[][] = [];
+  let currentRow: string[] = [];
+  let currentCell = "";
+  let inQuotes = false;
+
+  for (let index = 0; index < content.length; index += 1) {
+    const char = content[index];
+
+    if (char === "\"") {
+      const nextChar = content[index + 1];
+      if (inQuotes && nextChar === "\"") {
+        currentCell += "\"";
+        index += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+
+    if (!inQuotes && char === ",") {
+      currentRow.push(currentCell);
+      currentCell = "";
+      continue;
+    }
+
+    if (!inQuotes && (char === "\n" || char === "\r")) {
+      if (char === "\r" && content[index + 1] === "\n") {
+        index += 1;
+      }
+      currentRow.push(currentCell);
+      rows.push(currentRow);
+      currentRow = [];
+      currentCell = "";
+      continue;
+    }
+
+    currentCell += char;
+  }
+
+  if (currentCell.length > 0 || currentRow.length > 0) {
+    currentRow.push(currentCell);
+    rows.push(currentRow);
+  }
+
+  return rows;
+};
+
+const parseDateLikeToYmd = (value: string, rowNumber: number, fieldLabel: string) => {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  if (dateOnlyPattern.test(trimmed)) {
+    const parsed = new Date(`${trimmed}T00:00:00.000`);
+    if (Number.isNaN(parsed.getTime())) {
+      throw new AppError(422, `Row ${rowNumber}: ${fieldLabel} must be in YYYY-MM-DD format.`);
+    }
+    return trimmed;
+  }
+
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new AppError(422, `Row ${rowNumber}: ${fieldLabel} must be in YYYY-MM-DD format.`);
+  }
+
+  const year = parsed.getFullYear();
+  const month = String(parsed.getMonth() + 1).padStart(2, "0");
+  const day = String(parsed.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
+const parsePositiveNumber = (value: string, rowNumber: number, fieldLabel: string) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    throw new AppError(422, `Row ${rowNumber}: ${fieldLabel} must be greater than zero.`);
+  }
+  return parsed;
+};
+
+const parseNonNegativeNumber = (value: string, rowNumber: number, fieldLabel: string) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new AppError(422, `Row ${rowNumber}: ${fieldLabel} cannot be negative.`);
+  }
+  return parsed;
+};
+
+const parseBooleanFlexible = (value: string, fallback = true) => {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) {
+    return fallback;
+  }
+  if (["true", "1", "yes", "y", "active", "enabled"].includes(normalized)) {
+    return true;
+  }
+  if (["false", "0", "no", "n", "inactive", "disabled"].includes(normalized)) {
+    return false;
+  }
+  return fallback;
+};
+
+const chunkArray = <T>(values: T[], size = 500) => {
+  if (size <= 0) {
+    return [values];
+  }
+  const chunks: T[][] = [];
+  for (let index = 0; index < values.length; index += size) {
+    chunks.push(values.slice(index, index + size));
+  }
+  return chunks;
+};
 
 export class ProcurementService {
   private readonly supplierRepository = AppDataSource.getRepository(Supplier);
@@ -233,10 +430,32 @@ export class ProcurementService {
       purchaseOrdersCount?: number;
       totalPurchasedAmount?: number;
       recentPurchaseDate?: string | null;
+      nextExpiryDate?: string | null;
+      latestExpiryDate?: string | null;
     }
   ) {
     const currentStock = toFixedQuantity(toNumber(product.currentStock));
     const minStock = toFixedQuantity(toNumber(product.minStock));
+    const todayYmd = getTodayDate();
+    const nextExpiryDate = metrics?.nextExpiryDate ?? null;
+    const latestExpiryDate = metrics?.latestExpiryDate ?? null;
+    const isExpired =
+      currentStock > 0 &&
+      Boolean(latestExpiryDate) &&
+      getDayDifference(latestExpiryDate as string, todayYmd) < 0;
+
+    let expiryStatus: "NO_EXPIRY" | "FRESH" | "EXPIRING_SOON" | "EXPIRED" = "NO_EXPIRY";
+    let ageingDays: number | null = null;
+
+    if (isExpired) {
+      expiryStatus = "EXPIRED";
+      ageingDays = Math.abs(getDayDifference(latestExpiryDate as string, todayYmd));
+    } else if (nextExpiryDate) {
+      const daysToExpiry = getDayDifference(todayYmd, nextExpiryDate);
+      ageingDays = daysToExpiry;
+      expiryStatus = daysToExpiry <= 7 ? "EXPIRING_SOON" : "FRESH";
+    }
+
     return {
       id: product.id,
       name: product.name,
@@ -256,6 +475,10 @@ export class ProcurementService {
       purchaseOrdersCount: metrics?.purchaseOrdersCount ?? 0,
       totalPurchasedAmount: toFixedPrice(metrics?.totalPurchasedAmount ?? 0),
       recentPurchaseDate: metrics?.recentPurchaseDate ?? null,
+      nextExpiryDate,
+      latestExpiryDate,
+      expiryStatus,
+      ageingDays,
       createdAt: product.createdAt,
       updatedAt: product.updatedAt
     };
@@ -286,6 +509,635 @@ export class ProcurementService {
       return PURCHASE_ORDER_TYPES[0];
     }
     return PURCHASE_ORDER_TYPES[1];
+  }
+
+  getPurchaseBulkImportTemplate() {
+    const rows = [
+      [...PURCHASE_BULK_TEMPLATE_HEADERS],
+      ["Vamshi", "2026-04-10", "Morning purchase from market", "ingredient", "Tomato", "25", "kg", "28.5", "", ""],
+      [
+        "Vamshi",
+        "2026-04-10",
+        "Morning purchase from market",
+        "product",
+        "7up",
+        "12",
+        "bottle",
+        "40",
+        "2026-07-31",
+        "Promo rate"
+      ]
+    ];
+
+    const csv = rows.map((row) => row.map((cell) => escapeCsvValue(cell)).join(",")).join("\n");
+    return {
+      fileName: "purchase_bulk_template.csv",
+      content: `\uFEFF${csv}`
+    };
+  }
+
+  private parseBulkPurchaseRows(csvBuffer: Buffer) {
+    const content = csvBuffer.toString("utf-8").replace(/^\uFEFF/, "").trim();
+    if (!content) {
+      throw new AppError(422, "Uploaded CSV file is empty.");
+    }
+
+    const parsedRows = parseCsvRows(content);
+    if (!parsedRows.length) {
+      throw new AppError(422, "Uploaded CSV file is empty.");
+    }
+
+    const headerRow = parsedRows[0].map((cell) => cell.trim());
+    const headerAliases = new Map<string, string>([
+      ["suppliername", "supplier_name"],
+      ["supplier", "supplier_name"],
+      ["purchasedate", "purchase_date"],
+      ["date", "purchase_date"],
+      ["purchasenote", "purchase_note"],
+      ["linetype", "line_type"],
+      ["type", "line_type"],
+      ["itemname", "item_name"],
+      ["item", "item_name"],
+      ["quantity", "quantity"],
+      ["quantityunit", "quantity_unit"],
+      ["unit", "quantity_unit"],
+      ["unitprice", "unit_price"],
+      ["price", "unit_price"],
+      ["expirydate", "expiry_date"],
+      ["expdate", "expiry_date"],
+      ["expiry", "expiry_date"],
+      ["linenote", "line_note"],
+      ["note", "line_note"]
+    ]);
+
+    const headerIndexMap = new Map<string, number>();
+    headerRow.forEach((header, index) => {
+      const alias = headerAliases.get(normalizeHeaderKey(header));
+      if (alias) {
+        headerIndexMap.set(alias, index);
+      }
+    });
+
+    const requiredHeaders: Array<(typeof PURCHASE_BULK_TEMPLATE_HEADERS)[number]> = [
+      "supplier_name",
+      "line_type",
+      "item_name",
+      "quantity",
+      "unit_price"
+    ];
+    const missingHeaders = requiredHeaders.filter((header) => !headerIndexMap.has(header));
+    if (missingHeaders.length) {
+      throw new AppError(
+        422,
+        `Missing required column(s): ${missingHeaders.join(", ")}. Please use the downloadable template.`
+      );
+    }
+
+    const readValue = (row: string[], header: (typeof PURCHASE_BULK_TEMPLATE_HEADERS)[number]) => {
+      const columnIndex = headerIndexMap.get(header);
+      if (columnIndex === undefined) {
+        return "";
+      }
+      return String(row[columnIndex] ?? "");
+    };
+
+    const nonEmptyRows = parsedRows
+      .slice(1)
+      .map((row, index) => ({ row, rowNumber: index + 2 }))
+      .filter(({ row }) => row.some((cell) => cell.trim().length > 0));
+
+    if (!nonEmptyRows.length) {
+      throw new AppError(422, "Uploaded CSV does not contain any purchase rows.");
+    }
+
+    const rows: PurchaseBulkCsvRow[] = [];
+    const invalidRows: Array<{ rowNumber: number; reason: string }> = [];
+
+    nonEmptyRows.forEach(({ row, rowNumber }) => {
+      try {
+        const supplierName = normalizeText(readValue(row, "supplier_name"));
+        const purchaseDateRaw = readValue(row, "purchase_date");
+        const purchaseNote = normalizeText(readValue(row, "purchase_note"));
+        const lineTypeRaw = normalizeText(readValue(row, "line_type")).toLowerCase();
+        const itemName = normalizeText(readValue(row, "item_name"));
+        const quantityRaw = normalizeText(readValue(row, "quantity"));
+        const quantityUnit = normalizeText(readValue(row, "quantity_unit")).toLowerCase();
+        const unitPriceRaw = normalizeText(readValue(row, "unit_price"));
+        const expiryDateRaw = normalizeText(readValue(row, "expiry_date"));
+        const lineNote = normalizeText(readValue(row, "line_note"));
+
+        if (!supplierName) {
+          throw new AppError(422, `Row ${rowNumber}: Supplier name is required.`);
+        }
+        if (!PURCHASE_LINE_TYPES.includes(lineTypeRaw as PurchaseLineType)) {
+          throw new AppError(422, `Row ${rowNumber}: Line type must be ingredient or product.`);
+        }
+        if (!itemName) {
+          throw new AppError(422, `Row ${rowNumber}: Item name is required.`);
+        }
+        if (!quantityRaw) {
+          throw new AppError(422, `Row ${rowNumber}: Quantity is required.`);
+        }
+        if (!unitPriceRaw) {
+          throw new AppError(422, `Row ${rowNumber}: Unit price is required.`);
+        }
+
+        const purchaseDate = parseDateLikeToYmd(purchaseDateRaw, rowNumber, "Purchase date") || getTodayDate();
+        const quantity = toFixedQuantity(parsePositiveNumber(quantityRaw, rowNumber, "Quantity"));
+        const unitPrice = toFixedPrice(parseNonNegativeNumber(unitPriceRaw, rowNumber, "Unit price"));
+        const expiryDate = parseDateLikeToYmd(expiryDateRaw, rowNumber, "Expiry date") || undefined;
+        if (lineTypeRaw === "ingredient" && expiryDate) {
+          throw new AppError(422, `Row ${rowNumber}: expiry_date is allowed only for product lines.`);
+        }
+
+        rows.push({
+          rowNumber,
+          supplierName,
+          purchaseDate,
+          purchaseNote,
+          lineType: lineTypeRaw as PurchaseLineType,
+          itemName,
+          quantity,
+          quantityUnit: quantityUnit || undefined,
+          unitPrice,
+          expiryDate: lineTypeRaw === "product" ? expiryDate : undefined,
+          lineNote: lineNote || undefined
+        });
+      } catch (error) {
+        const reason =
+          error instanceof AppError ? error.message.replace(/^Row \d+:\s*/i, "") : "Row validation failed.";
+        if (invalidRows.length < MAX_PURCHASE_BULK_INVALID_DETAILS) {
+          invalidRows.push({ rowNumber, reason });
+        }
+      }
+    });
+
+    if (invalidRows.length) {
+      const preview = invalidRows
+        .slice(0, 3)
+        .map((entry) => `Row ${entry.rowNumber}: ${entry.reason}`)
+        .join(" | ");
+      throw new AppError(
+        422,
+        `CSV validation failed for ${invalidRows.length} row(s). ${preview}`,
+        invalidRows
+      );
+    }
+
+    const firstRow = rows[0];
+    const canonicalSupplier = normalizeLookupKey(firstRow.supplierName);
+    const canonicalDate = firstRow.purchaseDate;
+    const canonicalNote = firstRow.purchaseNote;
+
+    rows.forEach((row) => {
+      if (normalizeLookupKey(row.supplierName) !== canonicalSupplier) {
+        throw new AppError(
+          422,
+          `Row ${row.rowNumber}: All rows in one upload must use the same supplier_name.`
+        );
+      }
+      if (row.purchaseDate !== canonicalDate) {
+        throw new AppError(
+          422,
+          `Row ${row.rowNumber}: All rows in one upload must use the same purchase_date.`
+        );
+      }
+      if (row.purchaseNote !== canonicalNote) {
+        throw new AppError(
+          422,
+          `Row ${row.rowNumber}: All rows in one upload must use the same purchase_note.`
+        );
+      }
+    });
+
+    return {
+      rows,
+      supplierName: firstRow.supplierName,
+      purchaseDate: firstRow.purchaseDate,
+      purchaseNote: firstRow.purchaseNote
+    };
+  }
+
+  async bulkImportPurchaseOrderFromCsv(csvBuffer: Buffer, createdByUserId: string) {
+    const parsed = this.parseBulkPurchaseRows(csvBuffer);
+
+    const supplier = await this.supplierRepository
+      .createQueryBuilder("supplier")
+      .where("LOWER(supplier.name) = LOWER(:name)", { name: parsed.supplierName })
+      .andWhere("supplier.isActive = true")
+      .getOne();
+
+    if (!supplier) {
+      throw new AppError(404, `Active supplier not found: ${parsed.supplierName}`);
+    }
+
+    const ingredientNameKeys = Array.from(
+      new Set(
+        parsed.rows
+          .filter((row) => row.lineType === "ingredient")
+          .map((row) => normalizeLookupKey(row.itemName))
+      )
+    );
+    const productNameKeys = Array.from(
+      new Set(
+        parsed.rows
+          .filter((row) => row.lineType === "product")
+          .map((row) => normalizeLookupKey(row.itemName))
+      )
+    );
+
+    const [ingredients, products] = await Promise.all([
+      ingredientNameKeys.length
+        ? this.ingredientRepository
+            .createQueryBuilder("ingredient")
+            .where("LOWER(ingredient.name) IN (:...nameKeys)", { nameKeys: ingredientNameKeys })
+            .andWhere("ingredient.isActive = true")
+            .getMany()
+        : Promise.resolve([]),
+      productNameKeys.length
+        ? this.productRepository
+            .createQueryBuilder("product")
+            .where("LOWER(product.name) IN (:...nameKeys)", { nameKeys: productNameKeys })
+            .andWhere("product.isActive = true")
+            .getMany()
+        : Promise.resolve([])
+    ]);
+
+    const ingredientMap = new Map(ingredients.map((ingredient) => [normalizeLookupKey(ingredient.name), ingredient]));
+    const productMap = new Map(products.map((product) => [normalizeLookupKey(product.name), product]));
+    const missingRows: Array<{ rowNumber: number; reason: string }> = [];
+
+    const lines: PurchaseOrderLinePayload[] = parsed.rows.map((row) => {
+      if (row.lineType === "ingredient") {
+        const ingredient = ingredientMap.get(normalizeLookupKey(row.itemName));
+        if (!ingredient) {
+          missingRows.push({
+            rowNumber: row.rowNumber,
+            reason: `Ingredient not found or inactive: ${row.itemName}`
+          });
+          return {
+            lineType: "ingredient",
+            quantity: row.quantity,
+            quantityUnit: row.quantityUnit,
+            unitPrice: row.unitPrice,
+            expiryDate: undefined,
+            note: row.lineNote
+          };
+        }
+        return {
+          lineType: "ingredient",
+          ingredientId: ingredient.id,
+          quantity: row.quantity,
+          quantityUnit: row.quantityUnit,
+          unitPrice: row.unitPrice,
+          expiryDate: undefined,
+          note: row.lineNote
+        };
+      }
+
+      const product = productMap.get(normalizeLookupKey(row.itemName));
+      if (!product) {
+        missingRows.push({
+          rowNumber: row.rowNumber,
+          reason: `Product not found or inactive: ${row.itemName}`
+        });
+        return {
+          lineType: "product",
+          quantity: row.quantity,
+          quantityUnit: row.quantityUnit,
+          unitPrice: row.unitPrice,
+          expiryDate: row.expiryDate,
+          note: row.lineNote
+        };
+      }
+      return {
+        lineType: "product",
+        productId: product.id,
+        quantity: row.quantity,
+        quantityUnit: row.quantityUnit,
+        unitPrice: row.unitPrice,
+        expiryDate: row.expiryDate,
+        note: row.lineNote
+      };
+    });
+
+    if (missingRows.length) {
+      const preview = missingRows
+        .slice(0, 3)
+        .map((entry) => `Row ${entry.rowNumber}: ${entry.reason}`)
+        .join(" | ");
+      throw new AppError(422, `CSV has unknown items. ${preview}`, missingRows.slice(0, MAX_PURCHASE_BULK_INVALID_DETAILS));
+    }
+
+    const purchaseOrder = await this.createPurchaseOrder(
+      {
+        supplierId: supplier.id,
+        purchaseDate: parsed.purchaseDate,
+        note: parsed.purchaseNote || undefined,
+        lines
+      },
+      createdByUserId
+    );
+
+    return {
+      purchaseOrderId: purchaseOrder.id,
+      purchaseNumber: purchaseOrder.purchaseNumber,
+      purchaseDate: purchaseOrder.purchaseDate,
+      supplierName: purchaseOrder.supplierName,
+      lineCount: purchaseOrder.lines.length,
+      ingredientLineCount: purchaseOrder.lines.filter((line) => line.lineType === "ingredient").length,
+      productLineCount: purchaseOrder.lines.filter((line) => line.lineType === "product").length,
+      totalAmount: purchaseOrder.totalAmount
+    };
+  }
+
+  getProductBulkImportTemplate() {
+    const rows = [
+      [...PRODUCT_BULK_TEMPLATE_HEADERS],
+      ["7up", "Soft Drinks", "7UP-250ML", "250ml Bottle", "bottle", "Vamshi", "10", "true"],
+      ["Lays Magic Masala", "Snacks", "LAYS-52G", "52g Pack", "pack", "", "8", "true"]
+    ];
+
+    const csv = rows.map((row) => row.map((cell) => escapeCsvValue(cell)).join(",")).join("\n");
+    return {
+      fileName: "product_bulk_template.csv",
+      content: `\uFEFF${csv}`
+    };
+  }
+
+  private parseBulkProductRows(csvBuffer: Buffer) {
+    const content = csvBuffer.toString("utf-8").replace(/^\uFEFF/, "").trim();
+    if (!content) {
+      throw new AppError(422, "Uploaded CSV file is empty.");
+    }
+
+    const parsedRows = parseCsvRows(content);
+    if (!parsedRows.length) {
+      throw new AppError(422, "Uploaded CSV file is empty.");
+    }
+
+    const headerRow = parsedRows[0].map((cell) => cell.trim());
+    const headerAliases = new Map<string, string>([
+      ["productname", "product_name"],
+      ["name", "product_name"],
+      ["category", "category"],
+      ["sku", "sku"],
+      ["packsize", "pack_size"],
+      ["unit", "unit"],
+      ["defaultsuppliername", "default_supplier_name"],
+      ["suppliername", "default_supplier_name"],
+      ["currentstock", "current_stock"],
+      ["minstock", "min_stock"],
+      ["minimumstock", "min_stock"],
+      ["purchaseunitprice", "purchase_unit_price"],
+      ["unitprice", "purchase_unit_price"],
+      ["price", "purchase_unit_price"],
+      ["isactive", "is_active"],
+      ["active", "is_active"]
+    ]);
+
+    const headerIndexMap = new Map<string, number>();
+    headerRow.forEach((header, index) => {
+      const alias = headerAliases.get(normalizeHeaderKey(header));
+      if (alias) {
+        headerIndexMap.set(alias, index);
+      }
+    });
+
+    const requiredHeaders: Array<(typeof PRODUCT_BULK_TEMPLATE_HEADERS)[number]> = [
+      "product_name",
+      "category",
+      "unit",
+      "min_stock"
+    ];
+    const missingHeaders = requiredHeaders.filter((header) => !headerIndexMap.has(header));
+    if (missingHeaders.length) {
+      throw new AppError(
+        422,
+        `Missing required column(s): ${missingHeaders.join(", ")}. Please use the downloadable template.`
+      );
+    }
+
+    const readValue = (row: string[], header: (typeof PRODUCT_BULK_TEMPLATE_HEADERS)[number]) => {
+      const columnIndex = headerIndexMap.get(header);
+      if (columnIndex === undefined) {
+        return "";
+      }
+      return String(row[columnIndex] ?? "");
+    };
+
+    const nonEmptyRows = parsedRows
+      .slice(1)
+      .map((row, index) => ({ row, rowNumber: index + 2 }))
+      .filter(({ row }) => row.some((cell) => cell.trim().length > 0));
+
+    const validRows: ProductBulkCsvRow[] = [];
+    const invalidRowDetails: Array<{ rowNumber: number; reason: string }> = [];
+    const seenProductNameKeys = new Set<string>();
+    let skippedDuplicateRows = 0;
+
+    nonEmptyRows.forEach(({ row, rowNumber }) => {
+      try {
+        const productName = normalizeText(readValue(row, "product_name"));
+        const category = normalizeText(readValue(row, "category"));
+        const sku = normalizeText(readValue(row, "sku"));
+        const packSize = normalizeText(readValue(row, "pack_size"));
+        const unitRaw = normalizeText(readValue(row, "unit")).toLowerCase();
+        const defaultSupplierName = normalizeText(readValue(row, "default_supplier_name"));
+        const minStockRaw = normalizeText(readValue(row, "min_stock"));
+        const isActiveRaw = normalizeText(readValue(row, "is_active"));
+
+        if (productName.length < 2 || productName.length > 160) {
+          throw new AppError(422, `Row ${rowNumber}: Product name must be between 2 and 160 characters.`);
+        }
+        if (category.length < 2 || category.length > 80) {
+          throw new AppError(422, `Row ${rowNumber}: Category must be between 2 and 80 characters.`);
+        }
+        if (!VALID_PRODUCT_UNIT_SET.has(unitRaw)) {
+          throw new AppError(422, `Row ${rowNumber}: Invalid unit.`);
+        }
+        if (!minStockRaw) {
+          throw new AppError(422, `Row ${rowNumber}: min_stock is required.`);
+        }
+
+        const productNameKey = normalizeLookupKey(productName);
+        if (seenProductNameKeys.has(productNameKey)) {
+          skippedDuplicateRows += 1;
+          return;
+        }
+
+        const minStock = toFixedQuantity(parseNonNegativeNumber(minStockRaw, rowNumber, "Minimum stock"));
+
+        seenProductNameKeys.add(productNameKey);
+        validRows.push({
+          rowNumber,
+          productName,
+          category,
+          sku: sku ? sku.slice(0, 40) : null,
+          packSize: packSize ? packSize.slice(0, 60) : null,
+          unit: unitRaw as ProductUnit,
+          defaultSupplierName: defaultSupplierName || null,
+          minStock,
+          isActive: parseBooleanFlexible(isActiveRaw, true)
+        });
+      } catch (error) {
+        const reason =
+          error instanceof AppError ? error.message.replace(/^Row \d+:\s*/i, "") : "Row validation failed.";
+        if (invalidRowDetails.length < MAX_PRODUCT_BULK_INVALID_DETAILS) {
+          invalidRowDetails.push({ rowNumber, reason });
+        }
+      }
+    });
+
+    return {
+      totalRows: nonEmptyRows.length,
+      validRows,
+      skippedDuplicateRows,
+      invalidRows: nonEmptyRows.length - validRows.length - skippedDuplicateRows,
+      invalidRowDetails
+    };
+  }
+
+  async bulkImportProductsFromCsv(csvBuffer: Buffer) {
+    const parsed = this.parseBulkProductRows(csvBuffer);
+
+    if (!parsed.validRows.length) {
+      return {
+        totalRows: parsed.totalRows,
+        parsedRows: 0,
+        insertedProducts: 0,
+        skippedExistingProducts: 0,
+        skippedDuplicateRows: parsed.skippedDuplicateRows,
+        invalidRows: parsed.invalidRows,
+        invalidRowDetails: parsed.invalidRowDetails
+      };
+    }
+
+    return AppDataSource.transaction(async (manager) => {
+      const supplierNameKeys = Array.from(
+        new Set(
+          parsed.validRows
+            .map((row) => row.defaultSupplierName)
+            .filter((name): name is string => Boolean(name))
+            .map((name) => normalizeLookupKey(name))
+        )
+      );
+
+      const supplierMap = new Map<string, Supplier>();
+      if (supplierNameKeys.length) {
+        for (const chunk of chunkArray(supplierNameKeys)) {
+          const suppliers = await manager
+            .getRepository(Supplier)
+            .createQueryBuilder("supplier")
+            .where("LOWER(supplier.name) IN (:...nameKeys)", { nameKeys: chunk })
+            .andWhere("supplier.isActive = true")
+            .getMany();
+          suppliers.forEach((supplier) => supplierMap.set(normalizeLookupKey(supplier.name), supplier));
+        }
+      }
+
+      const unresolvedSupplierRows = parsed.validRows.filter(
+        (row) => row.defaultSupplierName && !supplierMap.has(normalizeLookupKey(row.defaultSupplierName))
+      );
+
+      if (unresolvedSupplierRows.length) {
+        const details = unresolvedSupplierRows
+          .slice(0, MAX_PRODUCT_BULK_INVALID_DETAILS)
+          .map((row) => ({
+            rowNumber: row.rowNumber,
+            reason: `Default supplier not found or inactive: ${row.defaultSupplierName}`
+          }));
+        const preview = details
+          .slice(0, 3)
+          .map((entry) => `Row ${entry.rowNumber}: ${entry.reason}`)
+          .join(" | ");
+        throw new AppError(422, `CSV has unknown suppliers. ${preview}`, details);
+      }
+
+      const productNameKeys = Array.from(new Set(parsed.validRows.map((row) => normalizeLookupKey(row.productName))));
+      const existingProductNameKeySet = new Set<string>();
+      for (const chunk of chunkArray(productNameKeys)) {
+        const existingRows = await manager
+          .getRepository(Product)
+          .createQueryBuilder("product")
+          .select("product.name", "name")
+          .where("LOWER(product.name) IN (:...nameKeys)", { nameKeys: chunk })
+          .getRawMany<{ name: string }>();
+        existingRows.forEach((entry) => existingProductNameKeySet.add(normalizeLookupKey(entry.name)));
+      }
+
+      const valuesToInsert: Array<{
+        name: string;
+        category: string;
+        sku: string | null;
+        packSize: string | null;
+        unit: ProductUnit;
+        defaultSupplierId: string | null;
+        currentStock: number;
+        minStock: number;
+        purchaseUnitPrice: number;
+        isActive: boolean;
+      }> = [];
+      let skippedExistingProducts = 0;
+
+      parsed.validRows.forEach((row) => {
+        const key = normalizeLookupKey(row.productName);
+        if (existingProductNameKeySet.has(key)) {
+          skippedExistingProducts += 1;
+          return;
+        }
+
+        const supplierId = row.defaultSupplierName
+          ? supplierMap.get(normalizeLookupKey(row.defaultSupplierName))?.id ?? null
+          : null;
+        valuesToInsert.push({
+          name: row.productName,
+          category: row.category,
+          sku: row.sku,
+          packSize: row.packSize,
+          unit: row.unit,
+          defaultSupplierId: supplierId,
+          currentStock: 0,
+          minStock: row.minStock,
+          purchaseUnitPrice: 0,
+          isActive: row.isActive
+        });
+        existingProductNameKeySet.add(key);
+      });
+
+      if (!valuesToInsert.length) {
+        return {
+          totalRows: parsed.totalRows,
+          parsedRows: parsed.validRows.length,
+          insertedProducts: 0,
+          skippedExistingProducts,
+          skippedDuplicateRows: parsed.skippedDuplicateRows,
+          invalidRows: parsed.invalidRows,
+          invalidRowDetails: parsed.invalidRowDetails
+        };
+      }
+
+      const insertResult = await manager
+        .createQueryBuilder()
+        .insert()
+        .into(Product)
+        .values(valuesToInsert)
+        .orIgnore()
+        .execute();
+
+      const insertedProducts = insertResult.identifiers.length;
+      const skippedByDbConflict = Math.max(valuesToInsert.length - insertedProducts, 0);
+
+      return {
+        totalRows: parsed.totalRows,
+        parsedRows: parsed.validRows.length,
+        insertedProducts,
+        skippedExistingProducts: skippedExistingProducts + skippedByDbConflict,
+        skippedDuplicateRows: parsed.skippedDuplicateRows,
+        invalidRows: parsed.invalidRows,
+        invalidRowDetails: parsed.invalidRowDetails
+      };
+    });
   }
 
   async listSuppliers(filters: SupplierListFilters) {
@@ -463,26 +1315,52 @@ export class ProcurementService {
     const [products, total] = await Promise.all([query.skip(offset).take(limit).getMany(), query.getCount()]);
     const productIds = products.map((product) => product.id);
 
-    const metricsRows = productIds.length
-      ? await this.purchaseOrderLineRepository
-          .createQueryBuilder("line")
-          .leftJoin("line.purchaseOrder", "purchaseOrder")
-          .select("line.productId", "productId")
-          .addSelect("COUNT(DISTINCT line.purchaseOrderId)", "ordersCount")
-          .addSelect("COALESCE(SUM(line.stockAdded), 0)", "qty")
-          .addSelect("COALESCE(SUM(line.lineTotal), 0)", "amount")
-          .addSelect("MAX(purchaseOrder.purchaseDate)", "recentPurchaseDate")
-          .where("line.lineType = :lineType", { lineType: "product" })
-          .andWhere("line.productId IN (:...productIds)", { productIds })
-          .groupBy("line.productId")
-          .getRawMany<{
-            productId: string;
-            ordersCount: string;
-            qty: string;
-            amount: string;
-            recentPurchaseDate: string | null;
-          }>()
-      : [];
+    const [metricsRows, expiryRows] = productIds.length
+      ? await Promise.all([
+          this.purchaseOrderLineRepository
+            .createQueryBuilder("line")
+            .leftJoin("line.purchaseOrder", "purchaseOrder")
+            .select("line.productId", "productId")
+            .addSelect("COUNT(DISTINCT line.purchaseOrderId)", "ordersCount")
+            .addSelect("COALESCE(SUM(line.stockAdded), 0)", "qty")
+            .addSelect("COALESCE(SUM(line.lineTotal), 0)", "amount")
+            .addSelect("MAX(purchaseOrder.purchaseDate)", "recentPurchaseDate")
+            .where("line.lineType = :lineType", { lineType: "product" })
+            .andWhere("line.productId IN (:...productIds)", { productIds })
+            .groupBy("line.productId")
+            .getRawMany<{
+              productId: string;
+              ordersCount: string;
+              qty: string;
+              amount: string;
+              recentPurchaseDate: string | null;
+            }>(),
+          this.purchaseOrderLineRepository
+            .createQueryBuilder("line")
+            .select("line.productId", "productId")
+            .addSelect("MIN(CASE WHEN line.expiryDate >= CURRENT_DATE THEN line.expiryDate END)", "nextExpiryDate")
+            .addSelect("MAX(line.expiryDate)", "latestExpiryDate")
+            .where("line.lineType = :lineType", { lineType: "product" })
+            .andWhere("line.productId IN (:...productIds)", { productIds })
+            .andWhere("line.expiryDate IS NOT NULL")
+            .groupBy("line.productId")
+            .getRawMany<{
+              productId: string;
+              nextExpiryDate: string | null;
+              latestExpiryDate: string | null;
+            }>()
+        ])
+      : [[], []];
+
+    const expiryMap = new Map(
+      expiryRows.map((row) => [
+        row.productId,
+        {
+          nextExpiryDate: row.nextExpiryDate,
+          latestExpiryDate: row.latestExpiryDate
+        }
+      ])
+    );
 
     const metricsMap = new Map(
       metricsRows.map((row) => [
@@ -491,10 +1369,25 @@ export class ProcurementService {
           purchasedQuantity: toNumber(row.qty),
           purchaseOrdersCount: Number(row.ordersCount),
           totalPurchasedAmount: toNumber(row.amount),
-          recentPurchaseDate: row.recentPurchaseDate
+          recentPurchaseDate: row.recentPurchaseDate,
+          nextExpiryDate: expiryMap.get(row.productId)?.nextExpiryDate ?? null,
+          latestExpiryDate: expiryMap.get(row.productId)?.latestExpiryDate ?? null
         }
       ])
     );
+
+    expiryMap.forEach((expiryMetrics, productId) => {
+      if (!metricsMap.has(productId)) {
+        metricsMap.set(productId, {
+          purchasedQuantity: 0,
+          purchaseOrdersCount: 0,
+          totalPurchasedAmount: 0,
+          recentPurchaseDate: null,
+          nextExpiryDate: expiryMetrics.nextExpiryDate ?? null,
+          latestExpiryDate: expiryMetrics.latestExpiryDate ?? null
+        });
+      }
+    });
 
     const [countRows, valuationRow, topPurchasedRows] = await Promise.all([
       this.productRepository
@@ -568,9 +1461,9 @@ export class ProcurementService {
       sku: payload.sku ? normalizeText(payload.sku) : null,
       packSize: payload.packSize ? normalizeText(payload.packSize) : null,
       unit: payload.unit,
-      currentStock: toFixedQuantity(payload.currentStock ?? 0),
+      currentStock: 0,
       minStock: toFixedQuantity(payload.minStock ?? 0),
-      purchaseUnitPrice: toFixedPrice(payload.purchaseUnitPrice),
+      purchaseUnitPrice: 0,
       defaultSupplierId: payload.defaultSupplierId ?? null,
       isActive: payload.isActive ?? true
     });
@@ -608,16 +1501,8 @@ export class ProcurementService {
       product.unit = payload.unit;
     }
 
-    if (payload.currentStock !== undefined) {
-      product.currentStock = toFixedQuantity(payload.currentStock);
-    }
-
     if (payload.minStock !== undefined) {
       product.minStock = toFixedQuantity(payload.minStock);
-    }
-
-    if (payload.purchaseUnitPrice !== undefined) {
-      product.purchaseUnitPrice = toFixedPrice(payload.purchaseUnitPrice);
     }
 
     if (payload.defaultSupplierId !== undefined) {
@@ -670,7 +1555,48 @@ export class ProcurementService {
     supplierName: string
   ) {
     const lineEntities: PurchaseOrderLine[] = [];
+    const stockLogs: IngredientStockLog[] = [];
     let totalAmount = 0;
+
+    const ingredientIds = Array.from(
+      new Set(
+        lines
+          .filter((line) => line.lineType === "ingredient" && line.ingredientId)
+          .map((line) => line.ingredientId as string)
+      )
+    );
+    const productIds = Array.from(
+      new Set(
+        lines
+          .filter((line) => line.lineType === "product" && line.productId)
+          .map((line) => line.productId as string)
+      )
+    );
+
+    const [ingredients, products, stocks] = await Promise.all([
+      ingredientIds.length
+        ? manager.find(Ingredient, {
+            where: { id: In(ingredientIds), isActive: true },
+            relations: { category: true }
+          })
+        : Promise.resolve([]),
+      productIds.length
+        ? manager.find(Product, {
+            where: { id: In(productIds), isActive: true }
+          })
+        : Promise.resolve([]),
+      ingredientIds.length
+        ? manager.find(IngredientStock, {
+            where: { ingredientId: In(ingredientIds) }
+          })
+        : Promise.resolve([])
+    ]);
+
+    const ingredientMap = new Map(ingredients.map((ingredient) => [ingredient.id, ingredient]));
+    const productMap = new Map(products.map((product) => [product.id, product]));
+    const stockMap = new Map(stocks.map((stock) => [stock.ingredientId, stock]));
+    const touchedStocks = new Set<IngredientStock>();
+    const touchedProducts = new Set<Product>();
 
     for (const line of lines) {
       const enteredQuantity = toFixedQuantity(line.quantity);
@@ -678,15 +1604,15 @@ export class ProcurementService {
       const lineTotal = toFixedPrice(enteredQuantity * unitPrice);
 
       if (line.lineType === "ingredient") {
+        if (line.expiryDate) {
+          throw new AppError(422, "Expiry date is only allowed for product purchase lines.");
+        }
         const ingredientId = line.ingredientId;
         if (!ingredientId) {
           throw new AppError(422, "Ingredient is required for ingredient purchase line");
         }
 
-        const ingredient = await manager.findOne(Ingredient, {
-          where: { id: ingredientId, isActive: true },
-          relations: { category: true }
-        });
+        const ingredient = ingredientMap.get(ingredientId);
         if (!ingredient) {
           throw new AppError(404, "Ingredient not found or inactive");
         }
@@ -706,12 +1632,20 @@ export class ProcurementService {
         }
         const stockAdded = toFixedQuantity(convertedAdded);
 
-        const stock = await this.getOrCreateIngredientStock(manager, ingredient.id);
+        const stock =
+          stockMap.get(ingredient.id) ??
+          manager.create(IngredientStock, {
+            ingredientId: ingredient.id,
+            totalStock: 0,
+            lastUpdatedAt: new Date()
+          });
+        stockMap.set(ingredient.id, stock);
+
         const stockBefore = toFixedQuantity(toNumber(stock.totalStock));
         const stockAfter = toFixedQuantity(stockBefore + stockAdded);
         stock.totalStock = stockAfter;
         stock.lastUpdatedAt = new Date();
-        await manager.save(IngredientStock, stock);
+        touchedStocks.add(stock);
 
         const stockLog = manager.create(IngredientStockLog, {
           ingredientId: ingredient.id,
@@ -719,7 +1653,7 @@ export class ProcurementService {
           quantity: stockAdded,
           note: line.note?.trim() || `Purchased via ${purchaseNumber} from ${supplierName}.`
         });
-        await manager.save(IngredientStockLog, stockLog);
+        stockLogs.push(stockLog);
 
         const lineEntity = manager.create(PurchaseOrderLine, {
           lineType: "ingredient",
@@ -735,7 +1669,8 @@ export class ProcurementService {
           stockAfter,
           unitPrice,
           lineTotal,
-          unitPriceUpdated: false
+          unitPriceUpdated: false,
+          expiryDate: null
         });
         lineEntities.push(lineEntity);
         totalAmount += lineTotal;
@@ -747,9 +1682,7 @@ export class ProcurementService {
         throw new AppError(422, "Product is required for product purchase line");
       }
 
-      const product = await manager.findOne(Product, {
-        where: { id: productId, isActive: true }
-      });
+      const product = productMap.get(productId);
       if (!product) {
         throw new AppError(404, "Product not found or inactive");
       }
@@ -764,8 +1697,7 @@ export class ProcurementService {
       const stockBefore = toFixedQuantity(toNumber(product.currentStock));
       const stockAfter = toFixedQuantity(stockBefore + stockAdded);
       product.currentStock = stockAfter;
-
-      await manager.save(Product, product);
+      touchedProducts.add(product);
 
       const lineEntity = manager.create(PurchaseOrderLine, {
         lineType: "product",
@@ -781,10 +1713,21 @@ export class ProcurementService {
         stockAfter,
         unitPrice,
         lineTotal,
-        unitPriceUpdated: false
+        unitPriceUpdated: false,
+        expiryDate: line.expiryDate || null
       });
       lineEntities.push(lineEntity);
       totalAmount += lineTotal;
+    }
+
+    if (touchedStocks.size) {
+      await manager.save(IngredientStock, Array.from(touchedStocks));
+    }
+    if (stockLogs.length) {
+      await manager.save(IngredientStockLog, stockLogs);
+    }
+    if (touchedProducts.size) {
+      await manager.save(Product, Array.from(touchedProducts));
     }
 
     return {
@@ -1144,6 +2087,7 @@ export class ProcurementService {
         unitPrice: toFixedPrice(toNumber(line.unitPrice)),
         lineTotal: toFixedPrice(toNumber(line.lineTotal)),
         unitPriceUpdated: line.unitPriceUpdated,
+        expiryDate: line.expiryDate,
         createdAt: line.createdAt
       }))
     };

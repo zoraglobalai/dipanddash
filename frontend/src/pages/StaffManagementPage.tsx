@@ -246,7 +246,7 @@ export const StaffManagementPage = () => {
         header: "Role",
         render: (row: Staff) => (
           <Text textTransform="capitalize" fontWeight={600}>
-            {row.role.replace("_", " ")}
+            {row.role === "admin" ? "Admin Frontend" : row.role.replace("_", " ")}
           </Text>
         )
       },

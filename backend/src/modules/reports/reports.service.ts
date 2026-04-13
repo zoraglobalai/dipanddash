@@ -216,30 +216,53 @@ export class ReportsService {
   private readonly gamingRepository = AppDataSource.getRepository(GamingBooking);
   private readonly cashAuditRepository = AppDataSource.getRepository(CashAudit);
 
-  private async getUserAssignedReports(userId: string): Promise<ReportKey[]> {
+  private async getUserReportAccess(userId: string): Promise<{
+    role: UserRole;
+    assignedModules: string[];
+    assignedReports: ReportKey[];
+  }> {
     const user = await this.userRepository.findOne({
       where: { id: userId },
-      select: ["id", "assignedReports"]
+      select: ["id", "role", "assignedModules", "assignedReports"]
     });
 
     if (!user) {
       throw new AppError(404, "User not found");
     }
 
-    return (user.assignedReports ?? []).filter((key): key is ReportKey =>
-      (REPORT_KEYS as readonly string[]).includes(key)
-    );
+    return {
+      role: user.role,
+      assignedModules: user.assignedModules ?? [],
+      assignedReports: (user.assignedReports ?? []).filter((key): key is ReportKey =>
+        (REPORT_KEYS as readonly string[]).includes(key)
+      )
+    };
   }
 
   async getCatalog(user: ReportUserContext) {
     if (user.role === UserRole.ADMIN) {
+      const access = await this.getUserReportAccess(user.id);
+      const isScopedAdmin = access.assignedModules.length > 0;
+      if (!isScopedAdmin) {
+        return {
+          reports: REPORT_CATALOG
+        };
+      }
+
+      if (!access.assignedModules.includes("reports")) {
+        return {
+          reports: []
+        };
+      }
+
+      const assignedSet = new Set(access.assignedReports);
       return {
-        reports: REPORT_CATALOG
+        reports: REPORT_CATALOG.filter((report) => assignedSet.has(report.key))
       };
     }
 
-    const assigned = await this.getUserAssignedReports(user.id);
-    const assignedSet = new Set(assigned);
+    const access = await this.getUserReportAccess(user.id);
+    const assignedSet = new Set(access.assignedReports);
     return {
       reports: REPORT_CATALOG.filter((report) => assignedSet.has(report.key))
     };
@@ -247,11 +270,22 @@ export class ReportsService {
 
   private async assertAccess(user: ReportUserContext, key: ReportKey) {
     if (user.role === UserRole.ADMIN) {
+      const access = await this.getUserReportAccess(user.id);
+      const isScopedAdmin = access.assignedModules.length > 0;
+      if (!isScopedAdmin) {
+        return;
+      }
+      if (!access.assignedModules.includes("reports")) {
+        throw new AppError(403, "Reports module is not assigned to your account.");
+      }
+      if (!access.assignedReports.includes(key)) {
+        throw new AppError(403, "This report is not assigned to your account.");
+      }
       return;
     }
 
-    const assigned = await this.getUserAssignedReports(user.id);
-    if (!assigned.includes(key)) {
+    const access = await this.getUserReportAccess(user.id);
+    if (!access.assignedReports.includes(key)) {
       throw new AppError(403, "This report is not assigned to your account.");
     }
   }
@@ -1978,8 +2012,15 @@ export class ReportsService {
           const dump = toQty(dumpRangeMap.get(key) ?? 0);
           const transferredIn = toQty(transferInRangeMap.get(key) ?? 0);
           const transferredOut = toQty(transferOutRangeMap.get(key) ?? 0);
-          const openingStock = toQty(closingOpeningByKey.get(key) ?? snapshot.openingStock);
           const purchaseFromMovements = toQty(purchaseRangeMap.get(key) ?? 0);
+          const openingFromSnapshot = toQty(closingOpeningByKey.get(key) ?? snapshot.openingStock);
+          const openingFromBalance = toQty(
+            snapshot.remainingStock - purchaseFromMovements - transferredIn + transferredOut + consumption + dump
+          );
+          const openingStock =
+            Math.abs(openingFromSnapshot - openingFromBalance) > 0.001
+              ? toQty(Math.max(openingFromBalance, 0))
+              : openingFromSnapshot;
           const purchaseFromClosing = toQty(
             snapshot.remainingStock - openingStock - transferredIn + transferredOut + consumption + dump
           );

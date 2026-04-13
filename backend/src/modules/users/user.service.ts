@@ -1,6 +1,7 @@
 import { AppDataSource } from "../../database/data-source";
 import { AppError } from "../../errors/app-error";
 import { UserRole } from "../../constants/roles";
+import { env } from "../../config/env";
 import { User } from "./user.entity";
 import { FindOptionsWhere } from "typeorm";
 
@@ -8,6 +9,23 @@ type SafeUser = Omit<User, "passwordHash">;
 
 export class UserService {
   private readonly userRepository = AppDataSource.getRepository(User);
+  private readonly seedAdminUsername = env.SEED_ADMIN_USERNAME?.trim().toLowerCase() ?? "";
+
+  private normalizeUsername(username: string) {
+    return username.trim().toLowerCase();
+  }
+
+  isSuperAdminAccount(user: Pick<User, "role" | "username">) {
+    return (
+      user.role === UserRole.ADMIN &&
+      this.seedAdminUsername.length > 0 &&
+      this.normalizeUsername(user.username) === this.seedAdminUsername
+    );
+  }
+
+  private isProtectedAdminAccount(user: Pick<User, "role" | "username">) {
+    return this.isSuperAdminAccount(user);
+  }
 
   async findByUsernameForAuth(username: string): Promise<User | null> {
     return this.userRepository
@@ -27,11 +45,30 @@ export class UserService {
     return user;
   }
 
+  async findByIdWithPassword(id: string): Promise<User> {
+    const user = await this.userRepository
+      .createQueryBuilder("user")
+      .addSelect("user.passwordHash")
+      .where("user.id = :id", { id })
+      .getOne();
+
+    if (!user) {
+      throw new AppError(404, "User not found");
+    }
+
+    return user;
+  }
+
   async listStaff(search?: string): Promise<SafeUser[]> {
     const query = this.userRepository
       .createQueryBuilder("user")
-      .where("user.role != :adminRole", { adminRole: UserRole.ADMIN })
       .orderBy("user.createdAt", "DESC");
+
+    if (this.seedAdminUsername.length > 0) {
+      query.where("LOWER(user.username) != LOWER(:seedAdminUsername)", {
+        seedAdminUsername: this.seedAdminUsername
+      });
+    }
 
     if (search) {
       query.andWhere(
@@ -91,7 +128,7 @@ export class UserService {
     if (!user) {
       throw new AppError(404, "Staff member not found");
     }
-    if (user.role === UserRole.ADMIN) {
+    if (this.isProtectedAdminAccount(user)) {
       throw new AppError(403, "Admin account cannot be modified from staff management.");
     }
 
@@ -120,7 +157,7 @@ export class UserService {
     if (!user) {
       throw new AppError(404, "Staff member not found");
     }
-    if (user.role === UserRole.ADMIN) {
+    if (this.isProtectedAdminAccount(user)) {
       throw new AppError(403, "Admin account cannot be modified from staff management.");
     }
 
@@ -129,20 +166,19 @@ export class UserService {
   }
 
   async resetStaffPassword(id: string, passwordHash: string): Promise<SafeUser> {
-    const user = await this.userRepository
-      .createQueryBuilder("user")
-      .addSelect("user.passwordHash")
-      .where("user.id = :id", { id })
-      .getOne();
-
-    if (!user) {
-      throw new AppError(404, "Staff member not found");
-    }
-    if (user.role === UserRole.ADMIN) {
+    const user = await this.findByIdWithPassword(id);
+    if (this.isProtectedAdminAccount(user)) {
       throw new AppError(403, "Admin account cannot be modified from staff management.");
     }
 
     user.passwordHash = passwordHash;
     return this.userRepository.save(user);
+  }
+
+  async updatePassword(id: string, passwordHash: string): Promise<void> {
+    const result = await this.userRepository.update({ id }, { passwordHash });
+    if (!result.affected) {
+      throw new AppError(404, "User not found");
+    }
   }
 }

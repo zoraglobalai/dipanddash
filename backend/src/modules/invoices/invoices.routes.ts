@@ -3,6 +3,7 @@ import { Router } from "express";
 import { UserRole } from "../../constants/roles";
 import { asyncHandler } from "../../middlewares/async-handler";
 import { authenticate, authorizeRoles } from "../../middlewares/auth.middleware";
+import { authorizeScopedAdminAnyModuleAccess } from "../../middlewares/module-access.middleware";
 import { validateRequest } from "../../middlewares/validate.middleware";
 import { InvoicesController } from "./invoices.controller";
 import {
@@ -20,9 +21,24 @@ const invoicesController = new InvoicesController();
 
 router.use(authenticate);
 
-router.get("/stats", validateRequest(invoiceStatsSchema), asyncHandler(invoicesController.getStats));
-router.get("/", validateRequest(invoiceListSchema), asyncHandler(invoicesController.list));
-router.get("/:id", validateRequest(invoiceIdSchema), asyncHandler(invoicesController.getById));
+router.get(
+  "/stats",
+  authorizeScopedAdminAnyModuleAccess("orders", "invoices"),
+  validateRequest(invoiceStatsSchema),
+  asyncHandler(invoicesController.getStats)
+);
+router.get(
+  "/",
+  authorizeScopedAdminAnyModuleAccess("orders", "invoices"),
+  validateRequest(invoiceListSchema),
+  asyncHandler(invoicesController.list)
+);
+router.get(
+  "/:id",
+  authorizeScopedAdminAnyModuleAccess("orders", "invoices"),
+  validateRequest(invoiceIdSchema),
+  asyncHandler(invoicesController.getById)
+);
 
 router.post(
   "/sync-upsert",
@@ -39,6 +55,7 @@ router.post(
 
 router.post(
   "/:id/cancel",
+  authorizeScopedAdminAnyModuleAccess("orders", "invoices"),
   authorizeRoles(UserRole.ADMIN, UserRole.MANAGER, UserRole.ACCOUNTANT),
   validateRequest(cancelInvoiceSchema),
   asyncHandler(invoicesController.cancel)
@@ -46,6 +63,7 @@ router.post(
 
 router.post(
   "/:id/refund",
+  authorizeScopedAdminAnyModuleAccess("orders", "invoices"),
   authorizeRoles(UserRole.ADMIN, UserRole.MANAGER, UserRole.ACCOUNTANT),
   validateRequest(refundInvoiceSchema),
   asyncHandler(invoicesController.refund)
@@ -53,6 +71,7 @@ router.post(
 
 router.post(
   "/:id/kitchen-status",
+  authorizeScopedAdminAnyModuleAccess("orders", "invoices"),
   authorizeRoles(UserRole.ADMIN, UserRole.MANAGER, UserRole.ACCOUNTANT),
   validateRequest(updateKitchenStatusSchema),
   asyncHandler(invoicesController.updateKitchenStatus)
