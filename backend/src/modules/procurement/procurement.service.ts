@@ -212,7 +212,6 @@ const getStockStatus = (currentStock: number, minStock: number) =>
 const normalizeText = (value: string) => value.trim();
 const normalizeLookupKey = (value: string) => normalizeText(value).toLowerCase();
 const normalizeHeaderKey = (value: string) => value.trim().replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
-const dateOnlyPattern = /^\d{4}-\d{2}-\d{2}$/;
 
 const escapeCsvValue = (value: string | number | null | undefined) => {
   const text = value === null || value === undefined ? "" : String(value);
@@ -273,17 +272,43 @@ const parseDateLikeToYmd = (value: string, rowNumber: number, fieldLabel: string
     return "";
   }
 
-  if (dateOnlyPattern.test(trimmed)) {
-    const parsed = new Date(`${trimmed}T00:00:00.000`);
-    if (Number.isNaN(parsed.getTime())) {
-      throw new AppError(422, `Row ${rowNumber}: ${fieldLabel} must be in YYYY-MM-DD format.`);
+  const ymdMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed);
+  if (ymdMatch) {
+    const year = Number(ymdMatch[1]);
+    const month = Number(ymdMatch[2]);
+    const day = Number(ymdMatch[3]);
+    const parsed = new Date(year, month - 1, day);
+    if (
+      Number.isNaN(parsed.getTime()) ||
+      parsed.getFullYear() !== year ||
+      parsed.getMonth() + 1 !== month ||
+      parsed.getDate() !== day
+    ) {
+      throw new AppError(422, `Row ${rowNumber}: ${fieldLabel} must be a valid date.`);
     }
     return trimmed;
   }
 
+  const dmyMatch = /^(\d{2})[-/](\d{2})[-/](\d{4})$/.exec(trimmed);
+  if (dmyMatch) {
+    const day = Number(dmyMatch[1]);
+    const month = Number(dmyMatch[2]);
+    const year = Number(dmyMatch[3]);
+    const parsed = new Date(year, month - 1, day);
+    if (
+      Number.isNaN(parsed.getTime()) ||
+      parsed.getFullYear() !== year ||
+      parsed.getMonth() + 1 !== month ||
+      parsed.getDate() !== day
+    ) {
+      throw new AppError(422, `Row ${rowNumber}: ${fieldLabel} must be a valid date.`);
+    }
+    return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  }
+
   const parsed = new Date(trimmed);
   if (Number.isNaN(parsed.getTime())) {
-    throw new AppError(422, `Row ${rowNumber}: ${fieldLabel} must be in YYYY-MM-DD format.`);
+    throw new AppError(422, `Row ${rowNumber}: ${fieldLabel} must be in YYYY-MM-DD or DD-MM-YYYY format.`);
   }
 
   const year = parsed.getFullYear();
