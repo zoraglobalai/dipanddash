@@ -4,6 +4,15 @@ export class AutoMigration1774865693313 implements MigrationInterface {
     name = 'AutoMigration1774865693313'
 
     public async up(queryRunner: QueryRunner): Promise<void> {
+        // Guard for environments where base schema already exists (for example
+        // DB created earlier via synchronize/manual bootstrap). In that case,
+        // running this generated "baseline" migration would fail on enum/table
+        // already-exists errors and block app startup.
+        const hasUsersTable = await queryRunner.hasTable("users");
+        if (hasUsersTable) {
+            return;
+        }
+
         await queryRunner.query(`CREATE TYPE "public"."users_role_enum" AS ENUM('admin', 'manager', 'accountant', 'staff', 'snooker_staff')`);
         await queryRunner.query(`CREATE TABLE "users" ("id" uuid NOT NULL DEFAULT uuid_generate_v4(), "username" character varying(50) NOT NULL, "passwordHash" character varying(255) NOT NULL, "fullName" character varying(120) NOT NULL, "email" character varying, "role" "public"."users_role_enum" NOT NULL DEFAULT 'staff', "isActive" boolean NOT NULL DEFAULT true, "assignedReports" text array NOT NULL DEFAULT '{}', "assignedModules" text array NOT NULL DEFAULT '{}', "createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(), "updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(), CONSTRAINT "UQ_fe0bb3f6520ee0469504521e710" UNIQUE ("username"), CONSTRAINT "UQ_97672ac88f789774dd47f7c8be3" UNIQUE ("email"), CONSTRAINT "PK_a3ffb1c0c8416b9fc6f907b7433" PRIMARY KEY ("id"))`);
         await queryRunner.query(`CREATE TABLE "attendance_records" ("id" uuid NOT NULL DEFAULT uuid_generate_v4(), "userId" uuid NOT NULL, "punchInAt" TIMESTAMP WITH TIME ZONE NOT NULL, "punchOutAt" TIMESTAMP WITH TIME ZONE, "createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(), "updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(), CONSTRAINT "PK_946920332f5bc9efad3f3023b96" PRIMARY KEY ("id"))`);
