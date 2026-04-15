@@ -1,4 +1,5 @@
 import { Column, CreateDateColumn, Entity, PrimaryGeneratedColumn, UpdateDateColumn } from "typeorm";
+import { INGREDIENT_CATEGORY_KINDS, type IngredientCategoryKind } from "./ingredients.constants";
 
 @Entity({ name: "ingredient_categories" })
 export class IngredientCategory {
@@ -11,6 +12,9 @@ export class IngredientCategory {
   @Column({ type: "varchar", length: 255, nullable: true })
   description!: string | null;
 
+  @Column({ type: "enum", enum: INGREDIENT_CATEGORY_KINDS, default: "core" })
+  kind!: IngredientCategoryKind;
+
   @Column({ type: "boolean", default: true })
   isActive!: boolean;
 
@@ -20,4 +24,3 @@ export class IngredientCategory {
   @UpdateDateColumn({ type: "timestamptz" })
   updatedAt!: Date;
 }
-

@@ -37,6 +37,7 @@ import { ingredientsService } from "@/services/ingredients.service";
 import { reportsService } from "@/services/reports.service";
 import type {
   IngredientCategory,
+  IngredientCategoryKind,
   IngredientAllocationStats,
   IngredientListItem,
   IngredientStockDetails,
@@ -173,9 +174,21 @@ const stockHealthBadge = (status: "HEALTHY" | "LOW_STOCK") => (
   </Box>
 );
 
-export const IngredientEntryPage = () => {
+type IngredientEntryPageProps = {
+  mode?: IngredientCategoryKind;
+};
+
+export const IngredientEntryPage = ({ mode = "core" }: IngredientEntryPageProps) => {
   const toast = useAppToast();
   const todayLedgerDate = useMemo(() => getTodayLedgerDate(), []);
+  const isAdditionalMode = mode === "additional";
+  const pageTitle = isAdditionalMode ? "Additional Stock Management" : "Ingredient & Stock Management";
+  const pageSubtitle = isAdditionalMode
+    ? "Manage packaging and supporting consumables with stock visibility."
+    : "Manage categories, ingredients, and stock operations with clear visibility.";
+  const stockItemLabel = isAdditionalMode ? "Additional Item" : "Ingredient";
+  const stockItemsLabel = isAdditionalMode ? "Additional Items" : "Ingredients";
+  const stockCategoryLabel = isAdditionalMode ? "Additional Category" : "Category";
 
   const [allCategories, setAllCategories] = useState<IngredientCategory[]>([]);
 
@@ -231,7 +244,7 @@ export const IngredientEntryPage = () => {
       const collected: IngredientCategory[] = [];
 
       while (page <= totalPages) {
-        const response = await ingredientsService.getCategories({ page, limit });
+        const response = await ingredientsService.getCategories({ page, limit, kind: mode });
         collected.push(...response.data.categories);
         totalPages = response.data.pagination.totalPages;
         page += 1;
@@ -241,12 +254,13 @@ export const IngredientEntryPage = () => {
     } catch (error) {
       toast.error(extractErrorMessage(error, "Unable to fetch category options."));
     }
-  }, [toast]);
+  }, [mode, toast]);
 
   const fetchCategories = useCallback(async () => {
     setCategoryLoading(true);
     try {
       const response = await ingredientsService.getCategories({
+        kind: mode,
         includeInactive: true,
         search: debouncedCategorySearch || undefined,
         page: categoryPage,
@@ -259,7 +273,7 @@ export const IngredientEntryPage = () => {
     } finally {
       setCategoryLoading(false);
     }
-  }, [categoryLimit, categoryPage, debouncedCategorySearch, toast]);
+  }, [categoryLimit, categoryPage, debouncedCategorySearch, mode, toast]);
 
   const fetchIngredients = useCallback(async () => {
     setIngredientLoading(true);
@@ -267,6 +281,7 @@ export const IngredientEntryPage = () => {
       const response = await ingredientsService.getIngredients({
         search: debouncedIngredientSearch || undefined,
         categoryId: ingredientCategoryFilter || undefined,
+        categoryKind: mode,
         includeInactive: true,
         page: ingredientPage,
         limit: ingredientLimit
@@ -278,19 +293,19 @@ export const IngredientEntryPage = () => {
     } finally {
       setIngredientLoading(false);
     }
-  }, [debouncedIngredientSearch, ingredientCategoryFilter, ingredientLimit, ingredientPage, toast]);
+  }, [debouncedIngredientSearch, ingredientCategoryFilter, ingredientLimit, ingredientPage, mode, toast]);
 
   const fetchStockInsights = useCallback(async () => {
     setStockInsightsLoading(true);
     try {
-      const response = await ingredientsService.getAllocationStats({});
+      const response = await ingredientsService.getAllocationStats({ categoryKind: mode });
       setStockInsights(response.data);
     } catch (error) {
       toast.error(extractErrorMessage(error, "Unable to fetch stock insights."));
     } finally {
       setStockInsightsLoading(false);
     }
-  }, [toast]);
+  }, [mode, toast]);
 
   const fetchIngredientDayLedger = useCallback(async () => {
     setLedgerLoading(true);
@@ -348,12 +363,18 @@ export const IngredientEntryPage = () => {
   }, [fetchIngredients]);
 
   useEffect(() => {
+    if (isAdditionalMode) {
+      return;
+    }
     void fetchStockInsights();
-  }, [fetchStockInsights]);
+  }, [fetchStockInsights, isAdditionalMode]);
 
   useEffect(() => {
+    if (isAdditionalMode) {
+      return;
+    }
     void fetchIngredientDayLedger();
-  }, [fetchIngredientDayLedger]);
+  }, [fetchIngredientDayLedger, isAdditionalMode]);
 
   useEffect(() => {
     setCategoryPage(1);
@@ -364,8 +385,11 @@ export const IngredientEntryPage = () => {
   }, [debouncedIngredientSearch, ingredientCategoryFilter]);
 
   useEffect(() => {
+    if (isAdditionalMode) {
+      return;
+    }
     setLedgerPage(1);
-  }, [debouncedLedgerSearch]);
+  }, [debouncedLedgerSearch, isAdditionalMode]);
 
   const categoryOptions = useMemo(
     () => allCategories.map((category) => ({ label: category.name, value: category.id })),
@@ -380,7 +404,7 @@ export const IngredientEntryPage = () => {
           const response = await ingredientsService.updateCategory(selectedCategory.id, values);
           toast.success(response.message);
         } else {
-          const response = await ingredientsService.createCategory(values);
+          const response = await ingredientsService.createCategory({ ...values, kind: mode });
           toast.success(response.message);
         }
 
@@ -392,7 +416,7 @@ export const IngredientEntryPage = () => {
         setCategoryMutationLoading(false);
       }
     },
-    [categoryModal, fetchCategories, fetchCategoryOptions, fetchIngredients, selectedCategory, toast]
+    [categoryModal, fetchCategories, fetchCategoryOptions, fetchIngredients, mode, selectedCategory, toast]
   );
 
   const handleDeleteCategory = useCallback(async () => {
@@ -400,7 +424,7 @@ export const IngredientEntryPage = () => {
       return;
     }
     if ((selectedCategory.ingredientCount ?? 0) > 0) {
-      toast.warning("This category has ingredients. Move or delete ingredients first.");
+      toast.warning(`This ${stockCategoryLabel.toLowerCase()} has ${stockItemsLabel.toLowerCase()}. Move or delete them first.`);
       deleteCategoryDialog.onClose();
       return;
     }
@@ -416,7 +440,7 @@ export const IngredientEntryPage = () => {
     } finally {
       setCategoryMutationLoading(false);
     }
-  }, [deleteCategoryDialog, fetchCategories, fetchCategoryOptions, fetchIngredients, selectedCategory, toast]);
+  }, [deleteCategoryDialog, fetchCategories, fetchCategoryOptions, fetchIngredients, selectedCategory, stockCategoryLabel, stockItemsLabel, toast]);
 
   const handleIngredientSubmit = useCallback(
     async (values: {
@@ -449,10 +473,10 @@ export const IngredientEntryPage = () => {
   const handleDownloadBulkTemplate = useCallback(async () => {
     setBulkTemplateLoading(true);
     try {
-      const response = await ingredientsService.downloadBulkTemplate();
+      const response = await ingredientsService.downloadBulkTemplate(mode);
       const fileName =
         extractFileNameFromDisposition(response.headers["content-disposition"]) ??
-        "ingredient_bulk_template.csv";
+        `${mode}_ingredient_bulk_template.csv`;
 
       const blob = new Blob([response.data], { type: response.headers["content-type"] ?? "text/csv;charset=utf-8;" });
       const url = URL.createObjectURL(blob);
@@ -461,13 +485,13 @@ export const IngredientEntryPage = () => {
       anchor.download = fileName;
       anchor.click();
       URL.revokeObjectURL(url);
-      toast.success("Ingredient bulk template downloaded.");
+      toast.success(`${stockItemsLabel} bulk template downloaded.`);
     } catch (error) {
-      toast.error(extractErrorMessage(error, "Unable to download ingredient template."));
+      toast.error(extractErrorMessage(error, `Unable to download ${stockItemsLabel.toLowerCase()} template.`));
     } finally {
       setBulkTemplateLoading(false);
     }
-  }, [toast]);
+  }, [mode, stockItemsLabel, toast]);
 
   const openBulkUploadPicker = useCallback(() => {
     bulkUploadInputRef.current?.click();
@@ -490,12 +514,12 @@ export const IngredientEntryPage = () => {
 
       setBulkUploadLoading(true);
       try {
-        const response = await ingredientsService.bulkImportIngredients(selectedFile);
+        const response = await ingredientsService.bulkImportIngredients(selectedFile, mode);
         const summary = response.data;
 
         const skippedRows = summary.skippedExistingIngredients + summary.skippedDuplicateRows;
         toast.success(
-          `Imported ${summary.insertedIngredients} new ingredient(s) and ${summary.insertedCategories} new category(s). Skipped ${skippedRows}, invalid ${summary.invalidRows}.`
+          `Imported ${summary.insertedIngredients} new ${stockItemLabel.toLowerCase()}(s) and ${summary.insertedCategories} new ${stockCategoryLabel.toLowerCase()}(s). Skipped ${skippedRows}, invalid ${summary.invalidRows}.`
         );
 
         if (summary.invalidRowDetails.length) {
@@ -508,12 +532,12 @@ export const IngredientEntryPage = () => {
 
         await Promise.all([fetchIngredients(), fetchCategories(), fetchCategoryOptions(), fetchStockInsights()]);
       } catch (error) {
-        toast.error(extractErrorMessage(error, "Unable to complete ingredient bulk upload."));
+        toast.error(extractErrorMessage(error, `Unable to complete ${stockItemsLabel.toLowerCase()} bulk upload.`));
       } finally {
         setBulkUploadLoading(false);
       }
     },
-    [fetchCategories, fetchCategoryOptions, fetchIngredients, fetchStockInsights, toast]
+    [fetchCategories, fetchCategoryOptions, fetchIngredients, fetchStockInsights, mode, stockCategoryLabel, stockItemLabel, stockItemsLabel, toast]
   );
 
   const handleDeleteIngredient = useCallback(async () => {
@@ -583,7 +607,7 @@ export const IngredientEntryPage = () => {
   const categoryColumns = useMemo(
     () =>
       [
-        { key: "name", header: "Category Name" },
+        { key: "name", header: `${stockCategoryLabel} Name` },
         {
           key: "description",
           header: "Description",
@@ -591,7 +615,7 @@ export const IngredientEntryPage = () => {
         },
         {
           key: "ingredientCount",
-          header: "Ingredients",
+          header: stockItemsLabel,
           render: (row: IngredientCategory) => (
             <Text fontWeight={700} color={(row.ingredientCount ?? 0) > 0 ? "#5B3A2A" : "#7D655B"}>
               {row.ingredientCount ?? 0}
@@ -635,7 +659,7 @@ export const IngredientEntryPage = () => {
                 aria-label={`Delete ${row.name}`}
                 tooltip={
                   (row.ingredientCount ?? 0) > 0
-                    ? "Cannot delete category with ingredients"
+                    ? `Cannot delete ${stockCategoryLabel.toLowerCase()} with ${stockItemsLabel.toLowerCase()}`
                     : `Delete ${row.name}`
                 }
                 icon={<Trash2 size={16} />}
@@ -652,14 +676,14 @@ export const IngredientEntryPage = () => {
           )
         }
       ] as Array<{ key: string; header: string; render?: (row: IngredientCategory) => ReactNode }>,
-    [categoryModal, deleteCategoryDialog]
+    [categoryModal, deleteCategoryDialog, stockCategoryLabel, stockItemsLabel]
   );
 
   const ingredientColumns = useMemo(
     () =>
       [
-        { key: "name", header: "Name" },
-        { key: "categoryName", header: "Category" },
+        { key: "name", header: stockItemLabel },
+        { key: "categoryName", header: stockCategoryLabel },
         {
           key: "totalStock",
           header: "Total Stock",
@@ -745,7 +769,7 @@ export const IngredientEntryPage = () => {
           )
         }
       ] as Array<{ key: string; header: string; render?: (row: IngredientListItem) => ReactNode }>,
-    [deleteIngredientDialog, handleToggleIngredientStatus, ingredientModal, openStockDetails, rowActionLoading]
+    [deleteIngredientDialog, handleToggleIngredientStatus, ingredientModal, openStockDetails, rowActionLoading, stockCategoryLabel, stockItemLabel]
   );
 
   const dayLedgerColumns = useMemo(
@@ -758,7 +782,7 @@ export const IngredientEntryPage = () => {
         },
         {
           key: "ingredient",
-          header: "Ingredient",
+          header: stockItemLabel,
           render: (row: IngredientDayLedgerRow) => (
             <VStack align="start" spacing={0}>
               <Text fontWeight={700}>{row.ingredient}</Text>
@@ -819,32 +843,33 @@ export const IngredientEntryPage = () => {
           render: (row: IngredientDayLedgerRow) => stockHealthBadge(row.stockHealth)
         }
       ] as Array<{ key: string; header: string; render?: (row: IngredientDayLedgerRow) => ReactNode }>,
-    []
+    [stockItemLabel]
   );
 
   return (
     <VStack spacing={6} align="stretch">
       <PageHeader
-        title="Ingredient & Stock Management"
-        subtitle="Manage categories, ingredients, and stock operations with clear visibility."
+        title={pageTitle}
+        subtitle={pageSubtitle}
       />
 
       <Tabs variant="soft-rounded" colorScheme="brand" isLazy>
         <TabList>
-          <Tab>Stats</Tab>
+          {!isAdditionalMode ? <Tab>Stats</Tab> : null}
           <Tab>Categories</Tab>
-          <Tab>Ingredients</Tab>
+          <Tab>{stockItemsLabel}</Tab>
         </TabList>
         <TabPanels>
+          {!isAdditionalMode ? (
           <TabPanel px={0}>
             <AppCard
-              title="Day-wise Ingredient Ledger"
+              title={`Day-wise ${stockItemLabel} Ledger`}
               subtitle="Track opening stock, purchase, dump, consumption, transfers, and remaining stock for current date."
             >
               <VStack spacing={4} align="stretch">
                 <SimpleGrid columns={{ base: 1, md: 2, xl: 4 }} spacing={4}>
                   <AppInput
-                    label="Search Ingredient"
+                    label={`Search ${stockItemLabel}`}
                     placeholder="Filter ledger rows"
                     value={ledgerSearch}
                     onChange={(event) => setLedgerSearch((event.target as HTMLInputElement).value)}
@@ -882,7 +907,7 @@ export const IngredientEntryPage = () => {
                   <SkeletonTable />
                 ) : (
                   <SimpleGrid columns={{ base: 1, sm: 2, md: 3, xl: 5 }} spacing={3}>
-                    <AppCard title="Total Ingredients">
+                    <AppCard title={`Total ${stockItemsLabel}`}>
                       <Text fontSize="3xl" fontWeight={900}>
                         {stockInsights.totals.totalIngredients}
                       </Text>
@@ -905,7 +930,7 @@ export const IngredientEntryPage = () => {
                         active contributors
                       </Text>
                     </AppCard>
-                    <AppCard title="Most Used Ingredient">
+                    <AppCard title={`Most Used ${stockItemLabel}`}>
                       <Text fontSize="lg" fontWeight={900}>
                         {stockInsights.insights.mostUsedIngredient?.ingredientName ?? "-"}
                       </Text>
@@ -930,7 +955,7 @@ export const IngredientEntryPage = () => {
                     emptyState={
                       <EmptyState
                         title="No ledger rows found"
-                        description={`No ingredient ledger rows found for ${todayLedgerDate}.`}
+                        description={`No ${stockItemLabel.toLowerCase()} ledger rows found for ${todayLedgerDate}.`}
                       />
                     }
                   />
@@ -946,6 +971,7 @@ export const IngredientEntryPage = () => {
               </VStack>
             </AppCard>
           </TabPanel>
+          ) : null}
 
           <TabPanel px={0}>
             <AppCard>
@@ -953,7 +979,7 @@ export const IngredientEntryPage = () => {
                 <SimpleGrid columns={{ base: 1, md: 4 }} spacing={4}>
                   <AppInput
                     label="Search"
-                    placeholder="Search categories"
+                    placeholder={`Search ${stockCategoryLabel.toLowerCase()}s`}
                     value={categorySearch}
                     onChange={(event) => setCategorySearch((event.target as HTMLInputElement).value)}
                   />
@@ -981,7 +1007,7 @@ export const IngredientEntryPage = () => {
                         categoryModal.onOpen();
                       }}
                     >
-                      Add Category
+                      {`Add ${stockCategoryLabel}`}
                     </AppButton>
                   </Box>
                 </SimpleGrid>
@@ -995,7 +1021,7 @@ export const IngredientEntryPage = () => {
                     emptyState={
                       <EmptyState
                         title="No categories found"
-                        description="Create your first ingredient category to organize inventory."
+                        description={`Create your first ${stockCategoryLabel.toLowerCase()} to organize inventory.`}
                       />
                     }
                   />
@@ -1044,18 +1070,18 @@ export const IngredientEntryPage = () => {
               <VStack spacing={4} align="stretch">
                 <SimpleGrid columns={{ base: 1, md: 4 }} spacing={4}>
                   <AppInput
-                    label="Search Ingredient"
-                    placeholder="Search by ingredient name"
+                    label={`Search ${stockItemLabel}`}
+                    placeholder={`Search by ${stockItemLabel.toLowerCase()} name`}
                     value={ingredientSearch}
                     onChange={(event) => setIngredientSearch((event.target as HTMLInputElement).value)}
                   />
                   <FormControl>
-                    <FormLabel>Category</FormLabel>
+                    <FormLabel>{stockCategoryLabel}</FormLabel>
                     <Select
                       value={ingredientCategoryFilter}
                       onChange={(event) => setIngredientCategoryFilter(event.target.value)}
                     >
-                      <option value="">All Categories</option>
+                      <option value="">{`All ${stockCategoryLabel}s`}</option>
                       {categoryOptions.map((option) => (
                         <option key={option.value} value={option.value}>
                           {option.label}
@@ -1087,7 +1113,7 @@ export const IngredientEntryPage = () => {
                         ingredientModal.onOpen();
                       }}
                     >
-                      Add Ingredient
+                      {`Add ${stockItemLabel}`}
                     </AppButton>
                   </Box>
                 </SimpleGrid>
@@ -1100,8 +1126,8 @@ export const IngredientEntryPage = () => {
                     rows={ingredientRows}
                     emptyState={
                       <EmptyState
-                        title="No ingredients found"
-                        description="Create ingredients and manage stock to start tracking inventory."
+                        title={`No ${stockItemsLabel.toLowerCase()} found`}
+                        description={`Create ${stockItemsLabel.toLowerCase()} and manage stock to start tracking inventory.`}
                       />
                     }
                   />
@@ -1154,11 +1180,11 @@ export const IngredientEntryPage = () => {
       <ConfirmDialog
         isOpen={deleteCategoryDialog.isOpen}
         onClose={deleteCategoryDialog.onClose}
-        title="Delete Category Permanently"
+        title={`Delete ${stockCategoryLabel} Permanently`}
         description={
           (selectedCategory?.ingredientCount ?? 0) > 0
-            ? `${selectedCategory?.name ?? "This category"} has ${selectedCategory?.ingredientCount ?? 0} ingredient(s). Move or delete ingredients first.`
-            : `Are you sure you want to permanently delete ${selectedCategory?.name ?? "this category"}?`
+            ? `${selectedCategory?.name ?? `This ${stockCategoryLabel.toLowerCase()}`} has ${selectedCategory?.ingredientCount ?? 0} ${stockItemLabel.toLowerCase()}(s). Move or delete them first.`
+            : `Are you sure you want to permanently delete ${selectedCategory?.name ?? `this ${stockCategoryLabel.toLowerCase()}`}?`
         }
         onConfirm={() => void handleDeleteCategory()}
         isLoading={categoryMutationLoading}
@@ -1167,8 +1193,8 @@ export const IngredientEntryPage = () => {
       <ConfirmDialog
         isOpen={deleteIngredientDialog.isOpen}
         onClose={deleteIngredientDialog.onClose}
-        title="Delete Ingredient Permanently"
-        description={`Are you sure you want to permanently delete ${selectedIngredient?.name ?? "this ingredient"}?`}
+        title={`Delete ${stockItemLabel} Permanently`}
+        description={`Are you sure you want to permanently delete ${selectedIngredient?.name ?? `this ${stockItemLabel.toLowerCase()}`}?`}
         onConfirm={() => void handleDeleteIngredient()}
         isLoading={ingredientMutationLoading}
       />

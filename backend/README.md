@@ -55,6 +55,7 @@ Shared backend API for the Dip & Dash web admin now and future desktop POS/staff
 - `npm run seed:admin` - seed initial admin
 - `npm run seed:admin:prod` - seed admin from compiled build
 - `npm run seed:admin:prod:optional` - seed only when `SEED_ADMIN_USERNAME` and `SEED_ADMIN_PASSWORD` are set
+- `npm run import:legacy-workbook -- <workbook-path>` - parse legacy workbook and import additional ingredients, products, and purchase orders
 - `npm run migration:generate` - create migration
 - `npm run migration:run` - run migrations
 - `npm run migration:run:prod` - run migrations from compiled build

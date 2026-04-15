@@ -1,6 +1,7 @@
 import type { IconType } from "react-icons";
 import {
   FiBarChart2,
+  FiBox,
   FiClipboard,
   FiDollarSign,
   FiFileText,
@@ -9,6 +10,7 @@ import {
   FiLayers,
   FiLogOut,
   FiMapPin,
+  FiPackage,
   FiPieChart,
   FiShield,
   FiTag,
@@ -45,7 +47,15 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "Gaming", path: "/gaming", icon: RiGamepadLine, roles: [UserRole.ADMIN], moduleKey: "gaming" },
   { label: "Suppliers", path: "/suppliers", icon: FiTruck, roles: [UserRole.ADMIN], moduleKey: "suppliers" },
   { label: "Purchase", path: "/purchase", icon: FiFileText, roles: [UserRole.ADMIN], moduleKey: "purchase" },
+  { label: "Products", path: "/purchase-products", icon: FiPackage, roles: [UserRole.ADMIN], moduleKey: "purchase" },
   { label: "Ingredient Entry", path: "/ingredient-entry", icon: FiLayers, roles: [UserRole.ADMIN], moduleKey: "ingredient-entry" },
+  {
+    label: "Additional Entry",
+    path: "/additional-entry",
+    icon: FiBox,
+    roles: [UserRole.ADMIN],
+    moduleKey: "additional-entry"
+  },
   { label: "Items Entry", path: "/items-entry", icon: FiTag, roles: [UserRole.ADMIN], moduleKey: "items-entry" },
   { label: "Offers", path: "/offers", icon: FiGift, roles: [UserRole.ADMIN], moduleKey: "offers" },
   { label: "Customer Data", path: "/customer-data", icon: FiUsers, roles: [UserRole.ADMIN], moduleKey: "customer-data" },

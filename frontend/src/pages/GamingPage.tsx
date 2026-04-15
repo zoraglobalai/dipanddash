@@ -64,6 +64,14 @@ const emptyStats: GamingStats = {
     totalRevenue: 0,
     pendingCollection: 0
   },
+  gamingProducts: {
+    purchasedQuantity: 0,
+    purchasedAmount: 0,
+    soldQuantity: 0,
+    soldAmount: 0,
+    estimatedProfit: 0,
+    stockValuation: 0
+  },
   staffCollection: [],
   resourceUsage: []
 };
@@ -376,6 +384,24 @@ export const GamingPage = () => {
           label="Pending Collection"
           value={statsLoading ? "..." : formatCurrency(stats.totals.pendingCollection)}
           helper={`${stats.totals.pendingPayments} payment pending`}
+        />
+      </SimpleGrid>
+
+      <SimpleGrid columns={{ base: 1, sm: 2, xl: 3 }} spacing={4}>
+        <StatsCard
+          label="Gaming Product Purchase"
+          value={statsLoading ? "..." : formatCurrency(stats.gamingProducts.purchasedAmount)}
+          helper={`${stats.gamingProducts.purchasedQuantity} units purchased`}
+        />
+        <StatsCard
+          label="Gaming Product Sales"
+          value={statsLoading ? "..." : formatCurrency(stats.gamingProducts.soldAmount)}
+          helper={`${stats.gamingProducts.soldQuantity} units sold`}
+        />
+        <StatsCard
+          label="Gaming Product Profit"
+          value={statsLoading ? "..." : formatCurrency(stats.gamingProducts.estimatedProfit)}
+          helper={`Stock value ${formatCurrency(stats.gamingProducts.stockValuation)}`}
         />
       </SimpleGrid>
 

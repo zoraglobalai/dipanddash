@@ -13,6 +13,7 @@ import {
   createSupplierSchema,
   deleteProductSchema,
   deleteSupplierSchema,
+  productLedgerSchema,
   productListSchema,
   procurementMetaSchema,
   procurementStatsSchema,
@@ -83,6 +84,12 @@ router.get(
   authorizeAssetsOrPurchaseModule,
   validateRequest(productListSchema),
   asyncHandler(procurementController.listProducts)
+);
+router.get(
+  "/products/ledger",
+  authorizeAssetsOrPurchaseModule,
+  validateRequest(productLedgerSchema),
+  asyncHandler(procurementController.listProductLedger)
 );
 router.get(
   "/products/bulk/template",

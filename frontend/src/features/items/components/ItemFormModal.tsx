@@ -375,7 +375,10 @@ export const ItemFormModal = ({
 
             <Box>
               <Text fontWeight={800} mb={3}>
-                Ingredients / Recipe Builder
+                Ingredients / Additional Consumption Mapping
+              </Text>
+              <Text fontSize="sm" color="#6A5049" mb={3}>
+                Optional: map packaging items like box, straw, cup to auto-reduce stock when this item is sold.
               </Text>
 
               <VStack spacing={3} align="stretch">

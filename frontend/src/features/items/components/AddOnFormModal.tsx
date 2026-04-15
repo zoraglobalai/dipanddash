@@ -328,7 +328,10 @@ export const AddOnFormModal = ({
 
             <Box>
               <Text fontWeight={800} mb={3}>
-                Ingredient Mapping
+                Ingredient / Additional Consumption Mapping
+              </Text>
+              <Text fontSize="sm" color="#6A5049" mb={3}>
+                Optional: map packaging items like cup, cap, straw to auto-reduce stock when this add-on is billed.
               </Text>
 
               <VStack spacing={3} align="stretch">

@@ -39,8 +39,7 @@ import { formatINR } from "@/utils/currency";
 
 type CustomerDraft = { name: string; phone: string };
 type FormMode = "create" | "edit";
-type FoodLineType = "item" | "combo" | "product";
-type FoodDraftLine = { id: string; lineType: FoodLineType; refId: string; quantity: string };
+type FoodDraftLine = { id: string; refId: string; quantity: string };
 
 type BookingForm = {
   bookingType: GamingBookingType;
@@ -98,7 +97,6 @@ const defaultForm = (): BookingForm => ({
 
 const createFoodLine = (): FoodDraftLine => ({
   id: Math.random().toString(36).slice(2, 10),
-  lineType: "item",
   refId: "",
   quantity: "1"
 });
@@ -115,14 +113,8 @@ const calcCheckoutAmount = (booking: GamingBooking, checkOutAtIso: string) => {
   return Number(((minutes / 60) * booking.hourlyRate).toFixed(2));
 };
 
-const getFoodOptionsByType = (snapshot: CatalogSnapshot | null, lineType: FoodLineType) => {
+const getGamingProductOptions = (snapshot: CatalogSnapshot | null) => {
   if (!snapshot) return [] as Array<{ id: string; label: string; unitPrice: number; gstPercentage: number }>;
-  if (lineType === "item") {
-    return snapshot.items.filter((x) => x.isActive).map((x) => ({ id: x.id, label: x.name, unitPrice: x.sellingPrice, gstPercentage: x.gstPercentage }));
-  }
-  if (lineType === "combo") {
-    return snapshot.combos.filter((x) => x.isActive).map((x) => ({ id: x.id, label: x.name, unitPrice: x.sellingPrice, gstPercentage: x.gstPercentage }));
-  }
   return (snapshot.products ?? []).filter((x) => x.isActive).map((x) => ({ id: x.id, label: x.name, unitPrice: x.sellingPrice, gstPercentage: 0 }));
 };
 
@@ -330,15 +322,15 @@ export const StaffGamingBookingPage = () => {
   const foodDraftTotal = useMemo(() => {
     return foodLines.reduce((sum, line) => {
       const quantity = Number(line.quantity) || 0;
-      const option = getFoodOptionsByType(catalog, line.lineType).find((entry) => entry.id === line.refId);
+      const option = getGamingProductOptions(catalog).find((entry) => entry.id === line.refId);
       if (!option || quantity <= 0) return sum;
       return sum + option.unitPrice * quantity;
     }, 0);
   }, [catalog, foodLines]);
 
-  const getFilteredOptions = (lineType: FoodLineType) => {
+  const getFilteredOptions = () => {
     const query = foodSearch.trim().toLowerCase();
-    const options = getFoodOptionsByType(catalog, lineType);
+    const options = getGamingProductOptions(catalog);
     if (!query) return options;
     return options.filter((entry) => entry.label.toLowerCase().includes(query));
   };
@@ -346,14 +338,14 @@ export const StaffGamingBookingPage = () => {
   const saveFoodOrder = async () => {
     if (!foodBooking || !catalog) return;
     const payloadLines = foodLines.map((line) => {
-      const option = getFoodOptionsByType(catalog, line.lineType).find((entry) => entry.id === line.refId);
+      const option = getGamingProductOptions(catalog).find((entry) => entry.id === line.refId);
       const quantity = Number(line.quantity);
       if (!option || !Number.isFinite(quantity) || quantity <= 0) return null;
-      return { lineType: line.lineType, refId: option.id, name: option.label, quantity, unitPrice: option.unitPrice, gstPercentage: option.gstPercentage };
+      return { lineType: "product" as const, refId: option.id, name: option.label, quantity, unitPrice: option.unitPrice, gstPercentage: option.gstPercentage };
     }).filter((line): line is NonNullable<typeof line> => Boolean(line));
 
     if (!payloadLines.length || payloadLines.length !== foodLines.length) {
-      toast({ status: "warning", title: "Please select valid food/product lines" });
+      toast({ status: "warning", title: "Please select valid product lines" });
       return;
     }
 
@@ -629,11 +621,10 @@ export const StaffGamingBookingPage = () => {
           <ModalBody>
             <VStack align="stretch" spacing={3}>
               <Box p={3} borderRadius="12px" border="1px solid rgba(132,79,52,0.18)" bg="#FFFCF7"><Text fontWeight={800}>{foodBooking?.bookingNumber ?? "-"}</Text><Text fontSize="sm" color="#6D584E">{foodBooking?.primaryCustomerName} ({foodBooking?.primaryCustomerPhone}) • {foodBooking?.resourceLabel}</Text></Box>
-              <FormControl><FormLabel>Search Menu/Product</FormLabel><Input value={foodSearch} onChange={(e) => setFoodSearch(e.target.value)} placeholder="Type to filter items, combos, products" /></FormControl>
+              <FormControl><FormLabel>Search Product</FormLabel><Input value={foodSearch} onChange={(e) => setFoodSearch(e.target.value)} placeholder="Type to filter products" /></FormControl>
               {foodLines.map((line) => (
-                <SimpleGrid key={line.id} columns={{ base: 1, md: 4 }} spacing={3} border="1px solid rgba(132,79,52,0.14)" borderRadius="10px" p={3}>
-                  <FormControl><FormLabel>Type</FormLabel><Select value={line.lineType} onChange={(e) => updateFoodLine(line.id, { lineType: e.target.value as FoodLineType, refId: "" })}><option value="item">Item</option><option value="combo">Combo</option><option value="product">Product</option></Select></FormControl>
-                  <FormControl><FormLabel>Selection</FormLabel><Select value={line.refId} onChange={(e) => updateFoodLine(line.id, { refId: e.target.value })}><option value="">Select</option>{getFilteredOptions(line.lineType).map((option) => <option key={`${line.id}-${option.id}`} value={option.id}>{option.label} ({formatINR(option.unitPrice)})</option>)}</Select></FormControl>
+                <SimpleGrid key={line.id} columns={{ base: 1, md: 3 }} spacing={3} border="1px solid rgba(132,79,52,0.14)" borderRadius="10px" p={3}>
+                  <FormControl><FormLabel>Product</FormLabel><Select value={line.refId} onChange={(e) => updateFoodLine(line.id, { refId: e.target.value })}><option value="">Select product</option>{getFilteredOptions().map((option) => <option key={`${line.id}-${option.id}`} value={option.id}>{option.label} ({formatINR(option.unitPrice)})</option>)}</Select></FormControl>
                   <FormControl><FormLabel>Quantity</FormLabel><Input type="number" min={1} value={line.quantity} onChange={(e) => updateFoodLine(line.id, { quantity: e.target.value })} /></FormControl>
                   <FormControl><FormLabel>Action</FormLabel><Button variant="outline" size="sm" onClick={() => removeFoodLine(line.id)} isDisabled={foodLines.length <= 1}>Remove</Button></FormControl>
                 </SimpleGrid>

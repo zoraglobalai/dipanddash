@@ -7,6 +7,7 @@ import type {
   IngredientListItem,
   IngredientStockDetails,
   IngredientStockLog,
+  IngredientCategoryKind,
   IngredientUnit,
   PaginationData,
   StockAuditData
@@ -33,18 +34,27 @@ type StockAuditResponse = StockAuditData;
 type BulkImportResponse = BulkIngredientImportSummary;
 
 export const ingredientsService = {
-  getCategories: async (params?: { search?: string; includeInactive?: boolean; page?: number; limit?: number }) => {
+  getCategories: async (params?: {
+    search?: string;
+    kind?: IngredientCategoryKind;
+    includeInactive?: boolean;
+    page?: number;
+    limit?: number;
+  }) => {
     const response = await apiClient.get<ApiSuccess<CategoryListResponse>>("/ingredients/categories", { params });
     return response.data;
   },
-  createCategory: async (payload: { name: string; description?: string }) => {
+  createCategory: async (payload: { name: string; description?: string; kind?: IngredientCategoryKind }) => {
     const response = await apiClient.post<ApiSuccess<{ category: IngredientCategory }>>(
       "/ingredients/categories",
       payload
     );
     return response.data;
   },
-  updateCategory: async (id: string, payload: { name?: string; description?: string; isActive?: boolean }) => {
+  updateCategory: async (
+    id: string,
+    payload: { name?: string; description?: string; kind?: IngredientCategoryKind; isActive?: boolean }
+  ) => {
     const response = await apiClient.patch<ApiSuccess<{ category: IngredientCategory }>>(
       `/ingredients/categories/${id}`,
       payload
@@ -60,6 +70,7 @@ export const ingredientsService = {
   getIngredients: async (params?: {
     search?: string;
     categoryId?: string;
+    categoryKind?: IngredientCategoryKind;
     includeInactive?: boolean;
     withMovementStats?: boolean;
     page?: number;
@@ -119,7 +130,12 @@ export const ingredientsService = {
     );
     return response.data;
   },
-  getAllocationStats: async (params: { date?: string; search?: string; categoryId?: string }) => {
+  getAllocationStats: async (params: {
+    date?: string;
+    search?: string;
+    categoryId?: string;
+    categoryKind?: IngredientCategoryKind;
+  }) => {
     const response = await apiClient.get<ApiSuccess<AllocationStatsResponse>>("/ingredients/allocations/stats", {
       params
     });
@@ -142,16 +158,18 @@ export const ingredientsService = {
     >(`/ingredients/closing/reports/${reportId}/reopen`);
     return response.data;
   },
-  downloadBulkTemplate: async () => {
+  downloadBulkTemplate: async (kind?: IngredientCategoryKind) => {
     return apiClient.get<Blob>("/ingredients/bulk/template", {
+      params: kind ? { kind } : undefined,
       responseType: "blob"
     });
   },
-  bulkImportIngredients: async (file: File) => {
+  bulkImportIngredients: async (file: File, kind?: IngredientCategoryKind) => {
     const formData = new FormData();
     formData.append("file", file);
 
     const response = await apiClient.post<ApiSuccess<BulkImportResponse>>("/ingredients/bulk/import", formData, {
+      params: kind ? { kind } : undefined,
       headers: {
         "Content-Type": "multipart/form-data"
       }

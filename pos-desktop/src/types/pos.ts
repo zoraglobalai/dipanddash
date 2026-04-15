@@ -64,6 +64,8 @@ export type CatalogProduct = {
   category: string;
   unit: string;
   sellingPrice: number;
+  purchaseUnitPrice: number;
+  targetSection: "dip_and_dash" | "gaming" | "both";
   currentStock: number;
   isActive: boolean;
 };

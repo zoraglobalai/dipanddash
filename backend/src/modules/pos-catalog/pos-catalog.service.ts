@@ -1,5 +1,6 @@
 import { MoreThan, MoreThanOrEqual } from "typeorm";
 
+import { UserRole } from "../../constants/roles";
 import { AppDataSource } from "../../database/data-source";
 import { DailyAllocation } from "../ingredients/daily-allocation.entity";
 import { Ingredient } from "../ingredients/ingredient.entity";
@@ -65,7 +66,7 @@ export class PosCatalogService {
     ]);
   }
 
-  async getSnapshot(input?: { sinceVersion?: string; allocationDate?: string }) {
+  async getSnapshot(input?: { sinceVersion?: string; allocationDate?: string; actorRole?: UserRole }) {
     const now = new Date();
     const version = await this.getLatestVersion();
     const sinceDate = input?.sinceVersion ? new Date(input.sinceVersion) : null;
@@ -127,6 +128,19 @@ export class PosCatalogService {
           order: { lastUpdatedAt: "DESC" }
         })
       ]);
+
+    const isSnookerStaff = input?.actorRole === UserRole.SNOOKER_STAFF;
+    const visibleItems = isSnookerStaff ? [] : items;
+    const visibleItemIngredients = isSnookerStaff ? [] : itemIngredients;
+    const visibleAddOns = isSnookerStaff ? [] : addOns;
+    const visibleAddOnIngredients = isSnookerStaff ? [] : addOnIngredients;
+    const visibleCombos = isSnookerStaff ? [] : combos;
+    const visibleComboItems = isSnookerStaff ? [] : comboItems;
+    const visibleProducts = products.filter((product) =>
+      isSnookerStaff
+        ? product.targetSection === "gaming" || product.targetSection === "both"
+        : product.targetSection === "dip_and_dash" || product.targetSection === "both"
+    );
 
     const allocationPoolMap = new Map<
       string,
@@ -207,7 +221,7 @@ export class PosCatalogService {
         isActive: category.isActive,
         updatedAt: category.updatedAt
       })),
-      items: items.map((item) => ({
+      items: visibleItems.map((item) => ({
         id: item.id,
         name: item.name,
         categoryId: item.categoryId,
@@ -217,7 +231,7 @@ export class PosCatalogService {
         note: item.note,
         updatedAt: item.updatedAt
       })),
-      itemRecipes: itemIngredients.map((recipe) => ({
+      itemRecipes: visibleItemIngredients.map((recipe) => ({
         id: recipe.id,
         itemId: recipe.itemId,
         ingredientId: recipe.ingredientId,
@@ -229,7 +243,7 @@ export class PosCatalogService {
         costContribution: Number(recipe.costContribution),
         updatedAt: recipe.updatedAt
       })),
-      addOns: addOns.map((addOn) => ({
+      addOns: visibleAddOns.map((addOn) => ({
         id: addOn.id,
         name: addOn.name,
         sellingPrice: Number(addOn.sellingPrice),
@@ -237,7 +251,7 @@ export class PosCatalogService {
         isActive: addOn.isActive,
         updatedAt: addOn.updatedAt
       })),
-      addOnRecipes: addOnIngredients.map((recipe) => ({
+      addOnRecipes: visibleAddOnIngredients.map((recipe) => ({
         id: recipe.id,
         addOnId: recipe.addOnId,
         ingredientId: recipe.ingredientId,
@@ -249,7 +263,7 @@ export class PosCatalogService {
         costContribution: Number(recipe.costContribution),
         updatedAt: recipe.updatedAt
       })),
-      combos: combos.map((combo) => ({
+      combos: visibleCombos.map((combo) => ({
         id: combo.id,
         name: combo.name,
         sellingPrice: Number(combo.sellingPrice),
@@ -257,7 +271,7 @@ export class PosCatalogService {
         isActive: combo.isActive,
         updatedAt: combo.updatedAt
       })),
-      comboItems: comboItems.map((comboItem) => ({
+      comboItems: visibleComboItems.map((comboItem) => ({
         id: comboItem.id,
         comboId: comboItem.comboId,
         itemId: comboItem.itemId,
@@ -265,13 +279,46 @@ export class PosCatalogService {
         quantity: Number(comboItem.quantity),
         updatedAt: comboItem.updatedAt
       })),
-      products: products.map((product) => ({
+      products: visibleProducts.map((product) => ({
+        ...(function resolveSectionStocks() {
+          const totalStock = Number(product.currentStock);
+          const dipAndDashStock = Number(product.dipAndDashStock);
+          const gamingStock = Number(product.gamingStock);
+
+          const normalizedTotal = Number.isFinite(totalStock) ? Number(totalStock.toFixed(3)) : 0;
+          const normalizedDip = Number.isFinite(dipAndDashStock) ? Number(dipAndDashStock.toFixed(3)) : 0;
+          const normalizedGaming = Number.isFinite(gamingStock) ? Number(gamingStock.toFixed(3)) : 0;
+
+          let currentStock = normalizedTotal;
+          if (isSnookerStaff) {
+            currentStock =
+              product.targetSection === "both"
+                ? normalizedGaming
+                : product.targetSection === "gaming"
+                  ? normalizedTotal
+                  : 0;
+          } else {
+            currentStock =
+              product.targetSection === "both"
+                ? normalizedDip
+                : product.targetSection === "dip_and_dash"
+                  ? normalizedTotal
+                  : 0;
+          }
+
+          return {
+            currentStock,
+            dipAndDashAssignedStock: normalizedDip,
+            gamingAssignedStock: normalizedGaming
+          };
+        })(),
         id: product.id,
         name: product.name,
         category: product.category,
         unit: product.unit,
-        sellingPrice: Number(product.purchaseUnitPrice),
-        currentStock: Number(product.currentStock),
+        sellingPrice: Number(product.sellingPrice),
+        purchaseUnitPrice: Number(product.purchaseUnitPrice),
+        targetSection: product.targetSection,
         isActive: product.isActive,
         updatedAt: product.updatedAt
       })),

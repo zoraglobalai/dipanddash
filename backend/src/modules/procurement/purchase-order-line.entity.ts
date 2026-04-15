@@ -61,6 +61,12 @@ export class PurchaseOrderLine {
   stockAdded!: number;
 
   @Column({ type: "numeric", precision: 12, scale: 3, nullable: true })
+  dipAndDashStockAdded!: number | null;
+
+  @Column({ type: "numeric", precision: 12, scale: 3, nullable: true })
+  gamingStockAdded!: number | null;
+
+  @Column({ type: "numeric", precision: 12, scale: 3, nullable: true })
   enteredQuantity!: number | null;
 
   @Column({ type: "varchar", length: 30, nullable: true })

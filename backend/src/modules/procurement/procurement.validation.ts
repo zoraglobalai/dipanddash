@@ -1,7 +1,12 @@
 import { z } from "zod";
 
 import { INGREDIENT_UNITS } from "../ingredients/ingredients.constants";
-import { PRODUCT_UNITS, PURCHASE_LINE_TYPES, PURCHASE_ORDER_TYPES } from "./procurement.constants";
+import {
+  PRODUCT_TARGET_SECTIONS,
+  PRODUCT_UNITS,
+  PURCHASE_LINE_TYPES,
+  PURCHASE_ORDER_TYPES
+} from "./procurement.constants";
 
 const datePattern = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -46,6 +51,10 @@ const productBodySchema = z.object({
   packSize: z.string().trim().max(60).optional(),
   unit: z.enum(PRODUCT_UNITS),
   minStock: z.coerce.number().min(0, "Minimum stock cannot be negative").default(0),
+  sellingPrice: z.coerce.number().min(0, "Selling price cannot be negative").default(0),
+  targetSection: z.enum(PRODUCT_TARGET_SECTIONS).default("dip_and_dash"),
+  dipAndDashAssignedStock: z.coerce.number().min(0, "Dip & Dash assigned stock cannot be negative").optional(),
+  gamingAssignedStock: z.coerce.number().min(0, "Snooker assigned stock cannot be negative").optional(),
   defaultSupplierId: z.string().uuid("Invalid supplier id").optional().nullable(),
   isActive: z.boolean().optional()
 });
@@ -55,9 +64,20 @@ export const productListSchema = z.object({
     search: z.string().trim().optional(),
     category: z.string().trim().optional(),
     supplierId: z.string().uuid("Invalid supplier id").optional(),
+    targetSection: z.enum(PRODUCT_TARGET_SECTIONS).optional(),
     includeInactive: z.coerce.boolean().optional(),
     page: z.coerce.number().int().min(1).default(1),
     limit: z.coerce.number().int().min(1).max(200).default(10)
+  })
+});
+
+export const productLedgerSchema = z.object({
+  query: z.object({
+    date: z.string().regex(datePattern, "Date must be in YYYY-MM-DD format").optional(),
+    search: z.string().trim().optional(),
+    targetSection: z.enum(PRODUCT_TARGET_SECTIONS).optional(),
+    page: z.coerce.number().int().min(1).default(1),
+    limit: z.coerce.number().int().min(1).max(200).default(12)
   })
 });
 

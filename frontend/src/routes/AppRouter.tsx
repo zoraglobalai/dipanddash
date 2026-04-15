@@ -23,6 +23,9 @@ const AttendancePage = lazy(() =>
 const IngredientEntryPage = lazy(() =>
   import("@/pages/IngredientEntryPage").then((module) => ({ default: module.IngredientEntryPage }))
 );
+const AdditionalEntryPage = lazy(() =>
+  import("@/pages/AdditionalEntryPage").then((module) => ({ default: module.AdditionalEntryPage }))
+);
 const ItemEntryPage = lazy(() =>
   import("@/pages/ItemEntryPage").then((module) => ({ default: module.ItemEntryPage }))
 );
@@ -160,6 +163,16 @@ export const AppRouter = () => {
               }
             />
             <Route
+              path={APP_ROUTES.ADDITIONAL_ENTRY}
+              element={
+                <ModuleGuard allow={["additional-entry"]}>
+                  <Suspended>
+                    <AdditionalEntryPage />
+                  </Suspended>
+                </ModuleGuard>
+              }
+            />
+            <Route
               path={APP_ROUTES.OFFERS}
               element={
                 <ModuleGuard allow={["offers"]}>
@@ -184,7 +197,17 @@ export const AppRouter = () => {
               element={
                 <ModuleGuard allow={["purchase"]}>
                   <Suspended>
-                    <PurchasePage />
+                    <PurchasePage initialSection="orders" standalone />
+                  </Suspended>
+                </ModuleGuard>
+              }
+            />
+            <Route
+              path={APP_ROUTES.PURCHASE_PRODUCTS}
+              element={
+                <ModuleGuard allow={["purchase"]}>
+                  <Suspended>
+                    <PurchasePage initialSection="products" standalone />
                   </Suspended>
                 </ModuleGuard>
               }

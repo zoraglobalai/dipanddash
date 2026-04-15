@@ -1,4 +1,4 @@
-import { EntityManager, MoreThan, QueryFailedError } from "typeorm";
+import { EntityManager, In, MoreThan, QueryFailedError } from "typeorm";
 
 import { UserRole } from "../../constants/roles";
 import { AppDataSource } from "../../database/data-source";
@@ -7,6 +7,7 @@ import { Customer } from "../customers/customer.entity";
 import { DailyAllocation } from "../ingredients/daily-allocation.entity";
 import { Ingredient } from "../ingredients/ingredient.entity";
 import { IngredientStock } from "../ingredients/ingredient-stock.entity";
+import { Product } from "../procurement/product.entity";
 import { User } from "../users/user.entity";
 import {
   type KitchenStatus,
@@ -294,6 +295,107 @@ export class InvoicesService {
     sameDateAllocation.usedQuantity = nextUsed;
     sameDateAllocation.remainingQuantity = toQty(Math.max(allocated - nextUsed, 0));
     await manager.save(DailyAllocation, sameDateAllocation);
+  }
+
+  private async applyProductSalesToStock(
+    manager: EntityManager,
+    lines: Array<{
+      lineType: SyncInvoiceLinePayload["lineType"];
+      referenceId?: string | null;
+      quantity: number;
+    }>,
+    orderType: InvoiceOrderType
+  ) {
+    const soldByProductId = new Map<string, number>();
+    const isSnookerOrder = orderType === "snooker";
+
+    for (const line of lines) {
+      if (line.lineType !== "product" || !line.referenceId) {
+        continue;
+      }
+
+      const soldQuantity = toQty(Number(line.quantity));
+      if (!Number.isFinite(soldQuantity) || soldQuantity <= 0) {
+        continue;
+      }
+
+      const current = soldByProductId.get(line.referenceId) ?? 0;
+      soldByProductId.set(line.referenceId, toQty(current + soldQuantity));
+    }
+
+    if (!soldByProductId.size) {
+      return;
+    }
+
+    const productIds = [...soldByProductId.keys()];
+    const products = await manager.find(Product, {
+      where: { id: In(productIds) }
+    });
+    const productMap = new Map(products.map((product) => [product.id, product]));
+
+    const touchedProducts: Product[] = [];
+    for (const productId of productIds) {
+      const product = productMap.get(productId);
+      if (!product) {
+        throw new AppError(404, "Product not found for invoice line.");
+      }
+
+      const soldQuantity = soldByProductId.get(productId) ?? 0;
+      const availableStock = toQty(Number(product.currentStock));
+      let dipAndDashStock = toQty(Number(product.dipAndDashStock));
+      let gamingStock = toQty(Number(product.gamingStock));
+
+      if (product.targetSection === "dip_and_dash") {
+        dipAndDashStock = availableStock;
+        gamingStock = 0;
+      } else if (product.targetSection === "gaming") {
+        dipAndDashStock = 0;
+        gamingStock = availableStock;
+      } else {
+        const sectionTotal = toQty(dipAndDashStock + gamingStock);
+        if (Math.abs(sectionTotal - availableStock) > 0.001) {
+          if (sectionTotal > 0) {
+            const ratio = dipAndDashStock / sectionTotal;
+            dipAndDashStock = toQty(availableStock * ratio);
+            gamingStock = toQty(Math.max(availableStock - dipAndDashStock, 0));
+          } else {
+            dipAndDashStock = toQty(availableStock / 2);
+            gamingStock = toQty(Math.max(availableStock - dipAndDashStock, 0));
+          }
+        }
+      }
+
+      if (product.targetSection === "dip_and_dash" && isSnookerOrder) {
+        throw new AppError(409, `${product.name} is not assigned to Snooker inventory.`);
+      }
+      if (product.targetSection === "gaming" && !isSnookerOrder) {
+        throw new AppError(409, `${product.name} is not assigned to Dip & Dash inventory.`);
+      }
+
+      const sectionLabel = isSnookerOrder ? "Snooker" : "Dip & Dash";
+      const sectionStock = isSnookerOrder ? gamingStock : dipAndDashStock;
+      if (sectionStock + 0.000001 < soldQuantity) {
+        throw new AppError(
+          409,
+          `Insufficient ${sectionLabel} stock for ${product.name}. Available ${sectionStock} ${product.unit}, required ${soldQuantity} ${product.unit}.`
+        );
+      }
+
+      if (isSnookerOrder) {
+        gamingStock = toQty(Math.max(gamingStock - soldQuantity, 0));
+      } else {
+        dipAndDashStock = toQty(Math.max(dipAndDashStock - soldQuantity, 0));
+      }
+
+      product.dipAndDashStock = dipAndDashStock;
+      product.gamingStock = gamingStock;
+      product.currentStock = toQty(Math.max(dipAndDashStock + gamingStock, 0));
+      touchedProducts.push(product);
+    }
+
+    if (touchedProducts.length) {
+      await manager.save(Product, touchedProducts);
+    }
   }
 
   async listInvoices(filters: InvoiceListFilters, contextUser: ContextUser) {
@@ -627,6 +729,10 @@ export class InvoicesService {
         );
 
         const shouldApplyUsage = payload.status === "paid" && !wasPaid;
+        if (shouldApplyUsage) {
+          await this.applyProductSalesToStock(manager, payload.lines, payload.orderType);
+        }
+
         if (shouldApplyUsage && payload.usageEvents.length) {
           const usageRows: InvoiceUsageEvent[] = [];
           for (const event of payload.usageEvents) {

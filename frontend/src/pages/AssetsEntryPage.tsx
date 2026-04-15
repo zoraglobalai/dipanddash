@@ -287,7 +287,11 @@ export const AssetsEntryPage = () => {
     stockValuation: 0,
     totalPurchasedQuantity: 0,
     totalPurchasedAmount: 0,
-    topPurchasedProducts: []
+    totalSoldQuantity: 0,
+    totalSoldAmount: 0,
+    totalEstimatedProfit: 0,
+    topPurchasedProducts: [],
+    topSoldProducts: []
   });
   const [procurementSummary, setProcurementSummary] = useState<ProcurementStatsResponse["summary"]>({
     totalSuppliers: 0,

@@ -14,6 +14,7 @@ export const ADMIN_MODULE_KEYS = [
   "suppliers",
   "purchase",
   "ingredient-entry",
+  "additional-entry",
   "items-entry",
   "offers",
   "customer-data",
@@ -37,6 +38,11 @@ export const STAFF_ASSIGNABLE_MODULE_OPTIONS: AppSelectOption[] = [
   { label: "Suppliers", value: "suppliers", description: "Allow access to supplier management." },
   { label: "Purchase", value: "purchase", description: "Allow access to purchase module." },
   { label: "Ingredient Entry", value: "ingredient-entry", description: "Allow access to ingredient entry module." },
+  {
+    label: "Additional Entry",
+    value: "additional-entry",
+    description: "Allow access to additional packaging/consumables inventory."
+  },
   { label: "Items Entry", value: "items-entry", description: "Allow access to item/add-on/combo entry module." },
   { label: "Offers", value: "offers", description: "Allow access to offers and coupons module." },
   { label: "Customer Data", value: "customer-data", description: "Allow access to customer data module." },
@@ -59,6 +65,7 @@ export const ADMIN_MODULE_ROUTE_MAP: Record<AdminModuleKey, string> = {
   suppliers: APP_ROUTES.SUPPLIERS,
   purchase: APP_ROUTES.PURCHASE,
   "ingredient-entry": APP_ROUTES.INGREDIENT_ENTRY,
+  "additional-entry": APP_ROUTES.ADDITIONAL_ENTRY,
   "items-entry": APP_ROUTES.ITEMS_ENTRY,
   offers: APP_ROUTES.OFFERS,
   "customer-data": "/customer-data",

@@ -5,6 +5,7 @@ import { sendSuccess } from "../../common/api-response";
 import { AUTH_MESSAGES } from "../../constants/auth";
 import { AppError } from "../../errors/app-error";
 import { IngredientsService } from "./ingredients.service";
+import { INGREDIENT_CATEGORY_KINDS, type IngredientCategoryKind } from "./ingredients.constants";
 
 type UploadRequest = Request & {
   file?: Express.Multer.File;
@@ -30,6 +31,21 @@ const parseBoolean = (value: unknown, fallback: boolean) => {
   }
 
   return fallback;
+};
+
+const parseCategoryKind = (value: unknown): IngredientCategoryKind | undefined => {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) {
+    return undefined;
+  }
+
+  return INGREDIENT_CATEGORY_KINDS.includes(normalized as IngredientCategoryKind)
+    ? (normalized as IngredientCategoryKind)
+    : undefined;
 };
 
 export class IngredientsController {
@@ -111,7 +127,8 @@ export class IngredientsController {
   };
 
   downloadBulkTemplate = async (_req: Request, res: Response): Promise<Response> => {
-    const template = this.ingredientsService.getBulkImportTemplate();
+    const kind = parseCategoryKind(_req.query.kind) ?? "core";
+    const template = this.ingredientsService.getBulkImportTemplate(kind);
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
     res.setHeader("Content-Disposition", `attachment; filename="${template.fileName}"`);
     return res.status(StatusCodes.OK).send(template.content);
@@ -122,13 +139,15 @@ export class IngredientsController {
       throw new AppError(StatusCodes.BAD_REQUEST, "Please choose a CSV file to upload.");
     }
 
-    const data = await this.ingredientsService.bulkImportIngredientsFromCsv(req.file.buffer);
+    const kind = parseCategoryKind(req.query.kind) ?? "core";
+    const data = await this.ingredientsService.bulkImportIngredientsFromCsv(req.file.buffer, kind);
     return sendSuccess(res, StatusCodes.OK, "Ingredient bulk import completed successfully", data);
   };
 
   listCategories = async (req: Request, res: Response): Promise<Response> => {
     const data = await this.ingredientsService.listCategories({
       search: typeof req.query.search === "string" ? req.query.search : undefined,
+      kind: parseCategoryKind(req.query.kind),
       includeInactive: parseBoolean(req.query.includeInactive, false),
       page: parsePositiveInt(req.query.page, 1),
       limit: parsePositiveInt(req.query.limit, 10)
@@ -156,6 +175,7 @@ export class IngredientsController {
     const data = await this.ingredientsService.listIngredients({
       search: typeof req.query.search === "string" ? req.query.search : undefined,
       categoryId: typeof req.query.categoryId === "string" ? req.query.categoryId : undefined,
+      categoryKind: parseCategoryKind(req.query.categoryKind),
       includeInactive: parseBoolean(req.query.includeInactive, true),
       withMovementStats: parseBoolean(req.query.withMovementStats, false),
       page: parsePositiveInt(req.query.page, 1),
@@ -203,7 +223,8 @@ export class IngredientsController {
     const data = await this.ingredientsService.getAllocationStats({
       date: typeof req.query.date === "string" ? req.query.date : "",
       search: typeof req.query.search === "string" ? req.query.search : undefined,
-      categoryId: typeof req.query.categoryId === "string" ? req.query.categoryId : undefined
+      categoryId: typeof req.query.categoryId === "string" ? req.query.categoryId : undefined,
+      categoryKind: parseCategoryKind(req.query.categoryKind)
     });
     return sendSuccess(res, StatusCodes.OK, "Allocation stats fetched successfully", data);
   };

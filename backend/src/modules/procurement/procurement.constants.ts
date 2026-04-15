@@ -1,8 +1,10 @@
 export const PURCHASE_LINE_TYPES = ["ingredient", "product"] as const;
 export const PURCHASE_ORDER_TYPES = ["ingredient", "product", "mixed"] as const;
+export const PRODUCT_TARGET_SECTIONS = ["dip_and_dash", "gaming", "both"] as const;
 
 export type PurchaseLineType = (typeof PURCHASE_LINE_TYPES)[number];
 export type PurchaseOrderType = (typeof PURCHASE_ORDER_TYPES)[number];
+export type ProductTargetSection = (typeof PRODUCT_TARGET_SECTIONS)[number];
 
 export const PRODUCT_UNITS = [
   "pcs",

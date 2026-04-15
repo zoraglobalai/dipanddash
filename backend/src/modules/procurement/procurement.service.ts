@@ -8,12 +8,15 @@ import { Ingredient } from "../ingredients/ingredient.entity";
 import { IngredientStockLogType } from "../ingredients/ingredients.constants";
 import { IngredientStockLog } from "../ingredients/ingredient-stock-log.entity";
 import { IngredientStock } from "../ingredients/ingredient-stock.entity";
+import { InvoiceLine } from "../invoices/invoice-line.entity";
 import { Product } from "./product.entity";
 import {
+  PRODUCT_TARGET_SECTIONS,
   PRODUCT_UNITS,
   PURCHASE_LINE_TYPES,
   PURCHASE_ORDER_TYPES,
   type PurchaseLineType,
+  type ProductTargetSection,
   type ProductUnit,
   type PurchaseOrderType
 } from "./procurement.constants";
@@ -41,7 +44,14 @@ type ProductListFilters = PaginationFilters & {
   search?: string;
   category?: string;
   supplierId?: string;
+  targetSection?: ProductTargetSection;
   includeInactive?: boolean;
+};
+
+type ProductDayLedgerFilters = PaginationFilters & {
+  date?: string;
+  search?: string;
+  targetSection?: ProductTargetSection;
 };
 
 type PurchaseOrderListFilters = PaginationFilters & {
@@ -81,6 +91,10 @@ type CreateProductPayload = {
   packSize?: string;
   unit: ProductUnit;
   minStock: number;
+  sellingPrice: number;
+  targetSection: ProductTargetSection;
+  dipAndDashAssignedStock?: number;
+  gamingAssignedStock?: number;
   defaultSupplierId?: string | null;
   isActive?: boolean;
 };
@@ -144,6 +158,8 @@ type ProductBulkCsvRow = {
   unit: ProductUnit;
   defaultSupplierName: string | null;
   minStock: number;
+  sellingPrice: number;
+  targetSection: ProductTargetSection;
   isActive: boolean;
 };
 
@@ -155,10 +171,13 @@ const PRODUCT_BULK_TEMPLATE_HEADERS = [
   "unit",
   "default_supplier_name",
   "min_stock",
+  "selling_price",
+  "target_section",
   "is_active"
 ] as const;
 
 const VALID_PRODUCT_UNIT_SET = new Set<string>(PRODUCT_UNITS.map((unit) => unit.toLowerCase()));
+const VALID_PRODUCT_TARGET_SECTION_SET = new Set<string>(PRODUCT_TARGET_SECTIONS.map((section) => section.toLowerCase()));
 const MAX_PRODUCT_BULK_INVALID_DETAILS = 40;
 
 const toNumber = (value: string | number | null | undefined) => {
@@ -171,6 +190,110 @@ const toNumber = (value: string | number | null | undefined) => {
 
 const toFixedQuantity = (value: number) => Number(value.toFixed(3));
 const toFixedPrice = (value: number) => Number(value.toFixed(2));
+
+const resolveDayRangeInUtc = (date: string) => {
+  const start = new Date(`${date}T00:00:00.000+05:30`);
+  if (Number.isNaN(start.getTime())) {
+    throw new AppError(422, "Date must be in YYYY-MM-DD format.");
+  }
+  const end = new Date(start.getTime() + 24 * 60 * 60 * 1000);
+  return { start, end };
+};
+
+const normalizeProductSectionStocks = (input: {
+  targetSection: ProductTargetSection;
+  currentStock: number;
+  dipAndDashStock: number;
+  gamingStock: number;
+}) => {
+  const currentStock = toFixedQuantity(Math.max(0, toNumber(input.currentStock)));
+  const rawDip = toFixedQuantity(Math.max(0, toNumber(input.dipAndDashStock)));
+  const rawGaming = toFixedQuantity(Math.max(0, toNumber(input.gamingStock)));
+
+  if (input.targetSection === "dip_and_dash") {
+    return {
+      currentStock,
+      dipAndDashStock: currentStock,
+      gamingStock: 0
+    };
+  }
+
+  if (input.targetSection === "gaming") {
+    return {
+      currentStock,
+      dipAndDashStock: 0,
+      gamingStock: currentStock
+    };
+  }
+
+  const assignedTotal = toFixedQuantity(rawDip + rawGaming);
+  if (Math.abs(assignedTotal - currentStock) <= 0.001) {
+    return {
+      currentStock,
+      dipAndDashStock: rawDip,
+      gamingStock: rawGaming
+    };
+  }
+
+  if (currentStock <= 0) {
+    return {
+      currentStock: 0,
+      dipAndDashStock: 0,
+      gamingStock: 0
+    };
+  }
+
+  if (assignedTotal > 0) {
+    const ratio = rawDip / assignedTotal;
+    const dipAndDashStock = toFixedQuantity(currentStock * ratio);
+    return {
+      currentStock,
+      dipAndDashStock,
+      gamingStock: toFixedQuantity(currentStock - dipAndDashStock)
+    };
+  }
+
+  return {
+    currentStock,
+    dipAndDashStock: currentStock,
+    gamingStock: 0
+  };
+};
+
+const applyProductPurchaseSplit = (product: Product, stockAdded: number) => {
+  const added = toFixedQuantity(Math.max(0, toNumber(stockAdded)));
+  const existing = normalizeProductSectionStocks({
+    targetSection: product.targetSection,
+    currentStock: toNumber(product.currentStock),
+    dipAndDashStock: toNumber(product.dipAndDashStock),
+    gamingStock: toNumber(product.gamingStock)
+  });
+
+  let dipAndDashAdded = 0;
+  let gamingAdded = 0;
+
+  if (product.targetSection === "dip_and_dash") {
+    dipAndDashAdded = added;
+  } else if (product.targetSection === "gaming") {
+    gamingAdded = added;
+  } else {
+    const baseTotal = toFixedQuantity(existing.dipAndDashStock + existing.gamingStock);
+    const ratio = baseTotal > 0 ? existing.dipAndDashStock / baseTotal : 0.5;
+    dipAndDashAdded = toFixedQuantity(added * ratio);
+    gamingAdded = toFixedQuantity(added - dipAndDashAdded);
+  }
+
+  const nextDipAndDash = toFixedQuantity(existing.dipAndDashStock + dipAndDashAdded);
+  const nextGaming = toFixedQuantity(existing.gamingStock + gamingAdded);
+  product.dipAndDashStock = nextDipAndDash;
+  product.gamingStock = nextGaming;
+  product.currentStock = toFixedQuantity(nextDipAndDash + nextGaming);
+
+  return {
+    dipAndDashAdded,
+    gamingAdded
+  };
+};
 
 const getTodayDate = () => {
   const now = new Date();
@@ -367,6 +490,7 @@ export class ProcurementService {
   private readonly allocationRepository = AppDataSource.getRepository(DailyAllocation);
   private readonly purchaseOrderRepository = AppDataSource.getRepository(PurchaseOrder);
   private readonly purchaseOrderLineRepository = AppDataSource.getRepository(PurchaseOrderLine);
+  private readonly invoiceLineRepository = AppDataSource.getRepository(InvoiceLine);
 
   private async getSupplierOrFail(id: string) {
     const supplier = await this.supplierRepository.findOne({ where: { id } });
@@ -457,9 +581,17 @@ export class ProcurementService {
       recentPurchaseDate?: string | null;
       nextExpiryDate?: string | null;
       latestExpiryDate?: string | null;
+      soldQuantity?: number;
+      soldAmount?: number;
     }
   ) {
-    const currentStock = toFixedQuantity(toNumber(product.currentStock));
+    const normalizedSectionStocks = normalizeProductSectionStocks({
+      targetSection: product.targetSection,
+      currentStock: toNumber(product.currentStock),
+      dipAndDashStock: toNumber(product.dipAndDashStock),
+      gamingStock: toNumber(product.gamingStock)
+    });
+    const currentStock = normalizedSectionStocks.currentStock;
     const minStock = toFixedQuantity(toNumber(product.minStock));
     const todayYmd = getTodayDate();
     const nextExpiryDate = metrics?.nextExpiryDate ?? null;
@@ -471,6 +603,10 @@ export class ProcurementService {
 
     let expiryStatus: "NO_EXPIRY" | "FRESH" | "EXPIRING_SOON" | "EXPIRED" = "NO_EXPIRY";
     let ageingDays: number | null = null;
+    const purchaseUnitPrice = toFixedPrice(toNumber(product.purchaseUnitPrice));
+    const soldQuantity = toFixedQuantity(metrics?.soldQuantity ?? 0);
+    const soldAmount = toFixedPrice(metrics?.soldAmount ?? 0);
+    const estimatedProfit = toFixedPrice(soldAmount - soldQuantity * purchaseUnitPrice);
 
     if (isExpired) {
       expiryStatus = "EXPIRED";
@@ -489,8 +625,12 @@ export class ProcurementService {
       packSize: product.packSize,
       unit: product.unit,
       currentStock,
+      dipAndDashAssignedStock: normalizedSectionStocks.dipAndDashStock,
+      gamingAssignedStock: normalizedSectionStocks.gamingStock,
       minStock,
-      purchaseUnitPrice: toFixedPrice(toNumber(product.purchaseUnitPrice)),
+      purchaseUnitPrice,
+      sellingPrice: toFixedPrice(toNumber(product.sellingPrice)),
+      targetSection: product.targetSection,
       defaultSupplierId: product.defaultSupplierId,
       defaultSupplierName: product.defaultSupplier?.name ?? null,
       isActive: product.isActive,
@@ -500,6 +640,9 @@ export class ProcurementService {
       purchaseOrdersCount: metrics?.purchaseOrdersCount ?? 0,
       totalPurchasedAmount: toFixedPrice(metrics?.totalPurchasedAmount ?? 0),
       recentPurchaseDate: metrics?.recentPurchaseDate ?? null,
+      soldQuantity,
+      soldAmount,
+      estimatedProfit,
       nextExpiryDate,
       latestExpiryDate,
       expiryStatus,
@@ -540,6 +683,18 @@ export class ProcurementService {
     const rows = [
       [...PURCHASE_BULK_TEMPLATE_HEADERS],
       ["Vamshi", "2026-04-10", "Morning purchase from market", "ingredient", "Tomato", "25", "kg", "28.5", "", ""],
+      [
+        "Vamshi",
+        "2026-04-10",
+        "Morning purchase from market",
+        "ingredient",
+        "Burger Box",
+        "100",
+        "pcs",
+        "0",
+        "",
+        "Additional item / packaging stock"
+      ],
       [
         "Vamshi",
         "2026-04-10",
@@ -879,8 +1034,8 @@ export class ProcurementService {
   getProductBulkImportTemplate() {
     const rows = [
       [...PRODUCT_BULK_TEMPLATE_HEADERS],
-      ["7up", "Soft Drinks", "7UP-250ML", "250ml Bottle", "bottle", "Vamshi", "10", "true"],
-      ["Lays Magic Masala", "Snacks", "LAYS-52G", "52g Pack", "pack", "", "8", "true"]
+      ["7up", "Soft Drinks", "7UP-250ML", "250ml Bottle", "bottle", "Vamshi", "10", "55", "dip_and_dash", "true"],
+      ["Snooker Water", "Beverages", "SNK-WATER", "1L Bottle", "bottle", "", "5", "40", "gaming", "true"]
     ];
 
     const csv = rows.map((row) => row.map((cell) => escapeCsvValue(cell)).join(",")).join("\n");
@@ -914,6 +1069,13 @@ export class ProcurementService {
       ["currentstock", "current_stock"],
       ["minstock", "min_stock"],
       ["minimumstock", "min_stock"],
+      ["sellingprice", "selling_price"],
+      ["salesprice", "selling_price"],
+      ["mrp", "selling_price"],
+      ["productsection", "target_section"],
+      ["section", "target_section"],
+      ["targetsection", "target_section"],
+      ["assignsection", "target_section"],
       ["purchaseunitprice", "purchase_unit_price"],
       ["unitprice", "purchase_unit_price"],
       ["price", "purchase_unit_price"],
@@ -970,6 +1132,8 @@ export class ProcurementService {
         const unitRaw = normalizeText(readValue(row, "unit")).toLowerCase();
         const defaultSupplierName = normalizeText(readValue(row, "default_supplier_name"));
         const minStockRaw = normalizeText(readValue(row, "min_stock"));
+        const sellingPriceRaw = normalizeText(readValue(row, "selling_price"));
+        const targetSectionRaw = normalizeText(readValue(row, "target_section")).toLowerCase();
         const isActiveRaw = normalizeText(readValue(row, "is_active"));
 
         if (productName.length < 2 || productName.length > 160) {
@@ -992,6 +1156,16 @@ export class ProcurementService {
         }
 
         const minStock = toFixedQuantity(parseNonNegativeNumber(minStockRaw, rowNumber, "Minimum stock"));
+        const sellingPrice = sellingPriceRaw
+          ? toFixedPrice(parseNonNegativeNumber(sellingPriceRaw, rowNumber, "Selling price"))
+          : 0;
+        const targetSection = targetSectionRaw || "dip_and_dash";
+        if (!VALID_PRODUCT_TARGET_SECTION_SET.has(targetSection)) {
+          throw new AppError(
+            422,
+            `Row ${rowNumber}: target_section must be one of dip_and_dash, gaming, both.`
+          );
+        }
 
         seenProductNameKeys.add(productNameKey);
         validRows.push({
@@ -1003,6 +1177,8 @@ export class ProcurementService {
           unit: unitRaw as ProductUnit,
           defaultSupplierName: defaultSupplierName || null,
           minStock,
+          sellingPrice,
+          targetSection: targetSection as ProductTargetSection,
           isActive: parseBooleanFlexible(isActiveRaw, true)
         });
       } catch (error) {
@@ -1101,6 +1277,8 @@ export class ProcurementService {
         currentStock: number;
         minStock: number;
         purchaseUnitPrice: number;
+        sellingPrice: number;
+        targetSection: ProductTargetSection;
         isActive: boolean;
       }> = [];
       let skippedExistingProducts = 0;
@@ -1125,6 +1303,8 @@ export class ProcurementService {
           currentStock: 0,
           minStock: row.minStock,
           purchaseUnitPrice: 0,
+          sellingPrice: row.sellingPrice,
+          targetSection: row.targetSection,
           isActive: row.isActive
         });
         existingProductNameKeySet.add(key);
@@ -1337,10 +1517,14 @@ export class ProcurementService {
       query.andWhere("product.defaultSupplierId = :supplierId", { supplierId: filters.supplierId });
     }
 
+    if (filters.targetSection) {
+      query.andWhere("product.targetSection = :targetSection", { targetSection: filters.targetSection });
+    }
+
     const [products, total] = await Promise.all([query.skip(offset).take(limit).getMany(), query.getCount()]);
     const productIds = products.map((product) => product.id);
 
-    const [metricsRows, expiryRows] = productIds.length
+    const [metricsRows, expiryRows, salesRows] = productIds.length
       ? await Promise.all([
           this.purchaseOrderLineRepository
             .createQueryBuilder("line")
@@ -1373,9 +1557,24 @@ export class ProcurementService {
               productId: string;
               nextExpiryDate: string | null;
               latestExpiryDate: string | null;
+            }>(),
+          this.invoiceLineRepository
+            .createQueryBuilder("line")
+            .leftJoin("line.invoice", "invoice")
+            .select("line.\"referenceId\"", "productId")
+            .addSelect("COALESCE(SUM(line.quantity), 0)", "soldQty")
+            .addSelect("COALESCE(SUM(line.lineTotal), 0)", "soldAmount")
+            .where("line.lineType = :lineType", { lineType: "product" })
+            .andWhere("line.\"referenceId\"::text IN (:...productIds)", { productIds })
+            .andWhere("invoice.status = :status", { status: "paid" })
+            .groupBy("line.\"referenceId\"")
+            .getRawMany<{
+              productId: string;
+              soldQty: string;
+              soldAmount: string;
             }>()
         ])
-      : [[], []];
+      : [[], [], []];
 
     const expiryMap = new Map(
       expiryRows.map((row) => [
@@ -1383,6 +1582,16 @@ export class ProcurementService {
         {
           nextExpiryDate: row.nextExpiryDate,
           latestExpiryDate: row.latestExpiryDate
+        }
+      ])
+    );
+
+    const salesMap = new Map(
+      salesRows.map((row) => [
+        row.productId,
+        {
+          soldQuantity: toNumber(row.soldQty),
+          soldAmount: toNumber(row.soldAmount)
         }
       ])
     );
@@ -1395,6 +1604,8 @@ export class ProcurementService {
           purchaseOrdersCount: Number(row.ordersCount),
           totalPurchasedAmount: toNumber(row.amount),
           recentPurchaseDate: row.recentPurchaseDate,
+          soldQuantity: salesMap.get(row.productId)?.soldQuantity ?? 0,
+          soldAmount: salesMap.get(row.productId)?.soldAmount ?? 0,
           nextExpiryDate: expiryMap.get(row.productId)?.nextExpiryDate ?? null,
           latestExpiryDate: expiryMap.get(row.productId)?.latestExpiryDate ?? null
         }
@@ -1408,13 +1619,30 @@ export class ProcurementService {
           purchaseOrdersCount: 0,
           totalPurchasedAmount: 0,
           recentPurchaseDate: null,
+          soldQuantity: salesMap.get(productId)?.soldQuantity ?? 0,
+          soldAmount: salesMap.get(productId)?.soldAmount ?? 0,
           nextExpiryDate: expiryMetrics.nextExpiryDate ?? null,
           latestExpiryDate: expiryMetrics.latestExpiryDate ?? null
         });
       }
     });
 
-    const [countRows, valuationRow, topPurchasedRows] = await Promise.all([
+    salesMap.forEach((salesMetrics, productId) => {
+      if (!metricsMap.has(productId)) {
+        metricsMap.set(productId, {
+          purchasedQuantity: 0,
+          purchaseOrdersCount: 0,
+          totalPurchasedAmount: 0,
+          recentPurchaseDate: null,
+          soldQuantity: salesMetrics.soldQuantity,
+          soldAmount: salesMetrics.soldAmount,
+          nextExpiryDate: null,
+          latestExpiryDate: null
+        });
+      }
+    });
+
+    const [countRows, valuationRow, topPurchasedRows, topSoldRows] = await Promise.all([
       this.productRepository
         .createQueryBuilder("product")
         .select("product.isActive", "isActive")
@@ -1439,6 +1667,22 @@ export class ProcurementService {
         .addGroupBy("product.unit")
         .orderBy("COALESCE(SUM(line.stockAdded), 0)", "DESC")
         .limit(5)
+        .getRawMany<{ productId: string; name: string; unit: string; qty: string }>(),
+      this.invoiceLineRepository
+        .createQueryBuilder("line")
+        .leftJoin(Product, "product", "product.id::text = line.\"referenceId\"::text")
+        .leftJoin("line.invoice", "invoice")
+        .select("line.\"referenceId\"", "productId")
+        .addSelect("COALESCE(product.name, MAX(line.\"nameSnapshot\"))", "name")
+        .addSelect("COALESCE(product.unit, 'unit')", "unit")
+        .addSelect("COALESCE(SUM(line.quantity), 0)", "qty")
+        .where("line.lineType = :lineType", { lineType: "product" })
+        .andWhere("invoice.status = :status", { status: "paid" })
+        .groupBy("line.\"referenceId\"")
+        .addGroupBy("product.name")
+        .addGroupBy("product.unit")
+        .orderBy("COALESCE(SUM(line.quantity), 0)", "DESC")
+        .limit(5)
         .getRawMany<{ productId: string; name: string; unit: string; qty: string }>()
     ]);
 
@@ -1454,8 +1698,23 @@ export class ProcurementService {
       { purchasedQuantity: 0, totalPurchasedAmount: 0 }
     );
 
+    const totalsFromSales = salesRows.reduce(
+      (acc, current) => {
+        acc.soldQuantity += toNumber(current.soldQty);
+        acc.soldAmount += toNumber(current.soldAmount);
+        return acc;
+      },
+      { soldQuantity: 0, soldAmount: 0 }
+    );
+
+    const productSummaries = products.map((product) => this.mapProductSummary(product, metricsMap.get(product.id)));
+    const totalEstimatedProfit = productSummaries.reduce(
+      (acc, current) => acc + toNumber(current.estimatedProfit),
+      0
+    );
+
     return {
-      products: products.map((product) => this.mapProductSummary(product, metricsMap.get(product.id))),
+      products: productSummaries,
       pagination: getPaginationMeta(page, limit, total),
       stats: {
         totalProducts: total,
@@ -1465,12 +1724,223 @@ export class ProcurementService {
         stockValuation: toFixedPrice(toNumber(valuationRow?.valuation ?? 0)),
         totalPurchasedQuantity: toFixedQuantity(totalsFromMetrics.purchasedQuantity),
         totalPurchasedAmount: toFixedPrice(totalsFromMetrics.totalPurchasedAmount),
+        totalSoldQuantity: toFixedQuantity(totalsFromSales.soldQuantity),
+        totalSoldAmount: toFixedPrice(totalsFromSales.soldAmount),
+        totalEstimatedProfit: toFixedPrice(totalEstimatedProfit),
         topPurchasedProducts: topPurchasedRows.map((row) => ({
           productId: row.productId,
           name: row.name,
           unit: row.unit,
           quantity: toFixedQuantity(toNumber(row.qty))
+        })),
+        topSoldProducts: topSoldRows.map((row) => ({
+          productId: row.productId,
+          name: row.name,
+          unit: row.unit as ProductUnit,
+          quantity: toFixedQuantity(toNumber(row.qty))
         }))
+      }
+    };
+  }
+
+  async getProductDayLedger(filters: ProductDayLedgerFilters) {
+    const page = Math.max(1, filters.page || 1);
+    const limit = Math.min(200, Math.max(1, filters.limit || 12));
+    const offset = (page - 1) * limit;
+    const date = filters.date || getTodayDate();
+    const { start: dayStartUtc, end: dayEndUtc } = resolveDayRangeInUtc(date);
+
+    const query = this.productRepository
+      .createQueryBuilder("product")
+      .orderBy("product.name", "ASC");
+
+    if (filters.search) {
+      query.andWhere(
+        "(LOWER(product.name) LIKE LOWER(:search) OR LOWER(COALESCE(product.sku, '')) LIKE LOWER(:search) OR LOWER(product.category) LIKE LOWER(:search))",
+        { search: `%${filters.search}%` }
+      );
+    }
+
+    if (filters.targetSection) {
+      query.andWhere("product.targetSection = :targetSection", {
+        targetSection: filters.targetSection
+      });
+    }
+
+    const [products, total] = await Promise.all([
+      query.skip(offset).take(limit).getMany(),
+      query.getCount()
+    ]);
+
+    const productIds = products.map((product) => product.id);
+    if (!productIds.length) {
+      return {
+        date,
+        rows: [],
+        pagination: getPaginationMeta(page, limit, total),
+        stats: {
+          totalProducts: total,
+          totalOpeningStock: 0,
+          totalPurchased: 0,
+          totalConsumption: 0,
+          totalClosingStock: 0,
+          dipAndDashConsumption: 0,
+          snookerConsumption: 0
+        }
+      };
+    }
+
+    const [purchaseBeforeRows, purchaseTodayRows, salesBeforeRows, salesTodayRows, salesDipRows, salesGamingRows] =
+      await Promise.all([
+        this.purchaseOrderLineRepository
+          .createQueryBuilder("line")
+          .leftJoin("line.purchaseOrder", "purchaseOrder")
+          .select("line.productId", "productId")
+          .addSelect("COALESCE(SUM(line.stockAdded), 0)", "quantity")
+          .where("line.lineType = :lineType", { lineType: "product" })
+          .andWhere("line.productId IN (:...productIds)", { productIds })
+          .andWhere("purchaseOrder.purchaseDate < :date", { date })
+          .groupBy("line.productId")
+          .getRawMany<{ productId: string; quantity: string }>(),
+        this.purchaseOrderLineRepository
+          .createQueryBuilder("line")
+          .leftJoin("line.purchaseOrder", "purchaseOrder")
+          .select("line.productId", "productId")
+          .addSelect("COALESCE(SUM(line.stockAdded), 0)", "quantity")
+          .where("line.lineType = :lineType", { lineType: "product" })
+          .andWhere("line.productId IN (:...productIds)", { productIds })
+          .andWhere("purchaseOrder.purchaseDate = :date", { date })
+          .groupBy("line.productId")
+          .getRawMany<{ productId: string; quantity: string }>(),
+        this.invoiceLineRepository
+          .createQueryBuilder("line")
+          .leftJoin("line.invoice", "invoice")
+          .select("line.\"referenceId\"", "productId")
+          .addSelect("COALESCE(SUM(line.quantity), 0)", "quantity")
+          .where("line.lineType = :lineType", { lineType: "product" })
+          .andWhere("line.\"referenceId\"::text IN (:...productIds)", { productIds })
+          .andWhere("invoice.status = :status", { status: "paid" })
+          .andWhere("invoice.createdAt < :dayStartUtc", { dayStartUtc })
+          .groupBy("line.\"referenceId\"")
+          .getRawMany<{ productId: string; quantity: string }>(),
+        this.invoiceLineRepository
+          .createQueryBuilder("line")
+          .leftJoin("line.invoice", "invoice")
+          .select("line.\"referenceId\"", "productId")
+          .addSelect("COALESCE(SUM(line.quantity), 0)", "quantity")
+          .where("line.lineType = :lineType", { lineType: "product" })
+          .andWhere("line.\"referenceId\"::text IN (:...productIds)", { productIds })
+          .andWhere("invoice.status = :status", { status: "paid" })
+          .andWhere("invoice.createdAt >= :dayStartUtc AND invoice.createdAt < :dayEndUtc", {
+            dayStartUtc,
+            dayEndUtc
+          })
+          .groupBy("line.\"referenceId\"")
+          .getRawMany<{ productId: string; quantity: string }>(),
+        this.invoiceLineRepository
+          .createQueryBuilder("line")
+          .leftJoin("line.invoice", "invoice")
+          .select("line.\"referenceId\"", "productId")
+          .addSelect("COALESCE(SUM(line.quantity), 0)", "quantity")
+          .where("line.lineType = :lineType", { lineType: "product" })
+          .andWhere("line.\"referenceId\"::text IN (:...productIds)", { productIds })
+          .andWhere("invoice.status = :status", { status: "paid" })
+          .andWhere("invoice.orderType != :snookerOrderType", { snookerOrderType: "snooker" })
+          .andWhere("invoice.createdAt >= :dayStartUtc AND invoice.createdAt < :dayEndUtc", {
+            dayStartUtc,
+            dayEndUtc
+          })
+          .groupBy("line.\"referenceId\"")
+          .getRawMany<{ productId: string; quantity: string }>(),
+        this.invoiceLineRepository
+          .createQueryBuilder("line")
+          .leftJoin("line.invoice", "invoice")
+          .select("line.\"referenceId\"", "productId")
+          .addSelect("COALESCE(SUM(line.quantity), 0)", "quantity")
+          .where("line.lineType = :lineType", { lineType: "product" })
+          .andWhere("line.\"referenceId\"::text IN (:...productIds)", { productIds })
+          .andWhere("invoice.status = :status", { status: "paid" })
+          .andWhere("invoice.orderType = :snookerOrderType", { snookerOrderType: "snooker" })
+          .andWhere("invoice.createdAt >= :dayStartUtc AND invoice.createdAt < :dayEndUtc", {
+            dayStartUtc,
+            dayEndUtc
+          })
+          .groupBy("line.\"referenceId\"")
+          .getRawMany<{ productId: string; quantity: string }>()
+      ]);
+
+    const toMap = (rows: Array<{ productId: string; quantity: string }>) =>
+      new Map(rows.map((row) => [row.productId, toFixedQuantity(toNumber(row.quantity))]));
+
+    const purchaseBeforeMap = toMap(purchaseBeforeRows);
+    const purchaseTodayMap = toMap(purchaseTodayRows);
+    const salesBeforeMap = toMap(salesBeforeRows);
+    const salesTodayMap = toMap(salesTodayRows);
+    const salesDipMap = toMap(salesDipRows);
+    const salesGamingMap = toMap(salesGamingRows);
+
+    const rows = products.map((product) => {
+      const openingStock = toFixedQuantity(
+        (purchaseBeforeMap.get(product.id) ?? 0) - (salesBeforeMap.get(product.id) ?? 0)
+      );
+      const purchased = purchaseTodayMap.get(product.id) ?? 0;
+      const consumption = salesTodayMap.get(product.id) ?? 0;
+      const dipAndDashConsumption = salesDipMap.get(product.id) ?? 0;
+      const snookerConsumption = salesGamingMap.get(product.id) ?? 0;
+      const closingStock = toFixedQuantity(openingStock + purchased - consumption);
+
+      return {
+        id: `${date}-${product.id}`,
+        date,
+        productId: product.id,
+        productName: product.name,
+        category: product.category,
+        unit: product.unit,
+        targetSection: product.targetSection,
+        openingStock,
+        purchased,
+        consumption,
+        dipAndDashConsumption,
+        snookerConsumption,
+        closingStock,
+        dipAndDashAssignedStock: toFixedQuantity(toNumber(product.dipAndDashStock)),
+        gamingAssignedStock: toFixedQuantity(toNumber(product.gamingStock)),
+        stockHealth: closingStock <= toNumber(product.minStock) ? "LOW_STOCK" : "HEALTHY"
+      };
+    });
+
+    const stats = rows.reduce(
+      (acc, current) => {
+        acc.totalOpeningStock += current.openingStock;
+        acc.totalPurchased += current.purchased;
+        acc.totalConsumption += current.consumption;
+        acc.totalClosingStock += current.closingStock;
+        acc.dipAndDashConsumption += current.dipAndDashConsumption;
+        acc.snookerConsumption += current.snookerConsumption;
+        return acc;
+      },
+      {
+        totalOpeningStock: 0,
+        totalPurchased: 0,
+        totalConsumption: 0,
+        totalClosingStock: 0,
+        dipAndDashConsumption: 0,
+        snookerConsumption: 0
+      }
+    );
+
+    return {
+      date,
+      rows,
+      pagination: getPaginationMeta(page, limit, total),
+      stats: {
+        totalProducts: total,
+        totalOpeningStock: toFixedQuantity(stats.totalOpeningStock),
+        totalPurchased: toFixedQuantity(stats.totalPurchased),
+        totalConsumption: toFixedQuantity(stats.totalConsumption),
+        totalClosingStock: toFixedQuantity(stats.totalClosingStock),
+        dipAndDashConsumption: toFixedQuantity(stats.dipAndDashConsumption),
+        snookerConsumption: toFixedQuantity(stats.snookerConsumption)
       }
     };
   }
@@ -1480,15 +1950,26 @@ export class ProcurementService {
     await this.ensureProductNameUnique(name);
     await this.ensureSupplierExists(payload.defaultSupplierId);
 
+    const initialSectionStocks = normalizeProductSectionStocks({
+      targetSection: payload.targetSection ?? "dip_and_dash",
+      currentStock: 0,
+      dipAndDashStock: payload.dipAndDashAssignedStock ?? 0,
+      gamingStock: payload.gamingAssignedStock ?? 0
+    });
+
     const product = this.productRepository.create({
       name,
       category: normalizeText(payload.category),
       sku: payload.sku ? normalizeText(payload.sku) : null,
       packSize: payload.packSize ? normalizeText(payload.packSize) : null,
       unit: payload.unit,
-      currentStock: 0,
+      currentStock: initialSectionStocks.currentStock,
+      dipAndDashStock: initialSectionStocks.dipAndDashStock,
+      gamingStock: initialSectionStocks.gamingStock,
       minStock: toFixedQuantity(payload.minStock ?? 0),
       purchaseUnitPrice: 0,
+      sellingPrice: toFixedPrice(payload.sellingPrice ?? 0),
+      targetSection: payload.targetSection ?? "dip_and_dash",
       defaultSupplierId: payload.defaultSupplierId ?? null,
       isActive: payload.isActive ?? true
     });
@@ -1503,6 +1984,7 @@ export class ProcurementService {
 
   async updateProduct(id: string, payload: UpdateProductPayload) {
     const product = await this.getProductOrFail(id);
+    let nextTargetSection = product.targetSection;
 
     if (payload.name) {
       const name = normalizeText(payload.name);
@@ -1530,6 +2012,15 @@ export class ProcurementService {
       product.minStock = toFixedQuantity(payload.minStock);
     }
 
+    if (payload.sellingPrice !== undefined) {
+      product.sellingPrice = toFixedPrice(payload.sellingPrice);
+    }
+
+    if (payload.targetSection !== undefined) {
+      nextTargetSection = payload.targetSection;
+      product.targetSection = payload.targetSection;
+    }
+
     if (payload.defaultSupplierId !== undefined) {
       await this.ensureSupplierExists(payload.defaultSupplierId);
       product.defaultSupplierId = payload.defaultSupplierId ?? null;
@@ -1537,6 +2028,55 @@ export class ProcurementService {
 
     if (payload.isActive !== undefined) {
       product.isActive = payload.isActive;
+    }
+
+    if (nextTargetSection === "both") {
+      const hasDipAssignment = payload.dipAndDashAssignedStock !== undefined;
+      const hasGamingAssignment = payload.gamingAssignedStock !== undefined;
+      if (hasDipAssignment || hasGamingAssignment) {
+        const nextDip = toFixedQuantity(
+          payload.dipAndDashAssignedStock !== undefined
+            ? payload.dipAndDashAssignedStock
+            : toNumber(product.dipAndDashStock)
+        );
+        const nextGaming = toFixedQuantity(
+          payload.gamingAssignedStock !== undefined
+            ? payload.gamingAssignedStock
+            : toNumber(product.gamingStock)
+        );
+        if (nextDip < 0 || nextGaming < 0) {
+          throw new AppError(422, "Assigned section stock cannot be negative.");
+        }
+        const expectedTotal = toFixedQuantity(toNumber(product.currentStock));
+        const assignedTotal = toFixedQuantity(nextDip + nextGaming);
+        if (Math.abs(expectedTotal - assignedTotal) > 0.001) {
+          throw new AppError(
+            422,
+            `For shared products, Dip & Dash + Snooker assigned stock must equal total stock (${expectedTotal}).`
+          );
+        }
+        product.dipAndDashStock = nextDip;
+        product.gamingStock = nextGaming;
+      } else {
+        const normalized = normalizeProductSectionStocks({
+          targetSection: "both",
+          currentStock: toNumber(product.currentStock),
+          dipAndDashStock: toNumber(product.dipAndDashStock),
+          gamingStock: toNumber(product.gamingStock)
+        });
+        product.dipAndDashStock = normalized.dipAndDashStock;
+        product.gamingStock = normalized.gamingStock;
+      }
+    } else {
+      const normalized = normalizeProductSectionStocks({
+        targetSection: nextTargetSection,
+        currentStock: toNumber(product.currentStock),
+        dipAndDashStock: toNumber(product.dipAndDashStock),
+        gamingStock: toNumber(product.gamingStock)
+      });
+      product.currentStock = normalized.currentStock;
+      product.dipAndDashStock = normalized.dipAndDashStock;
+      product.gamingStock = normalized.gamingStock;
     }
 
     const saved = await this.productRepository.save(product);
@@ -1720,8 +2260,9 @@ export class ProcurementService {
       const stockAdded = toFixedQuantity(convertedAdded);
 
       const stockBefore = toFixedQuantity(toNumber(product.currentStock));
-      const stockAfter = toFixedQuantity(stockBefore + stockAdded);
-      product.currentStock = stockAfter;
+      const sectionSplit = applyProductPurchaseSplit(product, stockAdded);
+      const stockAfter = toFixedQuantity(toNumber(product.currentStock));
+      product.purchaseUnitPrice = unitPrice;
       touchedProducts.add(product);
 
       const lineEntity = manager.create(PurchaseOrderLine, {
@@ -1733,6 +2274,8 @@ export class ProcurementService {
         unit: product.unit,
         stockBefore,
         stockAdded,
+        dipAndDashStockAdded: sectionSplit.dipAndDashAdded,
+        gamingStockAdded: sectionSplit.gamingAdded,
         enteredQuantity,
         enteredUnit,
         stockAfter,
@@ -1808,7 +2351,13 @@ export class ProcurementService {
         }
 
         const stockBefore = toFixedQuantity(toNumber(product.currentStock));
-        const stockAfter = toFixedQuantity(stockBefore - rollbackQuantity);
+        const rollbackDip = toFixedQuantity(toNumber(line.dipAndDashStockAdded));
+        const rollbackGaming = toFixedQuantity(toNumber(line.gamingStockAdded));
+        const rollbackBySectionTotal = toFixedQuantity(rollbackDip + rollbackGaming);
+        const effectiveRollbackQuantity =
+          rollbackBySectionTotal > 0 ? rollbackBySectionTotal : rollbackQuantity;
+
+        const stockAfter = toFixedQuantity(stockBefore - effectiveRollbackQuantity);
         if (stockAfter < 0) {
           throw new AppError(
             409,
@@ -1816,7 +2365,30 @@ export class ProcurementService {
           );
         }
 
-        product.currentStock = stockAfter;
+        const normalized = normalizeProductSectionStocks({
+          targetSection: product.targetSection,
+          currentStock: toNumber(product.currentStock),
+          dipAndDashStock: toNumber(product.dipAndDashStock),
+          gamingStock: toNumber(product.gamingStock)
+        });
+
+        const nextDip = toFixedQuantity(
+          normalized.dipAndDashStock - (rollbackBySectionTotal > 0 ? rollbackDip : effectiveRollbackQuantity)
+        );
+        const nextGaming = toFixedQuantity(
+          normalized.gamingStock - (rollbackBySectionTotal > 0 ? rollbackGaming : 0)
+        );
+
+        if (nextDip < -0.001 || nextGaming < -0.001) {
+          throw new AppError(
+            409,
+            `Cannot edit purchase order ${purchaseNumber} because section stock for ${line.itemNameSnapshot} is already consumed.`
+          );
+        }
+
+        product.dipAndDashStock = toFixedQuantity(Math.max(nextDip, 0));
+        product.gamingStock = toFixedQuantity(Math.max(nextGaming, 0));
+        product.currentStock = toFixedQuantity(product.dipAndDashStock + product.gamingStock);
         await manager.save(Product, product);
       }
     }
@@ -2103,6 +2675,14 @@ export class ProcurementService {
         unit: line.unit,
         stockBefore: toFixedQuantity(toNumber(line.stockBefore)),
         stockAdded: toFixedQuantity(toNumber(line.stockAdded)),
+        dipAndDashStockAdded:
+          line.dipAndDashStockAdded === null || line.dipAndDashStockAdded === undefined
+            ? null
+            : toFixedQuantity(toNumber(line.dipAndDashStockAdded)),
+        gamingStockAdded:
+          line.gamingStockAdded === null || line.gamingStockAdded === undefined
+            ? null
+            : toFixedQuantity(toNumber(line.gamingStockAdded)),
         enteredQuantity:
           line.enteredQuantity === null || line.enteredQuantity === undefined
             ? null
@@ -2207,7 +2787,8 @@ export class ProcurementService {
       ingredientCategories: categories.map((category) => ({
         id: category.id,
         name: category.name,
-        description: category.description
+        description: category.description,
+        kind: category.kind
       })),
       ingredients: ingredients.map((ingredient) => {
         const allocation = allocationMap.get(ingredient.id);
@@ -2221,6 +2802,7 @@ export class ProcurementService {
           name: ingredient.name,
           categoryId: ingredient.categoryId,
           categoryName: ingredient.category?.name ?? "-",
+          categoryKind: ingredient.category?.kind ?? "core",
           unit: ingredient.unit,
           unitOptions: getCompatibleIngredientUnits(ingredient.unit),
           perUnitPrice: toFixedPrice(
@@ -2247,6 +2829,10 @@ export class ProcurementService {
           unit: product.unit,
           unitOptions: getCompatibleProductUnits(product.unit),
           purchaseUnitPrice: toFixedPrice(toNumber(product.purchaseUnitPrice)),
+          sellingPrice: toFixedPrice(toNumber(product.sellingPrice)),
+          targetSection: product.targetSection,
+          dipAndDashAssignedStock: toFixedQuantity(toNumber(product.dipAndDashStock)),
+          gamingAssignedStock: toFixedQuantity(toNumber(product.gamingStock)),
           currentStock,
           minStock,
           stockStatus: getStockStatus(currentStock, minStock),

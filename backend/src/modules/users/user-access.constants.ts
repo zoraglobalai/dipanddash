@@ -10,6 +10,7 @@ export const STAFF_ASSIGNABLE_MODULE_KEYS = [
   "suppliers",
   "purchase",
   "ingredient-entry",
+  "additional-entry",
   "items-entry",
   "offers",
   "customer-data",

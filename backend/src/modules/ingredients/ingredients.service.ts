@@ -7,7 +7,13 @@ import { IngredientCategory } from "./ingredient-category.entity";
 import { Ingredient } from "./ingredient.entity";
 import { IngredientStockLog } from "./ingredient-stock-log.entity";
 import { IngredientStock } from "./ingredient-stock.entity";
-import { INGREDIENT_UNITS, IngredientStockLogType, type IngredientUnit } from "./ingredients.constants";
+import {
+  INGREDIENT_CATEGORY_KINDS,
+  INGREDIENT_UNITS,
+  IngredientStockLogType,
+  type IngredientCategoryKind,
+  type IngredientUnit
+} from "./ingredients.constants";
 import { ItemIngredient } from "../items/item-ingredient.entity";
 import { AddOnIngredient } from "../items/add-on-ingredient.entity";
 import { InvoiceUsageEvent } from "../invoices/invoice-usage-event.entity";
@@ -26,12 +32,14 @@ type PaginationQuery = {
 
 type CategoryListFilters = PaginationQuery & {
   search?: string;
+  kind?: IngredientCategoryKind;
   includeInactive?: boolean;
 };
 
 type IngredientListFilters = PaginationQuery & {
   search?: string;
   categoryId?: string;
+  categoryKind?: IngredientCategoryKind;
   includeInactive?: boolean;
   withMovementStats?: boolean;
 };
@@ -40,6 +48,7 @@ type AllocationListFilters = PaginationQuery & {
   date: string;
   search?: string;
   categoryId?: string;
+  categoryKind?: IngredientCategoryKind;
   overall?: boolean;
 };
 
@@ -47,6 +56,7 @@ type AllocationStatsFilters = {
   date: string;
   search?: string;
   categoryId?: string;
+  categoryKind?: IngredientCategoryKind;
 };
 
 type StockLogListFilters = PaginationQuery;
@@ -55,6 +65,7 @@ type BulkIngredientImportRow = {
   rowNumber: number;
   categoryName: string;
   categoryDescription: string | null;
+  categoryKind: IngredientCategoryKind;
   ingredientName: string;
   unit: IngredientUnit;
   minStock: number;
@@ -74,11 +85,13 @@ type BulkIngredientImportSummary = {
 const BULK_INGREDIENT_TEMPLATE_HEADERS = [
   "category_name",
   "category_description",
+  "category_kind",
   "ingredient_name",
   "unit",
   "min_stock"
 ] as const;
 const VALID_INGREDIENT_UNIT_SET = new Set<string>(INGREDIENT_UNITS.map((unit) => unit.toLowerCase()));
+const VALID_INGREDIENT_CATEGORY_KIND_SET = new Set<string>(INGREDIENT_CATEGORY_KINDS.map((kind) => kind.toLowerCase()));
 const MAX_BULK_INVALID_ROW_DETAILS = 40;
 
 const getNumericValue = (value: string | number | null | undefined) => {
@@ -339,6 +352,7 @@ export class IngredientsService {
       id: category.id,
       name: category.name,
       description: category.description,
+      kind: category.kind,
       isActive: category.isActive,
       ingredientCount,
       createdAt: category.createdAt,
@@ -346,21 +360,25 @@ export class IngredientsService {
     };
   }
 
-  getBulkImportTemplate() {
+  getBulkImportTemplate(defaultCategoryKind: IngredientCategoryKind = "core") {
+    const categorySample =
+      defaultCategoryKind === "additional"
+        ? ["Additional Supplies", "Packaging consumables like box, cup, cap", "additional", "Burger Box", "pcs", "20"]
+        : ["Beverages", "Lemon based ingredients", "core", "Lemon", "kg", "1"];
     const rows = [
       [...BULK_INGREDIENT_TEMPLATE_HEADERS],
-      ["Beverages", "Lemon based ingredients", "Lemon", "kg", "1"],
-      ["Bakery", "", "Bread Slice", "pcs", "20"]
+      categorySample,
+      ["Bakery", "", defaultCategoryKind, "Bread Slice", "pcs", "20"]
     ];
 
     const csv = rows.map((row) => row.map((cell) => escapeCsvValue(cell)).join(",")).join("\n");
     return {
-      fileName: "ingredient_bulk_template.csv",
+      fileName: `${defaultCategoryKind}_ingredient_bulk_template.csv`,
       content: `\uFEFF${csv}`
     };
   }
 
-  private parseBulkRowsFromCsv(csvBuffer: Buffer) {
+  private parseBulkRowsFromCsv(csvBuffer: Buffer, defaultCategoryKind: IngredientCategoryKind) {
     const textContent = csvBuffer.toString("utf-8").replace(/^\uFEFF/, "").trim();
     if (!textContent) {
       throw new AppError(422, "Uploaded CSV file is empty.");
@@ -376,6 +394,8 @@ export class IngredientsService {
       ["categoryname", "category_name"],
       ["category", "category_name"],
       ["categorydescription", "category_description"],
+      ["categorykind", "category_kind"],
+      ["kind", "category_kind"],
       ["ingredientname", "ingredient_name"],
       ["ingredient", "ingredient_name"],
       ["unit", "unit"],
@@ -427,6 +447,7 @@ export class IngredientsService {
         const categoryName = normalizeName(readValue(row, "category_name") ?? "");
         const ingredientName = normalizeName(readValue(row, "ingredient_name") ?? "");
         const unitValue = (readValue(row, "unit") ?? "").trim().toLowerCase();
+        const categoryKindRaw = (readValue(row, "category_kind") ?? String(defaultCategoryKind)).trim().toLowerCase();
         const minStock = parseCsvNumber(readValue(row, "min_stock"), 0, "Min stock", rowNumber);
         const categoryDescriptionRaw = readValue(row, "category_description");
         const categoryDescription = categoryDescriptionRaw
@@ -442,6 +463,9 @@ export class IngredientsService {
         if (!unitValue || !VALID_INGREDIENT_UNIT_SET.has(unitValue)) {
           throw new AppError(422, "Unit is invalid.");
         }
+        if (!categoryKindRaw || !VALID_INGREDIENT_CATEGORY_KIND_SET.has(categoryKindRaw)) {
+          throw new AppError(422, "Category kind is invalid.");
+        }
 
         const ingredientLookupKey = normalizeLookupKey(ingredientName);
         if (seenIngredientKeys.has(ingredientLookupKey)) {
@@ -454,6 +478,7 @@ export class IngredientsService {
           rowNumber,
           categoryName,
           categoryDescription,
+          categoryKind: categoryKindRaw as IngredientCategoryKind,
           ingredientName,
           unit: unitValue as IngredientUnit,
           minStock: toFixedQuantity(minStock)
@@ -477,7 +502,7 @@ export class IngredientsService {
   }
 
   private async getCategoryMapByNameKeys(manager: EntityManager, nameKeys: string[]) {
-    const categoryMap = new Map<string, { id: string; name: string; isActive: boolean }>();
+    const categoryMap = new Map<string, { id: string; name: string; kind: IngredientCategoryKind; isActive: boolean }>();
     if (!nameKeys.length) {
       return categoryMap;
     }
@@ -488,14 +513,16 @@ export class IngredientsService {
         .createQueryBuilder("category")
         .select("category.id", "id")
         .addSelect("category.name", "name")
+        .addSelect("category.kind", "kind")
         .addSelect("category.isActive", "isActive")
         .where("LOWER(category.name) IN (:...nameKeys)", { nameKeys: chunk })
-        .getRawMany<{ id: string; name: string; isActive: boolean }>();
+        .getRawMany<{ id: string; name: string; kind: IngredientCategoryKind; isActive: boolean }>();
 
       rows.forEach((row) => {
         categoryMap.set(normalizeLookupKey(row.name), {
           id: row.id,
           name: row.name,
+          kind: row.kind,
           isActive: Boolean(row.isActive)
         });
       });
@@ -524,8 +551,11 @@ export class IngredientsService {
     return ingredientNameKeySet;
   }
 
-  async bulkImportIngredientsFromCsv(csvBuffer: Buffer): Promise<BulkIngredientImportSummary> {
-    const parsedCsv = this.parseBulkRowsFromCsv(csvBuffer);
+  async bulkImportIngredientsFromCsv(
+    csvBuffer: Buffer,
+    defaultCategoryKind: IngredientCategoryKind = "core"
+  ): Promise<BulkIngredientImportSummary> {
+    const parsedCsv = this.parseBulkRowsFromCsv(csvBuffer, defaultCategoryKind);
     if (!parsedCsv.validRows.length) {
       return {
         totalRows: parsedCsv.totalRows,
@@ -542,7 +572,7 @@ export class IngredientsService {
     return AppDataSource.transaction(async (manager) => {
       const categoryByKey = new Map<
         string,
-        { categoryName: string; categoryDescription: string | null }
+        { categoryName: string; categoryDescription: string | null; categoryKind: IngredientCategoryKind }
       >();
 
       parsedCsv.validRows.forEach((row) => {
@@ -550,7 +580,8 @@ export class IngredientsService {
         if (!categoryByKey.has(categoryKey)) {
           categoryByKey.set(categoryKey, {
             categoryName: row.categoryName,
-            categoryDescription: row.categoryDescription
+            categoryDescription: row.categoryDescription,
+            categoryKind: row.categoryKind
           });
         }
       });
@@ -568,6 +599,7 @@ export class IngredientsService {
           return {
             name: category.categoryName,
             description: category.categoryDescription,
+            kind: category.categoryKind,
             isActive: true
           };
         });
@@ -586,6 +618,8 @@ export class IngredientsService {
       }
 
       const existingIngredientNameKeySet = await this.getExistingIngredientNameKeySet(manager, ingredientNameKeys);
+      const invalidRowDetails = [...parsedCsv.invalidRowDetails];
+      let invalidRows = parsedCsv.invalidRows;
       const ingredientInsertValues: Array<{
         name: string;
         categoryId: string;
@@ -605,6 +639,24 @@ export class IngredientsService {
 
         const category = categoryMap.get(normalizeLookupKey(row.categoryName));
         if (!category) {
+          invalidRows += 1;
+          if (invalidRowDetails.length < MAX_BULK_INVALID_ROW_DETAILS) {
+            invalidRowDetails.push({
+              rowNumber: row.rowNumber,
+              reason: `Category '${row.categoryName}' not found.`
+            });
+          }
+          return;
+        }
+
+        if (category.kind !== row.categoryKind) {
+          invalidRows += 1;
+          if (invalidRowDetails.length < MAX_BULK_INVALID_ROW_DETAILS) {
+            invalidRowDetails.push({
+              rowNumber: row.rowNumber,
+              reason: `Category '${row.categoryName}' is '${category.kind}' but row expects '${row.categoryKind}'.`
+            });
+          }
           return;
         }
 
@@ -627,8 +679,8 @@ export class IngredientsService {
           insertedIngredients: 0,
           skippedExistingIngredients,
           skippedDuplicateRows: parsedCsv.skippedDuplicateRows,
-          invalidRows: parsedCsv.invalidRows,
-          invalidRowDetails: parsedCsv.invalidRowDetails
+          invalidRows,
+          invalidRowDetails
         };
       }
 
@@ -687,8 +739,8 @@ export class IngredientsService {
         insertedIngredients: insertedIngredients.length,
         skippedExistingIngredients: skippedExistingIngredients + skippedDuringInsert,
         skippedDuplicateRows: parsedCsv.skippedDuplicateRows,
-        invalidRows: parsedCsv.invalidRows,
-        invalidRowDetails: parsedCsv.invalidRowDetails
+        invalidRows,
+        invalidRowDetails
       };
     });
   }
@@ -713,6 +765,10 @@ export class IngredientsService {
       });
     }
 
+    if (filters.kind) {
+      query.andWhere("category.kind = :kind", { kind: filters.kind });
+    }
+
     const total = await query.getCount();
     const categories = await query.offset(offset).limit(limit).getMany();
     const categoryIds = categories.map((category) => category.id);
@@ -726,7 +782,7 @@ export class IngredientsService {
     };
   }
 
-  async createCategory(payload: { name: string; description?: string }) {
+  async createCategory(payload: { name: string; description?: string; kind?: IngredientCategoryKind }) {
     const normalizedName = payload.name.trim();
     const exists = await this.categoryRepository
       .createQueryBuilder("category")
@@ -740,6 +796,7 @@ export class IngredientsService {
     const category = this.categoryRepository.create({
       name: normalizedName,
       description: payload.description?.trim() || null,
+      kind: payload.kind ?? "core",
       isActive: true
     });
 
@@ -747,7 +804,10 @@ export class IngredientsService {
     return this.mapCategorySummary(saved, 0);
   }
 
-  async updateCategory(id: string, payload: { name?: string; description?: string; isActive?: boolean }) {
+  async updateCategory(
+    id: string,
+    payload: { name?: string; description?: string; kind?: IngredientCategoryKind; isActive?: boolean }
+  ) {
     const category = await this.categoryRepository.findOne({ where: { id } });
     if (!category) {
       throw new AppError(404, "Ingredient category not found");
@@ -769,6 +829,10 @@ export class IngredientsService {
 
     if (payload.description !== undefined) {
       category.description = payload.description.trim() || null;
+    }
+
+    if (payload.kind !== undefined) {
+      category.kind = payload.kind;
     }
 
     if (payload.isActive !== undefined) {
@@ -821,6 +885,10 @@ export class IngredientsService {
 
     if (filters.categoryId) {
       query.andWhere("ingredient.categoryId = :categoryId", { categoryId: filters.categoryId });
+    }
+
+    if (filters.categoryKind) {
+      query.andWhere("category.kind = :categoryKind", { categoryKind: filters.categoryKind });
     }
 
     const total = await query.getCount();
@@ -1215,6 +1283,10 @@ export class IngredientsService {
       ingredientQuery.andWhere("ingredient.categoryId = :categoryId", { categoryId: filters.categoryId });
     }
 
+    if (filters.categoryKind) {
+      ingredientQuery.andWhere("category.kind = :categoryKind", { categoryKind: filters.categoryKind });
+    }
+
     const total = await ingredientQuery.getCount();
     const ingredients = await ingredientQuery.offset(offset).limit(limit).getMany();
 
@@ -1335,6 +1407,10 @@ export class IngredientsService {
 
     if (filters.categoryId) {
       ingredientQuery.andWhere("ingredient.categoryId = :categoryId", { categoryId: filters.categoryId });
+    }
+
+    if (filters.categoryKind) {
+      ingredientQuery.andWhere("category.kind = :categoryKind", { categoryKind: filters.categoryKind });
     }
 
     const ingredients = await ingredientQuery.getMany();

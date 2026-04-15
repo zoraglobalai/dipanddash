@@ -51,6 +51,7 @@ import { SnookerDashboardPage } from "@/app/SnookerDashboardPage";
 import { StaffCashAuditPage } from "@/app/StaffCashAuditPage";
 import { StaffDumpPage } from "@/app/StaffDumpPage";
 import { StaffOutletTransferPage } from "@/app/StaffOutletTransferPage";
+import { StaffSnookerProductSalesPage } from "@/app/StaffSnookerProductSalesPage";
 import { PosTopBar } from "@/components/layout/PosTopBar";
 import { ShortcutHelpModal } from "@/components/pos/ShortcutHelpModal";
 import { useNetworkStatus } from "@/hooks/useNetworkStatus";
@@ -71,7 +72,8 @@ type StaffViewKey =
   | "dump"
   | "outlet-transfer"
   | "profile"
-  | "gaming-booking";
+  | "gaming-booking"
+  | "gaming-product-sale";
 
 type StaffMenuItem = {
   key: StaffViewKey;
@@ -108,15 +110,17 @@ const MAIN_MENUS: StaffMenuConfig[] = [
 
 const SNOOKER_STAFF_MENUS: StaffMenuConfig[] = [
   { key: "dashboard", label: "Dashboard", icon: FiGrid },
-  { key: "attendance", label: "Attendance", icon: FiClock },
   { key: "gaming-booking", label: "New Booking", icon: FiPlusSquare },
-  { key: "cash-audit", label: "Cash Audit", icon: FiDollarSign }
+  { key: "gaming-product-sale", label: "Product Sale", icon: FiShoppingBag },
+  { key: "cash-audit", label: "Cash Audit", icon: FiDollarSign },
+  { key: "attendance", label: "Attendance", icon: FiClock }
 ];
 
 const SNOOKER_ALLOWED_VIEWS = new Set<StaffViewKey>([
   "dashboard",
   "attendance",
   "gaming-booking",
+  "gaming-product-sale",
   "cash-audit"
 ]);
 
@@ -180,6 +184,10 @@ const PAGE_TITLES: Record<StaffViewKey, { title: string; subtitle: string }> = {
   "gaming-booking": {
     title: "New Booking",
     subtitle: "Create and manage snooker/console sessions with offline-safe sync."
+  },
+  "gaming-product-sale": {
+    title: "Product Sale",
+    subtitle: "Direct product billing for snooker counter sales with payment capture."
   }
 };
 
@@ -221,7 +229,7 @@ export const StaffDesktopShell = () => {
       return;
     }
 
-    if (activeView === "gaming-booking") {
+    if (activeView === "gaming-booking" || activeView === "gaming-product-sale") {
       setActiveView("new-order/take-away");
     }
   }, [activeView, isSnookerStaff]);
@@ -245,6 +253,8 @@ export const StaffDesktopShell = () => {
         return <StaffAttendancePage />;
       case "gaming-booking":
         return <StaffGamingBookingPage />;
+      case "gaming-product-sale":
+        return <StaffSnookerProductSalesPage />;
       case "new-order/dine-in":
         return <NewOrderPage channel="dine-in" />;
       case "new-order/take-away":

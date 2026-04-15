@@ -49,11 +49,13 @@ import { procurementService } from "@/services/procurement.service";
 import type {
   CreatePurchaseOrderInput,
   CreatePurchaseLineInput,
+  ProductDayLedgerResponse,
   ProductListItem,
   ProductListResponse,
   ProductExpiryStatus,
   ProcurementMetaResponse,
   ProcurementStatsResponse,
+  ProductTargetSection,
   ProductUnit,
   PurchaseLineType,
   PurchaseOrderDetail,
@@ -136,10 +138,26 @@ const extractFileNameFromDisposition = (contentDisposition?: string | null) => {
 };
 
 const createDraftLineId = () => Math.random().toString(36).slice(2, 10);
+const PRODUCT_TARGET_SECTION_OPTIONS: AppSearchableSelectOption[] = [
+  { value: "dip_and_dash", label: "Dip & Dash" },
+  { value: "gaming", label: "Snooker / Gaming" },
+  { value: "both", label: "Both Sections" }
+];
+
+const formatTargetSectionLabel = (value: ProductTargetSection) => {
+  if (value === "dip_and_dash") {
+    return "Dip & Dash";
+  }
+  if (value === "gaming") {
+    return "Snooker / Gaming";
+  }
+  return "Both";
+};
 
 type DraftPurchaseLine = {
   id: string;
   lineType: PurchaseLineType;
+  ingredientKind: "core" | "additional";
   ingredientCategoryId: string;
   ingredientId: string;
   productId: string;
@@ -153,6 +171,7 @@ type DraftPurchaseLine = {
 const createEmptyLine = (): DraftPurchaseLine => ({
   id: createDraftLineId(),
   lineType: "ingredient",
+  ingredientKind: "core",
   ingredientCategoryId: "",
   ingredientId: "",
   productId: "",
@@ -217,6 +236,7 @@ const PurchaseOrderModal = ({
           return {
             id: createDraftLineId(),
             lineType: line.lineType,
+            ingredientKind: matchedIngredient?.categoryKind ?? "core",
             ingredientCategoryId: matchedIngredient?.categoryId ?? "",
             ingredientId: line.ingredientId ?? "",
             productId: line.productId ?? "",
@@ -262,13 +282,15 @@ const PurchaseOrderModal = ({
     [meta?.suppliers]
   );
 
-  const categoryOptions: AppSearchableSelectOption[] = useMemo(
-    () =>
-      (meta?.ingredientCategories ?? []).map((category) => ({
-        value: category.id,
-        label: category.name,
-        description: category.description ?? undefined
-      })),
+  const getCategoryOptions = useCallback(
+    (ingredientKind: "core" | "additional"): AppSearchableSelectOption[] =>
+      (meta?.ingredientCategories ?? [])
+        .filter((category) => category.kind === ingredientKind)
+        .map((category) => ({
+          value: category.id,
+          label: category.name,
+          description: category.description ?? undefined
+        })),
     [meta?.ingredientCategories]
   );
 
@@ -284,8 +306,9 @@ const PurchaseOrderModal = ({
   );
 
   const getIngredientOptions = useCallback(
-    (categoryId: string): AppSearchableSelectOption[] =>
+    (categoryId: string, ingredientKind: "core" | "additional"): AppSearchableSelectOption[] =>
       (meta?.ingredients ?? [])
+        .filter((ingredient) => ingredient.categoryKind === ingredientKind)
         .filter((ingredient) => !categoryId || ingredient.categoryId === categoryId)
         .map((ingredient) => ({
           value: ingredient.id,
@@ -329,6 +352,8 @@ const PurchaseOrderModal = ({
   const handleIngredientPick = (line: DraftPurchaseLine, ingredientId: string) => {
     const ingredient = (meta?.ingredients ?? []).find((entry) => entry.id === ingredientId);
     updateLine(line.id, {
+      ingredientCategoryId: ingredient?.categoryId ?? line.ingredientCategoryId,
+      ingredientKind: ingredient?.categoryKind ?? line.ingredientKind,
       ingredientId,
       quantityUnit: ingredient?.unit ?? line.quantityUnit,
       unitPrice: ingredient ? String(ingredient.perUnitPrice) : line.unitPrice
@@ -368,6 +393,12 @@ const PurchaseOrderModal = ({
         const quantity = Number(line.quantity);
         const unitPrice = Number(line.unitPrice);
         if (!Number.isFinite(quantity) || !Number.isFinite(unitPrice) || quantity <= 0 || unitPrice < 0) {
+          return null;
+        }
+        if (line.lineType === "ingredient" && !line.ingredientId) {
+          return null;
+        }
+        if (line.lineType === "product" && !line.productId) {
           return null;
         }
         return {
@@ -473,10 +504,12 @@ const PurchaseOrderModal = ({
                       <AppSearchableSelect
                         label={`Line ${index + 1} Type`}
                         value={line.lineType}
-                        options={[{ value: "ingredient", label: "Ingredient" }, { value: "product", label: "Product" }]}
+                        options={[{ value: "ingredient", label: "Ingredient / Additional" }, { value: "product", label: "Product" }]}
                         onValueChange={(value) =>
                           updateLine(line.id, {
                             lineType: value as PurchaseLineType,
+                            ingredientKind: "core",
+                            ingredientCategoryId: "",
                             ingredientId: "",
                             productId: "",
                             quantityUnit: "",
@@ -489,9 +522,25 @@ const PurchaseOrderModal = ({
                       {line.lineType === "ingredient" ? (
                         <>
                           <AppSearchableSelect
+                            label="Ingredient Type"
+                            value={line.ingredientKind}
+                            options={[
+                              { value: "core", label: "Ingredient" },
+                              { value: "additional", label: "Additional Item" }
+                            ]}
+                            onValueChange={(value) =>
+                              updateLine(line.id, {
+                                ingredientKind: value as "core" | "additional",
+                                ingredientCategoryId: "",
+                                ingredientId: ""
+                              })
+                            }
+                            isClearable={false}
+                          />
+                          <AppSearchableSelect
                             label="Ingredient Category"
                             value={line.ingredientCategoryId}
-                            options={categoryOptions}
+                            options={getCategoryOptions(line.ingredientKind)}
                             onValueChange={(value) => updateLine(line.id, { ingredientCategoryId: value, ingredientId: "" })}
                             placeholder="Select category"
                             searchPlaceholder="Search category"
@@ -499,7 +548,7 @@ const PurchaseOrderModal = ({
                           <AppSearchableSelect
                             label="Ingredient"
                             value={line.ingredientId}
-                            options={getIngredientOptions(line.ingredientCategoryId)}
+                            options={getIngredientOptions(line.ingredientCategoryId, line.ingredientKind)}
                             onValueChange={(value) => handleIngredientPick(line, value)}
                             placeholder="Select ingredient"
                             searchPlaceholder="Search ingredient"
@@ -726,7 +775,17 @@ const PurchaseOrderModal = ({
             <AppButton
               onClick={() => void handleSave()}
               isLoading={loading}
-              isDisabled={!supplierId || lines.some((line) => !line.quantity || !line.quantityUnit || !line.unitPrice)}
+              isDisabled={
+                !supplierId ||
+                lines.some(
+                  (line) =>
+                    !line.quantity ||
+                    !line.quantityUnit ||
+                    !line.unitPrice ||
+                    (line.lineType === "ingredient" && !line.ingredientId) ||
+                    (line.lineType === "product" && !line.productId)
+                )
+              }
             >
               {isEditMode ? "Save Purchase Order" : "Create Purchase Order"}
             </AppButton>
@@ -758,6 +817,10 @@ type ProductFormModalProps = {
     packSize?: string;
     unit: ProductUnit;
     minStock: number;
+    sellingPrice: number;
+    targetSection: ProductTargetSection;
+    dipAndDashAssignedStock?: number;
+    gamingAssignedStock?: number;
     defaultSupplierId?: string | null;
     isActive: boolean;
   }) => Promise<void>;
@@ -772,6 +835,10 @@ const ProductFormModal = ({ isOpen, onClose, loading, initialData, suppliers, un
     packSize: "",
     unit: (units[0] ?? "pcs") as ProductUnit,
     minStock: "0",
+    sellingPrice: "0",
+    targetSection: "dip_and_dash" as ProductTargetSection,
+    dipAndDashAssignedStock: "0",
+    gamingAssignedStock: "0",
     defaultSupplierId: "",
     isActive: true
   });
@@ -787,10 +854,23 @@ const ProductFormModal = ({ isOpen, onClose, loading, initialData, suppliers, un
       packSize: initialData?.packSize ?? "",
       unit: (initialData?.unit ?? units[0] ?? "pcs") as ProductUnit,
       minStock: String(initialData?.minStock ?? 0),
+      sellingPrice: String(initialData?.sellingPrice ?? 0),
+      targetSection: initialData?.targetSection ?? "dip_and_dash",
+      dipAndDashAssignedStock: String(initialData?.dipAndDashAssignedStock ?? 0),
+      gamingAssignedStock: String(initialData?.gamingAssignedStock ?? 0),
       defaultSupplierId: initialData?.defaultSupplierId ?? "",
       isActive: initialData?.isActive ?? true
     });
   }, [initialData, isOpen, units]);
+
+  const splitCurrentStock = Number(initialData?.currentStock ?? 0);
+  const dipAndDashAssignedStock = Math.max(0, Number(form.dipAndDashAssignedStock || 0));
+  const gamingAssignedStock = Math.max(0, Number(form.gamingAssignedStock || 0));
+  const splitTotal = Number((dipAndDashAssignedStock + gamingAssignedStock).toFixed(3));
+  const splitMismatch =
+    form.targetSection === "both" &&
+    ((splitCurrentStock > 0 && Math.abs(splitTotal - splitCurrentStock) > 0.001) ||
+      (splitCurrentStock <= 0 && splitTotal > 0.001));
 
   const supplierOptions: AppSearchableSelectOption[] = useMemo(
     () =>
@@ -820,6 +900,10 @@ const ProductFormModal = ({ isOpen, onClose, loading, initialData, suppliers, un
       packSize: form.packSize.trim() || undefined,
       unit: form.unit,
       minStock: Number(form.minStock),
+      sellingPrice: Number(form.sellingPrice),
+      targetSection: form.targetSection,
+      dipAndDashAssignedStock: form.targetSection === "both" ? dipAndDashAssignedStock : undefined,
+      gamingAssignedStock: form.targetSection === "both" ? gamingAssignedStock : undefined,
       defaultSupplierId: form.defaultSupplierId || null,
       isActive: form.isActive
     });
@@ -862,14 +946,16 @@ const ProductFormModal = ({ isOpen, onClose, loading, initialData, suppliers, un
                   onValueChange={(value) => setForm((prev) => ({ ...prev, unit: value as ProductUnit }))}
                   isClearable={false}
                 />
-                <AppSearchableSelect
-                  label="Default Supplier"
-                  value={form.defaultSupplierId}
-                  options={supplierOptions}
-                  onValueChange={(value) => setForm((prev) => ({ ...prev, defaultSupplierId: value }))}
-                  placeholder="Select supplier"
-                  searchPlaceholder="Search supplier"
-                />
+                {initialData ? (
+                  <AppSearchableSelect
+                    label="Default Supplier"
+                    value={form.defaultSupplierId}
+                    options={supplierOptions}
+                    onValueChange={(value) => setForm((prev) => ({ ...prev, defaultSupplierId: value }))}
+                    placeholder="Select supplier"
+                    searchPlaceholder="Search supplier"
+                  />
+                ) : null}
                 <AppInput
                   label="Minimum Stock"
                   type="number"
@@ -878,7 +964,67 @@ const ProductFormModal = ({ isOpen, onClose, loading, initialData, suppliers, un
                   value={form.minStock}
                   onChange={(event) => setForm((prev) => ({ ...prev, minStock: (event.target as HTMLInputElement).value }))}
                 />
+                <AppInput
+                  label="Selling Price"
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={form.sellingPrice}
+                  onChange={(event) =>
+                    setForm((prev) => ({ ...prev, sellingPrice: (event.target as HTMLInputElement).value }))
+                  }
+                />
+                <AppSearchableSelect
+                  label="Assign To"
+                  value={form.targetSection}
+                  options={PRODUCT_TARGET_SECTION_OPTIONS}
+                  onValueChange={(value) =>
+                    setForm((prev) => ({ ...prev, targetSection: value as ProductTargetSection }))
+                  }
+                  isClearable={false}
+                />
               </SimpleGrid>
+              {form.targetSection === "both" ? (
+                <AppCard p={3} bg="rgba(255, 250, 242, 0.95)" borderColor="rgba(133, 78, 48, 0.22)">
+                  <VStack spacing={3} align="stretch">
+                    <Text fontWeight={700} color="#2D1D17">
+                      Section Stock Split
+                    </Text>
+                    <SimpleGrid columns={{ base: 1, md: 2 }} spacing={3}>
+                      <AppInput
+                        label="Dip & Dash Assigned Stock"
+                        type="number"
+                        min={0}
+                        step="0.001"
+                        value={form.dipAndDashAssignedStock}
+                        onChange={(event) =>
+                          setForm((prev) => ({
+                            ...prev,
+                            dipAndDashAssignedStock: (event.target as HTMLInputElement).value
+                          }))
+                        }
+                      />
+                      <AppInput
+                        label="Snooker Assigned Stock"
+                        type="number"
+                        min={0}
+                        step="0.001"
+                        value={form.gamingAssignedStock}
+                        onChange={(event) =>
+                          setForm((prev) => ({
+                            ...prev,
+                            gamingAssignedStock: (event.target as HTMLInputElement).value
+                          }))
+                        }
+                      />
+                    </SimpleGrid>
+                    <Text fontSize="sm" color={splitMismatch ? "red.700" : "#6F594F"}>
+                      Split Total: {splitTotal} | Current Stock: {splitCurrentStock}
+                      {splitMismatch ? " (Split total must match current stock)" : ""}
+                    </Text>
+                  </VStack>
+                </AppCard>
+              ) : null}
               <FormControl display="flex" alignItems="center" justifyContent="space-between">
                 <FormLabel mb={0}>Active Product</FormLabel>
                 <Checkbox
@@ -897,7 +1043,13 @@ const ProductFormModal = ({ isOpen, onClose, loading, initialData, suppliers, un
             <AppButton
               onClick={() => void handleSave()}
               isLoading={loading}
-              isDisabled={!form.name.trim() || !form.category.trim() || Number(form.minStock) < 0}
+              isDisabled={
+                !form.name.trim() ||
+                !form.category.trim() ||
+                Number(form.minStock) < 0 ||
+                Number(form.sellingPrice) < 0 ||
+                splitMismatch
+              }
             >
               {initialData ? "Save Product" : "Create Product"}
             </AppButton>
@@ -915,9 +1067,17 @@ const ProductFormModal = ({ isOpen, onClose, loading, initialData, suppliers, un
   );
 };
 
-export const PurchasePage = () => {
+type PurchasePageSection = "orders" | "products";
+
+type PurchasePageProps = {
+  initialSection?: PurchasePageSection;
+  standalone?: boolean;
+};
+
+export const PurchasePage = ({ initialSection = "orders", standalone = false }: PurchasePageProps) => {
   const toast = useAppToast();
-  const [activeTabIndex, setActiveTabIndex] = useState(0);
+  const initialTabIndex = initialSection === "products" ? 1 : 0;
+  const [activeTabIndex, setActiveTabIndex] = useState(initialTabIndex);
 
   const [suppliers, setSuppliers] = useState<SupplierListItem[]>([]);
   const [meta, setMeta] = useState<ProcurementMetaResponse | null>(null);
@@ -954,7 +1114,11 @@ export const PurchasePage = () => {
     stockValuation: 0,
     totalPurchasedQuantity: 0,
     totalPurchasedAmount: 0,
-    topPurchasedProducts: []
+    totalSoldQuantity: 0,
+    totalSoldAmount: 0,
+    totalEstimatedProfit: 0,
+    topPurchasedProducts: [],
+    topSoldProducts: []
   });
   const [productsLoading, setProductsLoading] = useState(true);
   const [productSearch, setProductSearch] = useState("");
@@ -963,6 +1127,24 @@ export const PurchasePage = () => {
   const [productSupplierFilter, setProductSupplierFilter] = useState("");
   const [productPage, setProductPage] = useState(1);
   const [productLimit, setProductLimit] = useState(5);
+  const [productLedgerRows, setProductLedgerRows] = useState<ProductDayLedgerResponse["rows"]>([]);
+  const [productLedgerPagination, setProductLedgerPagination] = useState(defaultPagination);
+  const [productLedgerStats, setProductLedgerStats] = useState<ProductDayLedgerResponse["stats"]>({
+    totalProducts: 0,
+    totalOpeningStock: 0,
+    totalPurchased: 0,
+    totalConsumption: 0,
+    totalClosingStock: 0,
+    dipAndDashConsumption: 0,
+    snookerConsumption: 0
+  });
+  const [productLedgerLoading, setProductLedgerLoading] = useState(true);
+  const [productLedgerDate, setProductLedgerDate] = useState(getTodayDate());
+  const [productLedgerSearch, setProductLedgerSearch] = useState("");
+  const debouncedProductLedgerSearch = useDebouncedValue(productLedgerSearch, 350);
+  const [productLedgerTargetSection, setProductLedgerTargetSection] = useState("");
+  const [productLedgerPage, setProductLedgerPage] = useState(1);
+  const [productLedgerLimit, setProductLedgerLimit] = useState(12);
 
   const [mutationLoading, setMutationLoading] = useState(false);
   const [purchaseBulkTemplateLoading, setPurchaseBulkTemplateLoading] = useState(false);
@@ -1065,6 +1247,33 @@ export const PurchasePage = () => {
     }
   }, [debouncedProductSearch, productCategoryFilter, productLimit, productPage, productSupplierFilter, toast]);
 
+  const loadProductLedger = useCallback(async () => {
+    setProductLedgerLoading(true);
+    try {
+      const response = await procurementService.getProductLedger({
+        date: productLedgerDate,
+        search: debouncedProductLedgerSearch || undefined,
+        targetSection: (productLedgerTargetSection || undefined) as ProductTargetSection | undefined,
+        page: productLedgerPage,
+        limit: productLedgerLimit
+      });
+      setProductLedgerRows(response.data.rows);
+      setProductLedgerPagination(response.data.pagination);
+      setProductLedgerStats(response.data.stats);
+    } catch (error) {
+      toast.error("Unable to fetch product ledger", extractErrorMessage(error));
+    } finally {
+      setProductLedgerLoading(false);
+    }
+  }, [
+    debouncedProductLedgerSearch,
+    productLedgerDate,
+    productLedgerLimit,
+    productLedgerPage,
+    productLedgerTargetSection,
+    toast
+  ]);
+
   useEffect(() => {
     void Promise.all([loadSuppliers(), loadUnits(), loadMeta(getTodayDate())]);
   }, [loadSuppliers, loadUnits, loadMeta]);
@@ -1086,6 +1295,14 @@ export const PurchasePage = () => {
   }, [debouncedProductSearch, productCategoryFilter, productSupplierFilter, productLimit]);
 
   useEffect(() => {
+    void loadProductLedger();
+  }, [loadProductLedger]);
+
+  useEffect(() => {
+    setProductLedgerPage(1);
+  }, [debouncedProductLedgerSearch, productLedgerDate, productLedgerLimit, productLedgerTargetSection]);
+
+  useEffect(() => {
     void loadStats();
   }, [loadStats]);
 
@@ -1101,6 +1318,11 @@ export const PurchasePage = () => {
     const unique = new Set(productRows.map((row) => row.category));
     return [{ value: "", label: "All Categories" }, ...Array.from(unique).map((category) => ({ value: category, label: category }))];
   }, [productRows]);
+
+  const ledgerTargetSectionOptions: AppSearchableSelectOption[] = useMemo(
+    () => [{ value: "", label: "All Sections" }, ...PRODUCT_TARGET_SECTION_OPTIONS],
+    []
+  );
 
   const openCreateProduct = () => {
     setSelectedProduct(null);
@@ -1184,6 +1406,7 @@ export const PurchasePage = () => {
         await Promise.all([
           loadOrders(),
           loadProducts(),
+          loadProductLedger(),
           loadStats(),
           loadMeta(response.data.purchaseDate),
           loadSuppliers()
@@ -1194,7 +1417,7 @@ export const PurchasePage = () => {
         setPurchaseBulkUploadLoading(false);
       }
     },
-    [loadMeta, loadOrders, loadProducts, loadStats, loadSuppliers, toast]
+    [loadMeta, loadOrders, loadProductLedger, loadProducts, loadStats, loadSuppliers, toast]
   );
 
   const handleDownloadProductTemplate = useCallback(async () => {
@@ -1239,14 +1462,14 @@ export const PurchasePage = () => {
         toast.success(
           `Product bulk import completed. Added ${summary.insertedProducts}, skipped existing ${summary.skippedExistingProducts}, duplicate rows ${summary.skippedDuplicateRows}, invalid rows ${summary.invalidRows}.`
         );
-        await Promise.all([loadProducts(), loadStats(), loadMeta(meta?.date)]);
+        await Promise.all([loadProducts(), loadProductLedger(), loadStats(), loadMeta(meta?.date)]);
       } catch (error) {
         toast.error("Unable to import product CSV", extractErrorMessage(error));
       } finally {
         setProductBulkUploadLoading(false);
       }
     },
-    [loadMeta, loadProducts, loadStats, meta?.date, toast]
+    [loadMeta, loadProductLedger, loadProducts, loadStats, meta?.date, toast]
   );
 
   const handleSaveOrder = async (
@@ -1279,7 +1502,7 @@ export const PurchasePage = () => {
       }
       orderModal.onClose();
       setEditingOrder(null);
-      await Promise.all([loadOrders(), loadProducts(), loadStats(), loadMeta(payload.purchaseDate)]);
+      await Promise.all([loadOrders(), loadProducts(), loadProductLedger(), loadStats(), loadMeta(payload.purchaseDate)]);
     } catch (error) {
       toast.error(
         editingOrder ? "Unable to update purchase order" : "Unable to create purchase order",
@@ -1297,6 +1520,10 @@ export const PurchasePage = () => {
     packSize?: string;
     unit: ProductUnit;
     minStock: number;
+    sellingPrice: number;
+    targetSection: ProductTargetSection;
+    dipAndDashAssignedStock?: number;
+    gamingAssignedStock?: number;
     defaultSupplierId?: string | null;
     isActive: boolean;
   }) => {
@@ -1311,7 +1538,7 @@ export const PurchasePage = () => {
       }
       productModal.onClose();
       setSelectedProduct(null);
-      await Promise.all([loadProducts(), loadStats(), loadMeta(meta?.date)]);
+      await Promise.all([loadProducts(), loadProductLedger(), loadStats(), loadMeta(meta?.date)]);
     } catch (error) {
       toast.error("Unable to save product", extractErrorMessage(error));
     } finally {
@@ -1329,7 +1556,7 @@ export const PurchasePage = () => {
       toast.success("Product deleted successfully");
       deleteProductDialog.onClose();
       setSelectedProduct(null);
-      await Promise.all([loadProducts(), loadStats(), loadMeta(meta?.date)]);
+      await Promise.all([loadProducts(), loadProductLedger(), loadStats(), loadMeta(meta?.date)]);
     } catch (error) {
       toast.error("Unable to delete product", extractErrorMessage(error));
     } finally {
@@ -1338,25 +1565,79 @@ export const PurchasePage = () => {
   };
 
   const latestPurchase = recentPurchases[0] ?? null;
+  const isOrdersSection = activeTabIndex === 0;
+  const isStandaloneProducts = standalone && initialSection === "products";
+  const topSoldProduct = productStats.topSoldProducts[0] ?? null;
+  const pageTitle = standalone && initialSection === "products" ? "Products" : "Purchase";
+  const pageSubtitle =
+    standalone && initialSection === "products"
+      ? "Manage packaged products with stock, valuation and ageing visibility."
+      : "Manage supplier purchases, ingredient restocking and packaged products.";
+
+  useEffect(() => {
+    setActiveTabIndex(initialTabIndex);
+  }, [initialTabIndex]);
 
   return (
     <VStack spacing={5} align="stretch" w="full" minW={0}>
-      <PageHeader title="Purchase" subtitle="Manage supplier purchases, ingredient restocking and packaged products." />
+      <PageHeader title={pageTitle} subtitle={pageSubtitle} />
 
       <SimpleGrid minChildWidth={{ base: "150px", md: "200px", xl: "220px" }} spacing={3}>
-        <AppCard p={4}><Text fontSize="sm" color="#7B645B">Purchase Orders</Text><Text fontSize="2xl" fontWeight={900}>{stats.totalPurchaseOrders}</Text></AppCard>
-        <AppCard p={4}><Text fontSize="sm" color="#7B645B">Purchase Amount</Text><Text fontSize="2xl" fontWeight={900}>{formatCurrency(stats.totalPurchaseAmount)}</Text></AppCard>
-        <AppCard p={4}><Text fontSize="sm" color="#7B645B">Suppliers</Text><Text fontSize="2xl" fontWeight={900}>{stats.totalSuppliers}</Text></AppCard>
-        <AppCard p={4}><Text fontSize="sm" color="#7B645B">Products</Text><Text fontSize="2xl" fontWeight={900}>{stats.totalProducts}</Text></AppCard>
-        <AppCard p={4}>
-          <Text fontSize="sm" color="#7B645B">Last Bill Amount</Text>
-          <Text fontSize="2xl" fontWeight={900}>
-            {latestPurchase ? formatCurrency(latestPurchase.totalAmount) : "-"}
-          </Text>
-          <Text mt={1} fontSize="xs" color="#7B645B">
-            {latestPurchase ? latestPurchase.purchaseNumber : "No bill yet"}
-          </Text>
-        </AppCard>
+        {isStandaloneProducts ? (
+          <>
+            <AppCard p={4}>
+              <Text fontSize="sm" color="#7B645B">Total Products</Text>
+              <Text fontSize="2xl" fontWeight={900}>{productStats.totalProducts}</Text>
+              <Text mt={1} fontSize="xs" color="#7B645B">
+                Active {productStats.activeProducts} | Inactive {productStats.inactiveProducts}
+              </Text>
+            </AppCard>
+            <AppCard p={4}>
+              <Text fontSize="sm" color="#7B645B">Low Stock</Text>
+              <Text fontSize="2xl" fontWeight={900} color="#B91C1C">{productStats.lowStockProducts}</Text>
+            </AppCard>
+            <AppCard p={4}>
+              <Text fontSize="sm" color="#7B645B">Stock Valuation</Text>
+              <Text fontSize="2xl" fontWeight={900}>{formatCurrency(productStats.stockValuation)}</Text>
+            </AppCard>
+            <AppCard p={4}>
+              <Text fontSize="sm" color="#7B645B">Purchased Qty</Text>
+              <Text fontSize="2xl" fontWeight={900}>{productStats.totalPurchasedQuantity}</Text>
+            </AppCard>
+            <AppCard p={4}>
+              <Text fontSize="sm" color="#7B645B">Sold Amount</Text>
+              <Text fontSize="2xl" fontWeight={900}>{formatCurrency(productStats.totalSoldAmount)}</Text>
+              <Text mt={1} fontSize="xs" color="#7B645B">
+                {topSoldProduct
+                  ? `${topSoldProduct.name} (${topSoldProduct.quantity} ${topSoldProduct.unit})`
+                  : "No sales movement yet"}
+              </Text>
+            </AppCard>
+            <AppCard p={4}>
+              <Text fontSize="sm" color="#7B645B">Estimated Profit</Text>
+              <Text fontSize="2xl" fontWeight={900}>{formatCurrency(productStats.totalEstimatedProfit)}</Text>
+              <Text mt={1} fontSize="xs" color="#7B645B">
+                Purchase {formatCurrency(productStats.totalPurchasedAmount)}
+              </Text>
+            </AppCard>
+          </>
+        ) : (
+          <>
+            <AppCard p={4}><Text fontSize="sm" color="#7B645B">Purchase Orders</Text><Text fontSize="2xl" fontWeight={900}>{stats.totalPurchaseOrders}</Text></AppCard>
+            <AppCard p={4}><Text fontSize="sm" color="#7B645B">Purchase Amount</Text><Text fontSize="2xl" fontWeight={900}>{formatCurrency(stats.totalPurchaseAmount)}</Text></AppCard>
+            <AppCard p={4}><Text fontSize="sm" color="#7B645B">Suppliers</Text><Text fontSize="2xl" fontWeight={900}>{stats.totalSuppliers}</Text></AppCard>
+            <AppCard p={4}><Text fontSize="sm" color="#7B645B">Products</Text><Text fontSize="2xl" fontWeight={900}>{stats.totalProducts}</Text></AppCard>
+            <AppCard p={4}>
+              <Text fontSize="sm" color="#7B645B">Last Bill Amount</Text>
+              <Text fontSize="2xl" fontWeight={900}>
+                {latestPurchase ? formatCurrency(latestPurchase.totalAmount) : "-"}
+              </Text>
+              <Text mt={1} fontSize="xs" color="#7B645B">
+                {latestPurchase ? latestPurchase.purchaseNumber : "No bill yet"}
+              </Text>
+            </AppCard>
+          </>
+        )}
       </SimpleGrid>
 
       <Input
@@ -1374,7 +1655,12 @@ export const PurchasePage = () => {
         onChange={(event) => void handleProductBulkFileSelect(event)}
       />
 
-      <Tabs variant="soft-rounded" colorScheme="brand" index={activeTabIndex} onChange={setActiveTabIndex}>
+      <Tabs
+        variant="soft-rounded"
+        colorScheme="brand"
+        index={activeTabIndex}
+        onChange={standalone ? undefined : setActiveTabIndex}
+      >
         <Box
           display="flex"
           flexDirection={{ base: "column", lg: "row" }}
@@ -1383,17 +1669,23 @@ export const PurchasePage = () => {
           gap={3}
           minW={0}
         >
-          <TabList gap={3} flexWrap="wrap">
-            <Tab>Purchase Orders</Tab>
-            <Tab>Products</Tab>
-          </TabList>
+          {standalone ? (
+            <Text fontSize="2xl" fontWeight={900}>
+              {isOrdersSection ? "Purchase Orders" : "Products"}
+            </Text>
+          ) : (
+            <TabList gap={3} flexWrap="wrap">
+              <Tab>Purchase Orders</Tab>
+              <Tab>Products</Tab>
+            </TabList>
+          )}
           <HStack
             spacing={2}
             flexWrap={{ base: "wrap", lg: "nowrap" }}
             justify={{ base: "stretch", lg: "flex-end" }}
             align={{ base: "stretch", lg: "center" }}
           >
-            {activeTabIndex === 0 ? (
+            {isOrdersSection ? (
               <>
                 <AppButton
                   variant="outline"
@@ -1434,12 +1726,12 @@ export const PurchasePage = () => {
             )}
             <AppButton
               leftIcon={<Plus size={16} />}
-              onClick={activeTabIndex === 0 ? openCreateOrder : openCreateProduct}
+              onClick={isOrdersSection ? openCreateOrder : openCreateProduct}
               alignSelf={{ base: "stretch", lg: "flex-end" }}
               minW={{ lg: "170px" }}
               whiteSpace="nowrap"
             >
-              {activeTabIndex === 0 ? "New Purchase" : "Add Product"}
+              {isOrdersSection ? "New Purchase" : "Add Product"}
             </AppButton>
           </HStack>
         </Box>
@@ -1570,7 +1862,191 @@ export const PurchasePage = () => {
 
           <TabPanel px={0}>
             <AppCard>
-              <SimpleGrid columns={{ base: 1, md: 2, "2xl": 4 }} spacing={3} alignItems="end" minW={0}>
+              <AppCard
+                title="Day-wise Product Ledger"
+                subtitle="Track opening stock, purchased quantity, section-wise consumption, and closing stock."
+                p={4}
+              >
+                <VStack spacing={4} align="stretch">
+                  <SimpleGrid columns={{ base: 1, md: 2, xl: 5 }} spacing={3}>
+                    <AppInput
+                      label="Search Product"
+                      placeholder="Filter ledger rows"
+                      value={productLedgerSearch}
+                      onChange={(event) => setProductLedgerSearch((event.target as HTMLInputElement).value)}
+                    />
+                    <AppSearchableSelect
+                      label="Section"
+                      value={productLedgerTargetSection}
+                      options={ledgerTargetSectionOptions}
+                      onValueChange={setProductLedgerTargetSection}
+                    />
+                    <AppInput
+                      label="Ledger Date"
+                      type="date"
+                      value={productLedgerDate}
+                      onChange={(event) => setProductLedgerDate((event.target as HTMLInputElement).value)}
+                    />
+                    <FormControl>
+                      <FormLabel>Rows per page</FormLabel>
+                      <Select
+                        value={String(productLedgerLimit)}
+                        onChange={(event) => setProductLedgerLimit(Number((event.target as HTMLSelectElement).value))}
+                        bg="white"
+                        borderColor="rgba(193, 14, 14, 0.18)"
+                        focusBorderColor="brand.400"
+                      >
+                        <option value={12}>12</option>
+                        <option value={25}>25</option>
+                        <option value={50}>50</option>
+                        <option value={100}>100</option>
+                      </Select>
+                    </FormControl>
+                    <Box alignSelf={{ base: "stretch", xl: "end" }}>
+                      <AppButton w={{ base: "full", xl: "auto" }} onClick={() => void loadProductLedger()}>
+                        Refresh Ledger
+                      </AppButton>
+                    </Box>
+                  </SimpleGrid>
+
+                  <SimpleGrid columns={{ base: 1, sm: 2, xl: 6 }} spacing={3}>
+                    <AppCard p={3}>
+                      <Text fontSize="xs" color="#7B645B">Products</Text>
+                      <Text fontSize="xl" fontWeight={900}>{productLedgerStats.totalProducts}</Text>
+                    </AppCard>
+                    <AppCard p={3}>
+                      <Text fontSize="xs" color="#7B645B">Opening Stock</Text>
+                      <Text fontSize="xl" fontWeight={900}>{productLedgerStats.totalOpeningStock}</Text>
+                    </AppCard>
+                    <AppCard p={3}>
+                      <Text fontSize="xs" color="#7B645B">Purchased</Text>
+                      <Text fontSize="xl" fontWeight={900} color="green.700">{productLedgerStats.totalPurchased}</Text>
+                    </AppCard>
+                    <AppCard p={3}>
+                      <Text fontSize="xs" color="#7B645B">Total Consumption</Text>
+                      <Text fontSize="xl" fontWeight={900}>{productLedgerStats.totalConsumption}</Text>
+                    </AppCard>
+                    <AppCard p={3}>
+                      <Text fontSize="xs" color="#7B645B">Dip & Dash Used</Text>
+                      <Text fontSize="xl" fontWeight={900}>{productLedgerStats.dipAndDashConsumption}</Text>
+                    </AppCard>
+                    <AppCard p={3}>
+                      <Text fontSize="xs" color="#7B645B">Snooker Used</Text>
+                      <Text fontSize="xl" fontWeight={900}>{productLedgerStats.snookerConsumption}</Text>
+                    </AppCard>
+                  </SimpleGrid>
+
+                  {productLedgerLoading ? (
+                    <SkeletonTable />
+                  ) : (
+                    <DataTable
+                      columns={[
+                        {
+                          key: "productName",
+                          header: "Product",
+                          render: (row: ProductDayLedgerResponse["rows"][number]) => (
+                            <Box>
+                              <Text fontWeight={800}>{row.productName}</Text>
+                              <Text fontSize="sm" color="#7A6359">
+                                {row.category} | {row.unit.toUpperCase()}
+                              </Text>
+                            </Box>
+                          )
+                        },
+                        {
+                          key: "section",
+                          header: "Section",
+                          render: (row: ProductDayLedgerResponse["rows"][number]) => formatTargetSectionLabel(row.targetSection)
+                        },
+                        {
+                          key: "openingStock",
+                          header: "Opening",
+                          render: (row: ProductDayLedgerResponse["rows"][number]) => `${row.openingStock} ${row.unit}`
+                        },
+                        {
+                          key: "purchased",
+                          header: "Purchase",
+                          render: (row: ProductDayLedgerResponse["rows"][number]) => `${row.purchased} ${row.unit}`
+                        },
+                        {
+                          key: "consumption",
+                          header: "Consumption",
+                          render: (row: ProductDayLedgerResponse["rows"][number]) => `${row.consumption} ${row.unit}`
+                        },
+                        {
+                          key: "dipAndDashConsumption",
+                          header: "Dip Used",
+                          render: (row: ProductDayLedgerResponse["rows"][number]) => `${row.dipAndDashConsumption} ${row.unit}`
+                        },
+                        {
+                          key: "snookerConsumption",
+                          header: "Snooker Used",
+                          render: (row: ProductDayLedgerResponse["rows"][number]) => `${row.snookerConsumption} ${row.unit}`
+                        },
+                        {
+                          key: "closingStock",
+                          header: "Closing",
+                          render: (row: ProductDayLedgerResponse["rows"][number]) => (
+                            <Text fontWeight={800}>{row.closingStock} {row.unit}</Text>
+                          )
+                        },
+                        {
+                          key: "stockHealth",
+                          header: "Health",
+                          render: (row: ProductDayLedgerResponse["rows"][number]) => (
+                            <Box
+                              px={3}
+                              py={1}
+                              borderRadius="full"
+                              bg={row.stockHealth === "LOW_STOCK" ? "red.100" : "green.100"}
+                              color={row.stockHealth === "LOW_STOCK" ? "red.700" : "green.700"}
+                              fontSize="xs"
+                              fontWeight={700}
+                              w="fit-content"
+                            >
+                              {row.stockHealth === "LOW_STOCK" ? "Low Stock" : "Healthy"}
+                            </Box>
+                          )
+                        }
+                      ]}
+                      rows={productLedgerRows}
+                      emptyState={
+                        <EmptyState
+                          title="No ledger rows found"
+                          description={`No product ledger rows found for ${productLedgerDate}.`}
+                        />
+                      }
+                    />
+                  )}
+
+                  <HStack justify="space-between" flexWrap="wrap" gap={3}>
+                    <Text color="#6F594F" fontSize="sm">
+                      Showing {productLedgerRows.length} of {productLedgerPagination.total} records
+                    </Text>
+                    <HStack flexWrap="wrap">
+                      <AppButton
+                        variant="outline"
+                        isDisabled={productLedgerPage <= 1}
+                        onClick={() => setProductLedgerPage((prev) => prev - 1)}
+                      >
+                        Previous
+                      </AppButton>
+                      <Text fontWeight={700}>
+                        Page {productLedgerPagination.page} of {productLedgerPagination.totalPages}
+                      </Text>
+                      <AppButton
+                        variant="outline"
+                        isDisabled={productLedgerPagination.page >= productLedgerPagination.totalPages}
+                        onClick={() => setProductLedgerPage((prev) => prev + 1)}
+                      >
+                        Next
+                      </AppButton>
+                    </HStack>
+                  </HStack>
+                </VStack>
+              </AppCard>
+
+              <SimpleGrid mt={4} columns={{ base: 1, md: 2, "2xl": 4 }} spacing={3} alignItems="end" minW={0}>
                 <GridItem minW={0}>
                   <AppInput
                     label="Search Product"
@@ -1613,13 +2089,15 @@ export const PurchasePage = () => {
                 </GridItem>
               </SimpleGrid>
 
-              <SimpleGrid mt={4} minChildWidth={{ base: "150px", md: "180px", xl: "200px" }} spacing={3}>
-                <AppCard p={3}><Text fontSize="xs" color="#7B645B">Total Products</Text><Text fontSize="xl" fontWeight={900}>{productStats.totalProducts}</Text></AppCard>
-                <AppCard p={3}><Text fontSize="xs" color="#7B645B">Low Stock</Text><Text fontSize="xl" fontWeight={900} color="#B91C1C">{productStats.lowStockProducts}</Text></AppCard>
-                <AppCard p={3}><Text fontSize="xs" color="#7B645B">Stock Valuation</Text><Text fontSize="xl" fontWeight={900}>{formatCurrency(productStats.stockValuation)}</Text></AppCard>
-                <AppCard p={3}><Text fontSize="xs" color="#7B645B">Purchased Qty</Text><Text fontSize="xl" fontWeight={900}>{productStats.totalPurchasedQuantity}</Text></AppCard>
-                <AppCard p={3}><Text fontSize="xs" color="#7B645B">Purchased Amount</Text><Text fontSize="xl" fontWeight={900}>{formatCurrency(productStats.totalPurchasedAmount)}</Text></AppCard>
-              </SimpleGrid>
+              {!isStandaloneProducts ? (
+                <SimpleGrid mt={4} minChildWidth={{ base: "150px", md: "180px", xl: "200px" }} spacing={3}>
+                  <AppCard p={3}><Text fontSize="xs" color="#7B645B">Total Products</Text><Text fontSize="xl" fontWeight={900}>{productStats.totalProducts}</Text></AppCard>
+                  <AppCard p={3}><Text fontSize="xs" color="#7B645B">Low Stock</Text><Text fontSize="xl" fontWeight={900} color="#B91C1C">{productStats.lowStockProducts}</Text></AppCard>
+                  <AppCard p={3}><Text fontSize="xs" color="#7B645B">Stock Valuation</Text><Text fontSize="xl" fontWeight={900}>{formatCurrency(productStats.stockValuation)}</Text></AppCard>
+                  <AppCard p={3}><Text fontSize="xs" color="#7B645B">Sold Qty</Text><Text fontSize="xl" fontWeight={900}>{productStats.totalSoldQuantity}</Text></AppCard>
+                  <AppCard p={3}><Text fontSize="xs" color="#7B645B">Sold Amount</Text><Text fontSize="xl" fontWeight={900}>{formatCurrency(productStats.totalSoldAmount)}</Text></AppCard>
+                </SimpleGrid>
+              ) : null}
 
               <AppCard mt={4} p={4}>
                 <Text fontWeight={800} mb={3}>
@@ -1648,6 +2126,33 @@ export const PurchasePage = () => {
                 )}
               </AppCard>
 
+              <AppCard mt={4} p={4}>
+                <Text fontWeight={800} mb={3}>
+                  Top Sold Products
+                </Text>
+                {productStats.topSoldProducts.length ? (
+                  <SimpleGrid columns={{ base: 1, md: 2, xl: 3 }} spacing={3}>
+                    {productStats.topSoldProducts.map((entry) => (
+                      <Box
+                        key={`sold-${entry.productId}`}
+                        border="1px solid"
+                        borderColor="rgba(133, 78, 48, 0.22)"
+                        borderRadius="12px"
+                        p={3}
+                        bg="white"
+                      >
+                        <Text fontWeight={800}>{entry.name}</Text>
+                        <Text fontSize="sm" color="#7A6359">
+                          {entry.quantity} {entry.unit}
+                        </Text>
+                      </Box>
+                    ))}
+                  </SimpleGrid>
+                ) : (
+                  <Text color="#7A6359">No sales movement yet.</Text>
+                )}
+              </AppCard>
+
               <Box mt={4}>
                 {productsLoading ? (
                   <SkeletonTable rows={5} />
@@ -1670,9 +2175,48 @@ export const PurchasePage = () => {
                         )
                       },
                       { key: "category", header: "Category", render: (row: ProductListItem) => row.category },
+                      {
+                        key: "section",
+                        header: "Section",
+                        render: (row: ProductListItem) => formatTargetSectionLabel(row.targetSection)
+                      },
                       { key: "stock", header: "Stock", render: (row: ProductListItem) => `${row.currentStock} ${row.unit}` },
+                      {
+                        key: "assignedSplit",
+                        header: "Assigned Split",
+                        render: (row: ProductListItem) => (
+                          <Box>
+                            <Text fontSize="sm">Dip: {row.dipAndDashAssignedStock}</Text>
+                            <Text fontSize="sm">Snooker: {row.gamingAssignedStock}</Text>
+                          </Box>
+                        )
+                      },
                       { key: "minStock", header: "Min Stock", render: (row: ProductListItem) => `${row.minStock} ${row.unit}` },
-                      { key: "price", header: "Unit Price", render: (row: ProductListItem) => formatCurrency(row.purchaseUnitPrice) },
+                      {
+                        key: "purchasePrice",
+                        header: "Purchase Price",
+                        render: (row: ProductListItem) => formatCurrency(row.purchaseUnitPrice)
+                      },
+                      {
+                        key: "sellingPrice",
+                        header: "Selling Price",
+                        render: (row: ProductListItem) => formatCurrency(row.sellingPrice)
+                      },
+                      {
+                        key: "soldQuantity",
+                        header: "Sold Qty",
+                        render: (row: ProductListItem) => `${row.soldQuantity} ${row.unit}`
+                      },
+                      {
+                        key: "soldAmount",
+                        header: "Sold Amount",
+                        render: (row: ProductListItem) => formatCurrency(row.soldAmount)
+                      },
+                      {
+                        key: "profit",
+                        header: "Est. Profit",
+                        render: (row: ProductListItem) => formatCurrency(row.estimatedProfit)
+                      },
                       { key: "valuation", header: "Valuation", render: (row: ProductListItem) => formatCurrency(row.valuation) },
                       {
                         key: "ageing",

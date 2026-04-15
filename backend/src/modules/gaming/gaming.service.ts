@@ -1,6 +1,9 @@
 import { AppDataSource } from "../../database/data-source";
 import { UserRole } from "../../constants/roles";
 import { AppError } from "../../errors/app-error";
+import { InvoiceLine } from "../invoices/invoice-line.entity";
+import { Product } from "../procurement/product.entity";
+import { PurchaseOrderLine } from "../procurement/purchase-order-line.entity";
 import { User } from "../users/user.entity";
 import {
   ALL_GAMING_RESOURCES,
@@ -141,6 +144,9 @@ const buildDateRange = (input: { dateFrom?: string; dateTo?: string }) => {
 export class GamingService {
   private readonly bookingRepository = AppDataSource.getRepository(GamingBooking);
   private readonly userRepository = AppDataSource.getRepository(User);
+  private readonly purchaseOrderLineRepository = AppDataSource.getRepository(PurchaseOrderLine);
+  private readonly invoiceLineRepository = AppDataSource.getRepository(InvoiceLine);
+  private readonly productRepository = AppDataSource.getRepository(Product);
 
   private validateResource(bookingType: GamingBookingType, resourceCode: string) {
     const normalized = resourceCode.trim().toLowerCase();
@@ -662,7 +668,47 @@ export class GamingService {
       query.andWhere("booking.checkInAt <= :dateTo", { dateTo: dateRange.to });
     }
 
-    const bookings = await query.getMany();
+    const [bookings, gamingPurchaseSummary, gamingSalesSummary, gamingStockValuation] = await Promise.all([
+      query.getMany(),
+      this.purchaseOrderLineRepository
+        .createQueryBuilder("line")
+        .leftJoin("line.product", "product")
+        .leftJoin("line.purchaseOrder", "purchaseOrder")
+        .select("COALESCE(SUM(line.stockAdded), 0)", "quantity")
+        .addSelect("COALESCE(SUM(line.lineTotal), 0)", "amount")
+        .where("line.lineType = :lineType", { lineType: "product" })
+        .andWhere("product.targetSection IN (:...sections)", { sections: ["gaming", "both"] })
+        .andWhere(dateRange.from ? "purchaseOrder.purchaseDate >= :purchaseDateFrom" : "1=1", {
+          purchaseDateFrom: input.dateFrom
+        })
+        .andWhere(dateRange.to ? "purchaseOrder.purchaseDate <= :purchaseDateTo" : "1=1", {
+          purchaseDateTo: input.dateTo
+        })
+        .getRawOne<{ quantity: string; amount: string }>(),
+      this.invoiceLineRepository
+        .createQueryBuilder("line")
+        .leftJoin("line.invoice", "invoice")
+        .leftJoin(Product, "product", "product.id::text = line.\"referenceId\"::text")
+        .select("COALESCE(SUM(line.quantity), 0)", "quantity")
+        .addSelect("COALESCE(SUM(line.lineTotal), 0)", "amount")
+        .addSelect("COALESCE(SUM(line.quantity * COALESCE(product.purchaseUnitPrice, 0)), 0)", "costAmount")
+        .where("line.lineType = :lineType", { lineType: "product" })
+        .andWhere("invoice.status = :status", { status: "paid" })
+        .andWhere("invoice.orderType = :orderType", { orderType: "snooker" })
+        .andWhere("product.targetSection IN (:...sections)", { sections: ["gaming", "both"] })
+        .andWhere(dateRange.from ? "invoice.createdAt >= :salesFrom" : "1=1", {
+          salesFrom: dateRange.from ?? undefined
+        })
+        .andWhere(dateRange.to ? "invoice.createdAt <= :salesTo" : "1=1", {
+          salesTo: dateRange.to ?? undefined
+        })
+        .getRawOne<{ quantity: string; amount: string; costAmount: string }>(),
+      this.productRepository
+        .createQueryBuilder("product")
+        .select("COALESCE(SUM(product.currentStock * product.purchaseUnitPrice), 0)", "value")
+        .where("product.targetSection IN (:...sections)", { sections: ["gaming", "both"] })
+        .getRawOne<{ value: string }>()
+    ]);
     const now = new Date();
 
     const totals = {
@@ -733,8 +779,23 @@ export class GamingService {
       });
     });
 
+    const purchasedQuantity = toNumber(gamingPurchaseSummary?.quantity, 0);
+    const purchasedAmount = roundCurrency(toNumber(gamingPurchaseSummary?.amount, 0));
+    const soldQuantity = toNumber(gamingSalesSummary?.quantity, 0);
+    const soldAmount = roundCurrency(toNumber(gamingSalesSummary?.amount, 0));
+    const soldCostAmount = roundCurrency(toNumber(gamingSalesSummary?.costAmount, 0));
+    const estimatedProfit = roundCurrency(soldAmount - soldCostAmount);
+
     return {
       totals,
+      gamingProducts: {
+        purchasedQuantity: Number(purchasedQuantity.toFixed(3)),
+        purchasedAmount,
+        soldQuantity: Number(soldQuantity.toFixed(3)),
+        soldAmount,
+        estimatedProfit,
+        stockValuation: roundCurrency(toNumber(gamingStockValuation?.value, 0))
+      },
       staffCollection: [...staffCollectionMap.values()].sort((a, b) => b.collectedAmount - a.collectedAmount),
       resourceUsage: [...resourceUsageMap.values()].sort((a, b) => b.bookings - a.bookings)
     };

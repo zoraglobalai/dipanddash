@@ -15,6 +15,7 @@
     "seed:admin": "ts-node src/seeds/seedAdmin.ts",
     "seed:admin:prod": "node dist/seeds/seedAdmin.js",
     "seed:admin:prod:optional": "node dist/seeds/seedAdminIfConfigured.js",
+    "import:legacy-workbook": "ts-node src/scripts/importLegacyWorkbookFromRoot.ts",
     "typeorm": "typeorm-ts-node-commonjs -d src/database/data-source.ts",
     "migration:generate": "npm run typeorm -- migration:generate src/database/migrations/AutoMigration",
     "migration:run": "npm run typeorm -- migration:run",

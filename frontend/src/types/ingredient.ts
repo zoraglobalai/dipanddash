@@ -41,11 +41,13 @@ export type IngredientUnit =
   | "custom";
 
 export type IngredientStockStatus = "LOW_STOCK" | "OK";
+export type IngredientCategoryKind = "core" | "additional";
 
 export type IngredientCategory = {
   id: string;
   name: string;
   description: string | null;
+  kind: IngredientCategoryKind;
   isActive: boolean;
   ingredientCount?: number;
   createdAt: string;

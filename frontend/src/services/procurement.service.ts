@@ -3,6 +3,7 @@ import type { ApiSuccess } from "@/types/api";
 import type {
   CreatePurchaseOrderInput,
   ProductBulkImportResult,
+  ProductDayLedgerResponse,
   PurchaseBulkImportResult,
   ProcurementMetaResponse,
   ProcurementStatsResponse,
@@ -54,6 +55,7 @@ export const procurementService = {
     search?: string;
     category?: string;
     supplierId?: string;
+    targetSection?: "dip_and_dash" | "gaming" | "both";
     includeInactive?: boolean;
     page?: number;
     limit?: number;
@@ -69,6 +71,10 @@ export const procurementService = {
     packSize?: string;
     unit: string;
     minStock: number;
+    sellingPrice?: number;
+    targetSection?: "dip_and_dash" | "gaming" | "both";
+    dipAndDashAssignedStock?: number;
+    gamingAssignedStock?: number;
     defaultSupplierId?: string | null;
     isActive?: boolean;
   }) => {
@@ -85,6 +91,10 @@ export const procurementService = {
       packSize?: string;
       unit?: string;
       minStock?: number;
+      sellingPrice?: number;
+      targetSection?: "dip_and_dash" | "gaming" | "both";
+      dipAndDashAssignedStock?: number;
+      gamingAssignedStock?: number;
       defaultSupplierId?: string | null;
       isActive?: boolean;
     }
@@ -207,6 +217,19 @@ export const procurementService = {
 
   getStats: async (params?: { dateFrom?: string; dateTo?: string }) => {
     const response = await apiClient.get<ApiSuccess<ProcurementStatsResponse>>("/procurement/stats", { params });
+    return response.data;
+  },
+
+  getProductLedger: async (params?: {
+    date?: string;
+    search?: string;
+    targetSection?: "dip_and_dash" | "gaming" | "both";
+    page?: number;
+    limit?: number;
+  }) => {
+    const response = await apiClient.get<ApiSuccess<ProductDayLedgerResponse>>("/procurement/products/ledger", {
+      params
+    });
     return response.data;
   },
 

@@ -59,6 +59,14 @@ export type GamingStats = {
     totalRevenue: number;
     pendingCollection: number;
   };
+  gamingProducts: {
+    purchasedQuantity: number;
+    purchasedAmount: number;
+    soldQuantity: number;
+    soldAmount: number;
+    estimatedProfit: number;
+    stockValuation: number;
+  };
   staffCollection: Array<{
     staffId: string;
     staffName: string;

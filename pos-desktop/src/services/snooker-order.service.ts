@@ -12,6 +12,7 @@ import type {
   PosOrder
 } from "@/types/pos";
 import { makeId, makeInvoiceNumber } from "@/utils/idempotency";
+import { roundMoney } from "@/utils/currency";
 
 type UpsertSnookerFoodOrderInput = {
   booking: GamingBooking;
@@ -24,6 +25,18 @@ type UpsertSnookerFoodOrderInput = {
     unitPrice: number;
     gstPercentage?: number;
   }>;
+  notes?: string;
+};
+
+type CreateSnookerDirectProductSaleInput = {
+  snapshot: CatalogSnapshot;
+  lines: Array<{
+    productId: string;
+    quantity: number;
+  }>;
+  paymentMode: Extract<PaymentMode, "cash" | "upi" | "card">;
+  paymentReferenceNo?: string;
+  manualDiscountAmount?: number;
   notes?: string;
 };
 
@@ -100,17 +113,20 @@ const queueInvoiceSync = async (
   order: PosOrder,
   snapshot: CatalogSnapshot,
   mode: "pending" | "paid",
-  paymentMode?: PaymentMode
+  paymentInput?: {
+    mode: PaymentMode;
+    referenceNo?: string | null;
+  }
 ) => {
   const payments =
     mode === "paid"
       ? [
           {
-            mode: paymentMode ?? "cash",
+            mode: paymentInput?.mode ?? "cash",
             amount: order.totals.totalAmount,
             receivedAmount: order.totals.totalAmount,
             changeAmount: 0,
-            referenceNo: null,
+            referenceNo: paymentInput?.referenceNo?.trim() || null,
             paidAt: new Date().toISOString()
           }
         ]
@@ -243,7 +259,9 @@ export const snookerOrderService = {
 
     await ordersRepository.save(paidOrder);
     await ordersRepository.removePendingBill(paidOrder.localOrderId);
-    await queueInvoiceSync(paidOrder, input.snapshot, "paid", input.paymentMode);
+    await queueInvoiceSync(paidOrder, input.snapshot, "paid", {
+      mode: input.paymentMode
+    });
     await gamingBookingsService.updateFoodOrderLink(input.booking.localBookingId, {
       foodInvoiceStatus: "paid",
       foodInvoiceNumber: paidOrder.invoiceNumber,
@@ -251,5 +269,110 @@ export const snookerOrderService = {
     });
 
     return paidOrder;
+  },
+
+  async createDirectProductSale(input: CreateSnookerDirectProductSaleInput) {
+    if (!input.lines.length) {
+      throw new Error("Add at least one product line.");
+    }
+
+    const paymentMode = input.paymentMode;
+    const paymentReference = input.paymentReferenceNo?.trim() ?? "";
+    if ((paymentMode === "upi" || paymentMode === "card") && !paymentReference) {
+      throw new Error("Reference ID is required for UPI and Card payments.");
+    }
+
+    const productMap = new Map(input.snapshot.products.map((product) => [product.id, product]));
+    const normalizedLines: CartLine[] = [];
+    const aggregateQuantityByProduct = new Map<string, number>();
+
+    for (const line of input.lines) {
+      const product = productMap.get(line.productId);
+      if (!product) {
+        continue;
+      }
+
+      const quantity = Math.max(1, Math.round(Number(line.quantity) || 0));
+      const nextQty = (aggregateQuantityByProduct.get(product.id) ?? 0) + quantity;
+      aggregateQuantityByProduct.set(product.id, nextQty);
+
+      normalizedLines.push({
+        lineId: makeId(),
+        lineType: "product",
+        refId: product.id,
+        name: product.name,
+        quantity,
+        unitPrice: Number(product.sellingPrice) || 0,
+        gstPercentage: 0,
+        addOns: [],
+        notes: null
+      });
+    }
+
+    if (!normalizedLines.length) {
+      throw new Error("No valid products selected for billing.");
+    }
+
+    const outOfStockNames: string[] = [];
+    aggregateQuantityByProduct.forEach((requestedQty, productId) => {
+      const product = productMap.get(productId);
+      if (!product) {
+        return;
+      }
+      if (requestedQty > Math.max(0, Number(product.currentStock ?? 0))) {
+        outOfStockNames.push(product.name);
+      }
+    });
+    if (outOfStockNames.length) {
+      throw new Error(`Insufficient stock for: ${outOfStockNames.join(", ")}`);
+    }
+
+    const now = new Date().toISOString();
+    const manualDiscountAmount = Math.max(0, roundMoney(Number(input.manualDiscountAmount) || 0));
+    const orderBase: PosOrder = {
+      localOrderId: makeId(),
+      serverInvoiceId: null,
+      invoiceNumber: makeInvoiceNumber(),
+      orderType: "snooker",
+      orderChannel: "snooker",
+      tableLabel: "Counter",
+      kitchenStatus: "served",
+      status: "paid",
+      paymentMode,
+      customer: null,
+      lines: normalizedLines,
+      appliedOffer: null,
+      manualDiscountAmount,
+      notes: input.notes?.trim() || "Snooker product counter sale",
+      totals: {
+        subtotal: 0,
+        itemDiscountAmount: 0,
+        couponDiscountAmount: 0,
+        manualDiscountAmount,
+        taxAmount: 0,
+        totalAmount: 0
+      },
+      createdAt: now,
+      updatedAt: now,
+      syncStatus: "pending"
+    };
+
+    const order: PosOrder = {
+      ...orderBase,
+      totals: posBillingService.computeTotals({
+        lines: orderBase.lines,
+        manualDiscountAmount,
+        couponDiscountAmount: 0
+      })
+    };
+
+    await ordersRepository.save(order);
+    await ordersRepository.removePendingBill(order.localOrderId);
+    await queueInvoiceSync(order, input.snapshot, "paid", {
+      mode: paymentMode,
+      referenceNo: paymentReference || null
+    });
+
+    return order;
   }
 };

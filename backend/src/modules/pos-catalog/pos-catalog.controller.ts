@@ -11,10 +11,10 @@ export class PosCatalogController {
     const snapshot = await this.posCatalogService.getSnapshot({
       sinceVersion: typeof req.query.sinceVersion === "string" ? req.query.sinceVersion : undefined,
       allocationDate:
-        typeof req.query.allocationDate === "string" ? req.query.allocationDate : undefined
+        typeof req.query.allocationDate === "string" ? req.query.allocationDate : undefined,
+      actorRole: req.user?.role
     });
 
     return sendSuccess(res, StatusCodes.OK, "POS catalog snapshot fetched successfully", { snapshot });
   };
 }
-

@@ -30,6 +30,7 @@ import {
 
 const router = Router();
 const ingredientsController = new IngredientsController();
+const authorizeIngredientModule = authorizeAnyModuleAccess("ingredient-entry", "additional-entry");
 
 router.use(authenticate);
 
@@ -79,88 +80,88 @@ router.post(
 );
 router.get(
   "/bulk/template",
-  authorizeModuleAccess("ingredient-entry"),
+  authorizeIngredientModule,
   asyncHandler(ingredientsController.downloadBulkTemplate)
 );
 router.post(
   "/bulk/import",
-  authorizeModuleAccess("ingredient-entry"),
+  authorizeIngredientModule,
   ingredientBulkUpload.single("file"),
   asyncHandler(ingredientsController.bulkImportIngredients)
 );
 
 router.get(
   "/categories",
-  authorizeModuleAccess("ingredient-entry"),
+  authorizeIngredientModule,
   validateRequest(ingredientCategoryListSchema),
   asyncHandler(ingredientsController.listCategories)
 );
 router.post(
   "/categories",
-  authorizeModuleAccess("ingredient-entry"),
+  authorizeIngredientModule,
   validateRequest(createIngredientCategorySchema),
   asyncHandler(ingredientsController.createCategory)
 );
 router.patch(
   "/categories/:id",
-  authorizeModuleAccess("ingredient-entry"),
+  authorizeIngredientModule,
   validateRequest(updateIngredientCategorySchema),
   asyncHandler(ingredientsController.updateCategory)
 );
 router.delete(
   "/categories/:id",
-  authorizeModuleAccess("ingredient-entry"),
+  authorizeIngredientModule,
   validateRequest(deleteIngredientCategorySchema),
   asyncHandler(ingredientsController.deleteCategory)
 );
 
 router.get(
   "/",
-  authorizeModuleAccess("ingredient-entry"),
+  authorizeIngredientModule,
   validateRequest(ingredientListSchema),
   asyncHandler(ingredientsController.listIngredients)
 );
 router.post(
   "/",
-  authorizeModuleAccess("ingredient-entry"),
+  authorizeIngredientModule,
   validateRequest(createIngredientSchema),
   asyncHandler(ingredientsController.createIngredient)
 );
 router.patch(
   "/:id",
-  authorizeModuleAccess("ingredient-entry"),
+  authorizeIngredientModule,
   validateRequest(updateIngredientSchema),
   asyncHandler(ingredientsController.updateIngredient)
 );
 router.delete(
   "/:id",
-  authorizeModuleAccess("ingredient-entry"),
+  authorizeIngredientModule,
   validateRequest(deleteIngredientSchema),
   asyncHandler(ingredientsController.deleteIngredient)
 );
 
 router.get(
   "/allocations/stats",
-  authorizeAnyModuleAccess("ingredient-entry", "dashboard"),
+  authorizeAnyModuleAccess("ingredient-entry", "additional-entry", "dashboard"),
   validateRequest(allocationStatsSchema),
   asyncHandler(ingredientsController.getAllocationStats)
 );
 
 router.get(
   "/:id/stock",
-  authorizeModuleAccess("ingredient-entry"),
+  authorizeIngredientModule,
   validateRequest(ingredientStockSchema),
   asyncHandler(ingredientsController.getIngredientStock)
 );
 router.post(
   "/:id/stock/add",
-  authorizeModuleAccess("ingredient-entry"),
+  authorizeIngredientModule,
   validateRequest(addIngredientStockSchema),
   asyncHandler(ingredientsController.addStock)
 );
 router.post(
   "/:id/stock/adjust",
-  authorizeModuleAccess("ingredient-entry"),
+  authorizeIngredientModule,
   validateRequest(adjustIngredientStockSchema),
   asyncHandler(ingredientsController.adjustStock)
 );

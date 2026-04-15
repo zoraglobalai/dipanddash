@@ -4,6 +4,7 @@ import { StatusCodes } from "http-status-codes";
 import { sendSuccess } from "../../common/api-response";
 import { AUTH_MESSAGES } from "../../constants/auth";
 import { AppError } from "../../errors/app-error";
+import type { ProductTargetSection } from "./procurement.constants";
 import { ProcurementService } from "./procurement.service";
 import { procurementUnitsData } from "./procurement.validation";
 
@@ -112,11 +113,29 @@ export class ProcurementController {
       search: typeof req.query.search === "string" ? req.query.search : undefined,
       category: typeof req.query.category === "string" ? req.query.category : undefined,
       supplierId: typeof req.query.supplierId === "string" ? req.query.supplierId : undefined,
+      targetSection:
+        typeof req.query.targetSection === "string"
+          ? (req.query.targetSection as ProductTargetSection)
+          : undefined,
       includeInactive: parseBoolean(req.query.includeInactive, true),
       page: parsePositiveInt(req.query.page, 1),
       limit: parsePositiveInt(req.query.limit, 10)
     });
     return sendSuccess(res, StatusCodes.OK, "Products fetched successfully", data);
+  };
+
+  listProductLedger = async (req: Request, res: Response): Promise<Response> => {
+    const data = await this.procurementService.getProductDayLedger({
+      date: typeof req.query.date === "string" ? req.query.date : undefined,
+      search: typeof req.query.search === "string" ? req.query.search : undefined,
+      targetSection:
+        typeof req.query.targetSection === "string"
+          ? (req.query.targetSection as ProductTargetSection)
+          : undefined,
+      page: parsePositiveInt(req.query.page, 1),
+      limit: parsePositiveInt(req.query.limit, 12)
+    });
+    return sendSuccess(res, StatusCodes.OK, "Product day ledger fetched successfully", data);
   };
 
   createProduct = async (req: Request, res: Response): Promise<Response> => {

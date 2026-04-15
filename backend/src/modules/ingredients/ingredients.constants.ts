@@ -43,6 +43,10 @@ export const INGREDIENT_UNITS = [
 
 export type IngredientUnit = (typeof INGREDIENT_UNITS)[number];
 
+export const INGREDIENT_CATEGORY_KINDS = ["core", "additional"] as const;
+
+export type IngredientCategoryKind = (typeof INGREDIENT_CATEGORY_KINDS)[number];
+
 export enum IngredientStockLogType {
   ADD = "ADD",
   ALLOCATE = "ALLOCATE",

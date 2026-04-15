@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { INGREDIENT_UNITS } from "./ingredients.constants";
+import { INGREDIENT_CATEGORY_KINDS, INGREDIENT_UNITS } from "./ingredients.constants";
 
 const datePattern = /^\d{4}-\d{2}-\d{2}$/;
 const isValidDateLike = (value: string) => {
@@ -17,10 +17,12 @@ const dateLikeSchema = z
   .trim()
   .refine((value) => isValidDateLike(value), "Date must be in YYYY-MM-DD format");
 const unitSchema = z.enum(INGREDIENT_UNITS);
+const categoryKindSchema = z.enum(INGREDIENT_CATEGORY_KINDS);
 
 export const ingredientCategoryListSchema = z.object({
   query: z.object({
     search: z.string().trim().optional(),
+    kind: categoryKindSchema.optional(),
     includeInactive: z.coerce.boolean().optional(),
     page: z.coerce.number().int().min(1).default(1),
     limit: z.coerce.number().int().min(1).max(50).default(10)
@@ -30,7 +32,8 @@ export const ingredientCategoryListSchema = z.object({
 export const createIngredientCategorySchema = z.object({
   body: z.object({
     name: z.string().trim().min(2, "Category name must be at least 2 characters").max(80),
-    description: z.string().trim().max(255).optional()
+    description: z.string().trim().max(255).optional(),
+    kind: categoryKindSchema.optional().default("core")
   })
 });
 
@@ -42,6 +45,7 @@ export const updateIngredientCategorySchema = z.object({
     .object({
       name: z.string().trim().min(2).max(80).optional(),
       description: z.string().trim().max(255).optional(),
+      kind: categoryKindSchema.optional(),
       isActive: z.boolean().optional()
     })
     .refine((value) => Object.keys(value).length > 0, "At least one field must be provided")
@@ -57,6 +61,7 @@ export const ingredientListSchema = z.object({
   query: z.object({
     search: z.string().trim().optional(),
     categoryId: z.string().uuid("Invalid category id").optional(),
+    categoryKind: categoryKindSchema.optional(),
     includeInactive: z.coerce.boolean().optional(),
     withMovementStats: z.coerce.boolean().optional(),
     page: z.coerce.number().int().min(1).default(1),
@@ -136,6 +141,7 @@ export const allocationListSchema = z.object({
     overall: z.coerce.boolean().optional(),
     search: z.string().trim().optional(),
     categoryId: z.string().uuid("Invalid category id").optional(),
+    categoryKind: categoryKindSchema.optional(),
     page: z.coerce.number().int().min(1).default(1),
     limit: z.coerce.number().int().min(1).max(50).default(10)
   })
@@ -145,7 +151,8 @@ export const allocationStatsSchema = z.object({
   query: z.object({
     date: z.string().regex(datePattern, "Date must be in YYYY-MM-DD format").optional(),
     search: z.string().trim().optional(),
-    categoryId: z.string().uuid("Invalid category id").optional()
+    categoryId: z.string().uuid("Invalid category id").optional(),
+    categoryKind: categoryKindSchema.optional()
   })
 });
 
