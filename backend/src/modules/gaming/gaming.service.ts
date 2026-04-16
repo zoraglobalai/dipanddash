@@ -61,6 +61,10 @@ type CreateBookingInput = {
   paymentStatus?: GamingPaymentStatus;
   paymentMode?: GamingPaymentMode;
   finalAmount?: number;
+  systemCalculatedAmount?: number;
+  extraMemberCount?: number;
+  extraMemberCharge?: number;
+  amountOverrideReason?: string;
   checkOutAt?: string;
   foodOrderReference?: string;
   foodInvoiceNumber?: string;
@@ -81,6 +85,11 @@ type UpdateBookingInput = {
   status?: "upcoming" | "ongoing" | "cancelled";
   paymentStatus?: "pending" | "paid";
   paymentMode?: GamingPaymentMode;
+  finalAmount?: number;
+  systemCalculatedAmount?: number;
+  extraMemberCount?: number;
+  extraMemberCharge?: number;
+  amountOverrideReason?: string;
   foodOrderReference?: string;
   foodInvoiceNumber?: string;
   foodInvoiceStatus?: "none" | "pending" | "paid" | "cancelled";
@@ -88,6 +97,9 @@ type UpdateBookingInput = {
 };
 
 const normalizePhone = (value: string) => value.replace(/[^\d+]/g, "").trim();
+const SNOOKER_INCLUDED_MEMBERS = 4;
+const SNOOKER_EXTRA_MEMBER_FEE = 50;
+const AMOUNT_DIFF_THRESHOLD = 0.01;
 const cleanText = (value?: string | null) => {
   if (value === undefined || value === null) {
     return null;
@@ -131,6 +143,8 @@ const getPaginationMeta = (page: number, limit: number, total: number) => ({
   total,
   totalPages: Math.max(1, Math.ceil(total / limit))
 });
+
+const hasAmountDiff = (left: number, right: number) => Math.abs(left - right) > AMOUNT_DIFF_THRESHOLD;
 
 const buildDateRange = (input: { dateFrom?: string; dateTo?: string }) => {
   const from = input.dateFrom ? parseDateOrThrow(`${input.dateFrom}T00:00:00.000Z`, "Date from") : null;
@@ -224,6 +238,45 @@ export class GamingService {
     };
   }
 
+  private calculateExtraMemberBreakdown(input: { bookingType: GamingBookingType; customerCount: number }) {
+    if (input.bookingType !== "snooker") {
+      return {
+        extraMemberCount: 0,
+        extraMemberCharge: 0
+      };
+    }
+    const extraMemberCount = Math.max(0, input.customerCount - SNOOKER_INCLUDED_MEMBERS);
+    const extraMemberCharge = roundCurrency(extraMemberCount * SNOOKER_EXTRA_MEMBER_FEE);
+    return {
+      extraMemberCount,
+      extraMemberCharge
+    };
+  }
+
+  private buildSystemCalculatedAmount(input: {
+    bookingType: GamingBookingType;
+    customerCount: number;
+    gameAmount: number;
+    foodAndBeverageAmount: number;
+  }) {
+    const breakdown = this.calculateExtraMemberBreakdown({
+      bookingType: input.bookingType,
+      customerCount: input.customerCount
+    });
+    return {
+      ...breakdown,
+      systemCalculatedAmount: roundCurrency(
+        Math.max(0, input.gameAmount) + breakdown.extraMemberCharge + Math.max(0, input.foodAndBeverageAmount)
+      )
+    };
+  }
+
+  private assertAmountOverrideReason(finalAmount: number, systemCalculatedAmount: number, reason: string | null) {
+    if (hasAmountDiff(finalAmount, systemCalculatedAmount) && !reason?.trim()) {
+      throw new AppError(422, "Reason is required when final amount is changed from system amount.");
+    }
+  }
+
   private calculateAmount(input: { checkInAt: Date; checkOutAt: Date | null; hourlyRate: number; status: GamingBookingStatus }) {
     const now = new Date();
     const effectiveEnd = input.checkOutAt ?? (input.status === "upcoming" ? input.checkInAt : now);
@@ -235,14 +288,28 @@ export class GamingService {
   private toDto(booking: GamingBooking) {
     const hourlyRate = toNumber(booking.hourlyRate);
     const finalAmountStored = toNumber(booking.finalAmount);
+    const storedFoodAmount = toNumber(booking.foodAndBeverageAmount);
     const computed = this.calculateAmount({
       checkInAt: booking.checkInAt,
       checkOutAt: booking.checkOutAt,
       hourlyRate,
       status: booking.status
     });
+    const systemFromFormula = this.buildSystemCalculatedAmount({
+      bookingType: booking.bookingType,
+      customerCount: (booking.customerGroup ?? []).length,
+      gameAmount: computed.amount,
+      foodAndBeverageAmount: storedFoodAmount
+    });
+    const systemCalculatedAmountStored = toNumber(booking.systemCalculatedAmount, systemFromFormula.systemCalculatedAmount);
+    const extraMemberCountStored = Math.max(0, Math.floor(toNumber(booking.extraMemberCount, systemFromFormula.extraMemberCount)));
+    const extraMemberChargeStored = roundCurrency(Math.max(0, toNumber(booking.extraMemberCharge, systemFromFormula.extraMemberCharge)));
 
-    const finalAmount = booking.status === "completed" ? (finalAmountStored > 0 ? finalAmountStored : computed.amount) : computed.amount;
+    const fallbackFinalAmount = systemFromFormula.systemCalculatedAmount;
+    const finalAmount =
+      booking.status === "completed"
+        ? (finalAmountStored > 0 ? finalAmountStored : fallbackFinalAmount)
+        : fallbackFinalAmount;
     const resourceCodes = booking.resourceCodes?.length ? booking.resourceCodes : [booking.resourceCode];
     return {
       id: booking.id,
@@ -260,15 +327,20 @@ export class GamingService {
       checkOutAt: booking.checkOutAt,
       hourlyRate,
       durationMinutes: computed.minutes,
-      calculatedAmount: computed.amount,
+      calculatedAmount: roundCurrency(computed.amount + extraMemberChargeStored),
+      systemCalculatedAmount: systemCalculatedAmountStored,
       finalAmount,
+      extraMemberCount: extraMemberCountStored,
+      extraMemberCharge: extraMemberChargeStored,
+      amountOverrideReason: cleanText(booking.amountOverrideReason),
+      isAmountOverridden: hasAmountDiff(finalAmount, systemCalculatedAmountStored),
       status: booking.status,
       paymentStatus: booking.paymentStatus,
       paymentMode: booking.paymentMode,
       foodOrderReference: booking.foodOrderReference,
       foodInvoiceNumber: booking.foodInvoiceNumber,
       foodInvoiceStatus: booking.foodInvoiceStatus,
-      foodAndBeverageAmount: toNumber(booking.foodAndBeverageAmount),
+      foodAndBeverageAmount: storedFoodAmount,
       bookingChannel: booking.bookingChannel,
       sourceDeviceId: booking.sourceDeviceId,
       note: booking.note,
@@ -352,6 +424,20 @@ export class GamingService {
       hourlyRate,
       status
     });
+    const initialFoodAmount = roundCurrency(Math.max(0, toNumber(input.foodAndBeverageAmount)));
+    const systemSnapshot = this.buildSystemCalculatedAmount({
+      bookingType,
+      customerCount: customerGroup.length,
+      gameAmount: calculated.amount,
+      foodAndBeverageAmount: initialFoodAmount
+    });
+    const overrideReason = cleanText(input.amountOverrideReason);
+    const finalizedAmount = roundCurrency(
+      Math.max(0, toNumber(input.finalAmount, status === "completed" ? systemSnapshot.systemCalculatedAmount : 0))
+    );
+    if (status === "completed") {
+      this.assertAmountOverrideReason(finalizedAmount, systemSnapshot.systemCalculatedAmount, overrideReason);
+    }
 
     const booking = this.bookingRepository.create({
       bookingNumber: cleanText(input.bookingNumber) ?? this.buildBookingNumber(),
@@ -365,16 +451,21 @@ export class GamingService {
       checkInAt,
       checkOutAt,
       hourlyRate,
-      finalAmount: roundCurrency(
-        Math.max(0, toNumber(input.finalAmount, status === "completed" ? calculated.amount : 0))
-      ),
+      finalAmount: finalizedAmount,
+      systemCalculatedAmount: systemSnapshot.systemCalculatedAmount,
+      extraMemberCount: systemSnapshot.extraMemberCount,
+      extraMemberCharge: systemSnapshot.extraMemberCharge,
+      amountOverrideReason:
+        status === "completed" && hasAmountDiff(finalizedAmount, systemSnapshot.systemCalculatedAmount)
+          ? overrideReason
+          : null,
       status,
       paymentStatus: payment.paymentStatus,
       paymentMode: payment.paymentMode,
       foodOrderReference: cleanText(input.foodOrderReference),
       foodInvoiceNumber: cleanText(input.foodInvoiceNumber),
       foodInvoiceStatus: input.foodInvoiceStatus ?? "none",
-      foodAndBeverageAmount: roundCurrency(Math.max(0, toNumber(input.foodAndBeverageAmount))),
+      foodAndBeverageAmount: initialFoodAmount,
       bookingChannel: cleanText(input.bookingChannel) ?? "desktop",
       sourceDeviceId: cleanText(input.sourceDeviceId),
       note: cleanText(input.note),
@@ -478,15 +569,49 @@ export class GamingService {
     booking.foodInvoiceNumber =
       input.foodInvoiceNumber === undefined ? booking.foodInvoiceNumber : cleanText(input.foodInvoiceNumber);
     booking.foodInvoiceStatus = input.foodInvoiceStatus ?? booking.foodInvoiceStatus;
-    if (input.foodAndBeverageAmount !== undefined) {
-      booking.foodAndBeverageAmount = roundCurrency(Math.max(0, toNumber(input.foodAndBeverageAmount)));
+    const nextFoodAndBeverageAmount =
+      input.foodAndBeverageAmount !== undefined
+        ? roundCurrency(Math.max(0, toNumber(input.foodAndBeverageAmount)))
+        : roundCurrency(Math.max(0, toNumber(booking.foodAndBeverageAmount)));
+    booking.foodAndBeverageAmount = nextFoodAndBeverageAmount;
+
+    const nextCustomerGroup = input.customers?.length ? this.sanitizeCustomerGroup(input.customers) : booking.customerGroup ?? [];
+    if (input.customers?.length) {
+      booking.customerGroup = nextCustomerGroup;
+      booking.primaryCustomerName = nextCustomerGroup[0]?.name ?? null;
+      booking.primaryCustomerPhone = nextCustomerGroup[0]?.phone ?? null;
     }
 
-    if (input.customers?.length) {
-      const customerGroup = this.sanitizeCustomerGroup(input.customers);
-      booking.customerGroup = customerGroup;
-      booking.primaryCustomerName = customerGroup[0]?.name ?? null;
-      booking.primaryCustomerPhone = customerGroup[0]?.phone ?? null;
+    const recalculatedGameAmount = this.calculateAmount({
+      checkInAt: booking.checkInAt,
+      checkOutAt: booking.checkOutAt,
+      hourlyRate: toNumber(booking.hourlyRate),
+      status: booking.status
+    }).amount;
+    const derivedSystemSnapshot = this.buildSystemCalculatedAmount({
+      bookingType: booking.bookingType,
+      customerCount: nextCustomerGroup.length,
+      gameAmount: recalculatedGameAmount,
+      foodAndBeverageAmount: booking.foodAndBeverageAmount
+    });
+
+    booking.systemCalculatedAmount = roundCurrency(
+      Math.max(0, toNumber(input.systemCalculatedAmount, derivedSystemSnapshot.systemCalculatedAmount))
+    );
+    booking.extraMemberCount = Math.max(0, Math.floor(toNumber(input.extraMemberCount, derivedSystemSnapshot.extraMemberCount)));
+    booking.extraMemberCharge = roundCurrency(
+      Math.max(0, toNumber(input.extraMemberCharge, derivedSystemSnapshot.extraMemberCharge))
+    );
+
+    if (input.finalAmount !== undefined) {
+      const nextFinalAmount = roundCurrency(Math.max(0, toNumber(input.finalAmount)));
+      const overrideReason = cleanText(input.amountOverrideReason);
+      this.assertAmountOverrideReason(nextFinalAmount, booking.systemCalculatedAmount, overrideReason);
+      booking.finalAmount = nextFinalAmount;
+      booking.amountOverrideReason =
+        hasAmountDiff(nextFinalAmount, booking.systemCalculatedAmount) && overrideReason ? overrideReason : null;
+    } else if (input.amountOverrideReason !== undefined) {
+      booking.amountOverrideReason = cleanText(input.amountOverrideReason);
     }
 
     const saved = await this.bookingRepository.save(booking);
@@ -505,6 +630,10 @@ export class GamingService {
     input: {
       checkOutAt?: string;
       finalAmount?: number;
+      systemCalculatedAmount?: number;
+      extraMemberCount?: number;
+      extraMemberCharge?: number;
+      amountOverrideReason?: string;
       paymentStatus?: "pending" | "paid";
       paymentMode?: GamingPaymentMode;
     },
@@ -544,10 +673,30 @@ export class GamingService {
       hourlyRate,
       status: "completed"
     });
+    const derivedSystemSnapshot = this.buildSystemCalculatedAmount({
+      bookingType: booking.bookingType,
+      customerCount: (booking.customerGroup ?? []).length,
+      gameAmount: calculated.amount,
+      foodAndBeverageAmount: toNumber(booking.foodAndBeverageAmount)
+    });
+    const systemCalculatedAmount = roundCurrency(
+      Math.max(0, toNumber(input.systemCalculatedAmount, derivedSystemSnapshot.systemCalculatedAmount))
+    );
+    const extraMemberCount = Math.max(0, Math.floor(toNumber(input.extraMemberCount, derivedSystemSnapshot.extraMemberCount)));
+    const extraMemberCharge = roundCurrency(
+      Math.max(0, toNumber(input.extraMemberCharge, derivedSystemSnapshot.extraMemberCharge))
+    );
+    const finalAmount = roundCurrency(Math.max(0, toNumber(input.finalAmount, systemCalculatedAmount)));
+    const amountOverrideReason = cleanText(input.amountOverrideReason);
+    this.assertAmountOverrideReason(finalAmount, systemCalculatedAmount, amountOverrideReason);
 
     booking.checkOutAt = checkOutAt;
     booking.status = "completed";
-    booking.finalAmount = roundCurrency(Math.max(0, toNumber(input.finalAmount, calculated.amount)));
+    booking.finalAmount = finalAmount;
+    booking.systemCalculatedAmount = systemCalculatedAmount;
+    booking.extraMemberCount = extraMemberCount;
+    booking.extraMemberCharge = extraMemberCharge;
+    booking.amountOverrideReason = hasAmountDiff(finalAmount, systemCalculatedAmount) ? amountOverrideReason : null;
     booking.paymentStatus = payment.paymentStatus;
     booking.paymentMode = payment.paymentMode;
 
@@ -592,14 +741,10 @@ export class GamingService {
     return this.toDto(saved);
   }
 
-  async listBookings(filters: ListBookingsInput, context: GamingContext) {
+  async listBookings(filters: ListBookingsInput, _context: GamingContext) {
     const query = this.bookingRepository
       .createQueryBuilder("booking")
       .leftJoinAndSelect("booking.staff", "staff");
-
-    if (!isPrivileged(context.role)) {
-      query.andWhere("booking.staffId = :staffId", { staffId: context.userId });
-    }
 
     if (filters.bookingType) {
       query.andWhere("booking.bookingType = :bookingType", { bookingType: filters.bookingType });
@@ -730,7 +875,8 @@ export class GamingService {
 
     bookings.forEach((booking) => {
       const dto = this.toDto(booking);
-      const collectibleAmount = roundCurrency(dto.finalAmount + dto.foodAndBeverageAmount);
+      const collectibleAmount =
+        dto.status === "completed" ? roundCurrency(dto.finalAmount) : roundCurrency(dto.systemCalculatedAmount);
       totals[dto.status] += 1;
       if (dto.status === "ongoing") {
         totals.activePlayers += dto.customerCount;
@@ -801,7 +947,7 @@ export class GamingService {
     };
   }
 
-  async getResources(context: GamingContext) {
+  async getResources(_context: GamingContext) {
     const resources = ALL_GAMING_RESOURCES.map((resourceCode) => ({
       resourceCode,
       resourceLabel: GAMING_RESOURCE_LABELS[resourceCode] ?? resourceCode,
@@ -812,10 +958,6 @@ export class GamingService {
       .createQueryBuilder("booking")
       .leftJoinAndSelect("booking.staff", "staff")
       .where("booking.status IN (:...statuses)", { statuses: ["upcoming", "ongoing"] });
-
-    if (!isPrivileged(context.role)) {
-      query.andWhere("booking.staffId = :staffId", { staffId: context.userId });
-    }
 
     const activeBookings = await query.getMany();
     const activeMap = new Map<string, ReturnType<GamingService["toDto"]>>();
@@ -904,8 +1046,40 @@ export class GamingService {
     existing.bookingChannel = cleanText(input.bookingChannel) ?? existing.bookingChannel;
     existing.sourceDeviceId = cleanText(input.sourceDeviceId) ?? existing.sourceDeviceId;
     existing.note = cleanText(input.note);
+
+    const derivedSystemSnapshot = this.buildSystemCalculatedAmount({
+      bookingType: existing.bookingType,
+      customerCount: existing.customerGroup?.length ?? 0,
+      gameAmount: this.calculateAmount({
+        checkInAt: existing.checkInAt,
+        checkOutAt: existing.checkOutAt,
+        hourlyRate: toNumber(existing.hourlyRate),
+        status: existing.status
+      }).amount,
+      foodAndBeverageAmount: toNumber(existing.foodAndBeverageAmount)
+    });
+    existing.systemCalculatedAmount = roundCurrency(
+      Math.max(0, toNumber(input.systemCalculatedAmount, derivedSystemSnapshot.systemCalculatedAmount))
+    );
+    existing.extraMemberCount = Math.max(0, Math.floor(toNumber(input.extraMemberCount, derivedSystemSnapshot.extraMemberCount)));
+    existing.extraMemberCharge = roundCurrency(
+      Math.max(0, toNumber(input.extraMemberCharge, derivedSystemSnapshot.extraMemberCharge))
+    );
+
+    const overrideReason = cleanText(input.amountOverrideReason);
     if (Number.isFinite(input.finalAmount)) {
       existing.finalAmount = roundCurrency(Math.max(0, Number(input.finalAmount)));
+    } else if (status === "completed" && toNumber(existing.finalAmount) <= 0) {
+      existing.finalAmount = existing.systemCalculatedAmount;
+    }
+    if (status === "completed") {
+      this.assertAmountOverrideReason(toNumber(existing.finalAmount), existing.systemCalculatedAmount, overrideReason);
+      existing.amountOverrideReason =
+        hasAmountDiff(toNumber(existing.finalAmount), existing.systemCalculatedAmount) && overrideReason
+          ? overrideReason
+          : null;
+    } else if (input.amountOverrideReason !== undefined) {
+      existing.amountOverrideReason = overrideReason;
     }
 
     if (status === "completed" && !existing.checkOutAt) {

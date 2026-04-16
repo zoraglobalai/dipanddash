@@ -97,6 +97,20 @@ const invoicePaymentSchema = z.object({
   paidAt: z.string().datetime().optional()
 });
 
+const paymentsSchema = z.array(invoicePaymentSchema).default([]).superRefine((payments, ctx) => {
+  payments.forEach((payment, index) => {
+    const needsReference = payment.mode === "card" || payment.mode === "upi";
+    const hasReference = typeof payment.referenceNo === "string" && payment.referenceNo.trim().length > 0;
+    if (needsReference && !hasReference) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [index, "referenceNo"],
+        message: "Reference ID is required for Card and UPI payments."
+      });
+    }
+  });
+});
+
 const usageEventSchema = z.object({
   idempotencyKey: z.string().trim().max(120).optional(),
   ingredientId: z.string().uuid().optional().nullable(),
@@ -138,7 +152,7 @@ export const createInvoiceFromSyncSchema = z.object({
     linesSnapshot: z.record(z.unknown()).optional().nullable(),
     sourceCreatedAt: z.string().datetime().optional(),
     lines: z.array(invoiceLineSchema).default([]),
-    payments: z.array(invoicePaymentSchema).default([]),
+    payments: paymentsSchema,
     usageEvents: z.array(usageEventSchema).default([])
   }),
   params: z.object({}).optional(),

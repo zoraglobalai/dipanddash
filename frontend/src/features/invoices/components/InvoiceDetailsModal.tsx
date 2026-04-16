@@ -94,6 +94,10 @@ export const InvoiceDetailsModal = ({
   usageEvents
 }: InvoiceDetailsModalProps) => {
   const { isCloseConfirmOpen, requestClose, cancelCloseRequest, confirmClose } = useModalCloseGuard(onClose);
+  const paymentReference = useMemo(
+    () => payments.find((payment) => (payment.referenceNo ?? "").trim().length > 0)?.referenceNo ?? null,
+    [payments]
+  );
 
   const lineColumns = useMemo(
     () =>
@@ -157,6 +161,21 @@ export const InvoiceDetailsModal = ({
       [
         { key: "mode", header: "Mode" },
         { key: "status", header: "Status" },
+        {
+          key: "referenceNo",
+          header: "Reference ID",
+          render: (row: InvoicePaymentRow) => {
+            const referenceNo = row.referenceNo?.trim();
+            if (!referenceNo) {
+              return "-";
+            }
+            return (
+              <Text fontFamily="mono" fontSize="sm" fontWeight={700}>
+                {referenceNo}
+              </Text>
+            );
+          }
+        },
         {
           key: "amount",
           header: "Amount",
@@ -306,6 +325,14 @@ export const InvoiceDetailsModal = ({
                     </Text>
                   </Box>
                 </SimpleGrid>
+                <Box p={3} borderRadius="12px" border="1px solid" borderColor="rgba(133, 78, 48, 0.16)" bg="#FFFDFA">
+                  <Text fontSize="xs" color="#7D655B">
+                    Payment Reference ID
+                  </Text>
+                  <Text fontWeight={700} fontFamily={paymentReference ? "mono" : "inherit"}>
+                    {paymentReference ?? "Not required (cash)"}
+                  </Text>
+                </Box>
 
                 <Divider borderColor="rgba(133, 78, 48, 0.2)" />
 

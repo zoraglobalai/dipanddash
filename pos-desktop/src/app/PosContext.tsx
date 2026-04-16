@@ -920,6 +920,10 @@ export const PosProvider = ({ children }: PropsWithChildren) => {
       if (!catalog || currentOrder.lines.length === 0) {
         return;
       }
+      const cleanedReferenceNo = input.referenceNo?.trim() ?? "";
+      if ((input.mode === "card" || input.mode === "upi") && cleanedReferenceNo.length === 0) {
+        throw new Error("Reference ID is required for Card and UPI payments.");
+      }
 
       const allocationGuard = validateAllocationForLines(currentOrder.lines, currentOrder.invoiceNumber);
       if (!allocationGuard.ok) {
@@ -936,7 +940,7 @@ export const PosProvider = ({ children }: PropsWithChildren) => {
           input.mode === "cash"
             ? Math.max((input.receivedAmount ?? currentOrder.totals.totalAmount) - currentOrder.totals.totalAmount, 0)
             : null,
-        referenceNo: input.referenceNo ?? null,
+        referenceNo: input.mode === "cash" ? null : cleanedReferenceNo,
         paidAt: now
       };
 

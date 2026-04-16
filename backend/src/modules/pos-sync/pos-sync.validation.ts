@@ -77,7 +77,20 @@ const invoiceUpsertEventSchema = z.object({
           paidAt: z.string().datetime().optional()
         })
       )
-      .default([]),
+      .default([])
+      .superRefine((payments, ctx) => {
+        payments.forEach((payment, index) => {
+          const needsReference = payment.mode === "card" || payment.mode === "upi";
+          const hasReference = typeof payment.referenceNo === "string" && payment.referenceNo.trim().length > 0;
+          if (needsReference && !hasReference) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: [index, "referenceNo"],
+              message: "Reference ID is required for Card and UPI payments."
+            });
+          }
+        });
+      }),
     usageEvents: z
       .array(
         z.object({
@@ -142,6 +155,10 @@ const gamingBookingUpsertSchema = z.object({
     paymentStatus: z.enum(["pending", "paid", "refunded"]).optional(),
     paymentMode: z.enum(["cash", "upi", "card"]).optional(),
     finalAmount: z.coerce.number().min(0).optional(),
+    systemCalculatedAmount: z.coerce.number().min(0).optional(),
+    extraMemberCount: z.coerce.number().int().min(0).optional(),
+    extraMemberCharge: z.coerce.number().min(0).optional(),
+    amountOverrideReason: z.string().trim().max(500).optional(),
     foodOrderReference: z.string().trim().max(80).optional(),
     foodInvoiceNumber: z.string().trim().max(64).optional(),
     foodInvoiceStatus: z.enum(["none", "pending", "paid", "cancelled"]).optional(),

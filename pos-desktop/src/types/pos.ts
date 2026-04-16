@@ -277,6 +277,10 @@ export type GamingBooking = {
   checkOutAt: string | null;
   hourlyRate: number;
   finalAmount: number;
+  systemCalculatedAmount: number;
+  extraMemberCount: number;
+  extraMemberCharge: number;
+  amountOverrideReason: string | null;
   status: GamingBookingStatus;
   paymentStatus: GamingPaymentStatus;
   paymentMode: GamingPaymentMode | null;
@@ -406,6 +410,10 @@ export type SyncQueueEvent =
         paymentStatus?: GamingPaymentStatus;
         paymentMode?: GamingPaymentMode;
         finalAmount?: number;
+        systemCalculatedAmount?: number;
+        extraMemberCount?: number;
+        extraMemberCharge?: number;
+        amountOverrideReason?: string;
         foodOrderReference?: string;
         foodInvoiceNumber?: string;
         foodInvoiceStatus?: "none" | "pending" | "paid" | "cancelled";

@@ -104,13 +104,19 @@ const createFoodLine = (): FoodDraftLine => ({
 const formatDateTime = (value: string | null) => (value ? new Date(value).toLocaleString("en-IN") : "-");
 const statusBadgeColor = (status: GamingBookingStatus) => status === "ongoing" ? "green" : status === "upcoming" ? "blue" : status === "completed" ? "purple" : "gray";
 const foodStatusColor = (status: GamingBooking["foodInvoiceStatus"]) => status === "paid" ? "green" : status === "pending" ? "orange" : status === "cancelled" ? "red" : "gray";
+const SNOOKER_INCLUDED_MEMBERS = 4;
+const EXTRA_MEMBER_CHARGE = 50;
+const AMOUNT_DIFF_THRESHOLD = 0.01;
 
 const calcCheckoutAmount = (booking: GamingBooking, checkOutAtIso: string) => {
   const checkIn = new Date(booking.checkInAt).getTime();
   const checkOut = new Date(checkOutAtIso).getTime();
-  if (checkOut <= checkIn) return 0;
+  const extraMembers =
+    booking.bookingType === "snooker" ? Math.max(0, booking.playerCount - SNOOKER_INCLUDED_MEMBERS) : 0;
+  const extraCharge = extraMembers * EXTRA_MEMBER_CHARGE;
+  if (checkOut <= checkIn) return Number(extraCharge.toFixed(2));
   const minutes = Math.ceil((checkOut - checkIn) / 60000);
-  return Number(((minutes / 60) * booking.hourlyRate).toFixed(2));
+  return Number((((minutes / 60) * booking.hourlyRate) + extraCharge).toFixed(2));
 };
 
 const getGamingProductOptions = (snapshot: CatalogSnapshot | null) => {
@@ -141,21 +147,30 @@ export const StaffGamingBookingPage = () => {
   const [checkoutFinalAmount, setCheckoutFinalAmount] = useState("0");
   const [checkoutPaymentStatus, setCheckoutPaymentStatus] = useState<"pending" | "paid">("pending");
   const [checkoutPaymentMode, setCheckoutPaymentMode] = useState<GamingPaymentMode>("cash");
+  const [checkoutOverrideReason, setCheckoutOverrideReason] = useState("");
 
   const [foodBooking, setFoodBooking] = useState<GamingBooking | null>(null);
   const [foodLines, setFoodLines] = useState<FoodDraftLine[]>([createFoodLine()]);
   const [foodSearch, setFoodSearch] = useState("");
   const isEditMode = formMode === "edit";
 
-  const loadBookings = useCallback(async () => {
-    const rows = await gamingBookingsService.listBookings({ status: statusFilter, search }, 500);
+  const loadBookings = useCallback(async (forceServerSync = false) => {
+    const rows = await gamingBookingsService.listBookings({ status: statusFilter, search }, 500, {
+      forceServerSync
+    });
     setBookings(rows);
   }, [search, statusFilter]);
 
   useEffect(() => { void loadBookings(); }, [loadBookings]);
 
   const refreshAllViews = useCallback(async () => {
-    await Promise.all([loadBookings(), refreshPendingBills(), refreshRecentBills(), refreshCompletedBills(), refreshKitchenOrders()]);
+    await Promise.all([
+      loadBookings(true),
+      refreshPendingBills(),
+      refreshRecentBills(),
+      refreshCompletedBills(),
+      refreshKitchenOrders()
+    ]);
   }, [loadBookings, refreshCompletedBills, refreshKitchenOrders, refreshPendingBills, refreshRecentBills]);
 
   const resourceOptions = useMemo(() => gamingBookingsService.getResourcesByType(form.bookingType), [form.bookingType]);
@@ -169,6 +184,15 @@ export const StaffGamingBookingPage = () => {
         .filter((entry) => selectedResourceCodes.includes(entry.code))
         .map((entry) => entry.label),
     [resourceOptions, selectedResourceCodes]
+  );
+  const formPlayerCount = useMemo(() => Math.max(1, Math.floor(Number(form.playerCount) || 1)), [form.playerCount]);
+  const formExtraMembers = useMemo(
+    () => (form.bookingType === "snooker" ? Math.max(0, formPlayerCount - SNOOKER_INCLUDED_MEMBERS) : 0),
+    [form.bookingType, formPlayerCount]
+  );
+  const formExtraCharge = useMemo(
+    () => Number((formExtraMembers * EXTRA_MEMBER_CHARGE).toFixed(2)),
+    [formExtraMembers]
   );
 
   useEffect(() => {
@@ -228,7 +252,7 @@ export const StaffGamingBookingPage = () => {
       toast({ status: "warning", title: "Select at least one board/console." });
       return;
     }
-    const playerCount = Math.max(1, Math.floor(Number(form.playerCount) || 1));
+    const playerCount = formPlayerCount;
     setSaving(true);
     try {
       if (formMode === "create") {
@@ -266,16 +290,33 @@ export const StaffGamingBookingPage = () => {
     const nowLocal = getNowLocalDateTime();
     const systemAmount = calcCheckoutAmount(booking, toIsoFromLocal(nowLocal));
     const foodAmount = booking.foodAndBeverageAmount || 0;
+    const systemTotal = Number((systemAmount + foodAmount).toFixed(2));
     setCheckoutBooking(booking);
     setCheckoutAtLocal(nowLocal);
-    setCheckoutFinalAmount(String(Number((systemAmount + foodAmount).toFixed(2))));
+    setCheckoutFinalAmount(String(systemTotal));
     setCheckoutPaymentStatus(booking.paymentStatus === "paid" ? "paid" : "pending");
     setCheckoutPaymentMode(booking.paymentMode ?? "cash");
+    setCheckoutOverrideReason(booking.amountOverrideReason ?? "");
     checkoutModal.onOpen();
   };
 
   const checkoutSystemAmount = useMemo(() => (checkoutBooking ? calcCheckoutAmount(checkoutBooking, toIsoFromLocal(checkoutAtLocal)) : 0), [checkoutAtLocal, checkoutBooking]);
   const checkoutFoodAmount = useMemo(() => checkoutBooking?.foodAndBeverageAmount ?? 0, [checkoutBooking]);
+  const checkoutSystemTotal = useMemo(
+    () => Number((checkoutSystemAmount + checkoutFoodAmount).toFixed(2)),
+    [checkoutFoodAmount, checkoutSystemAmount]
+  );
+  const checkoutExtraMembers = useMemo(
+    () =>
+      checkoutBooking?.bookingType === "snooker"
+        ? Math.max(0, checkoutBooking.playerCount - SNOOKER_INCLUDED_MEMBERS)
+        : 0,
+    [checkoutBooking]
+  );
+  const checkoutExtraCharge = useMemo(
+    () => Number((checkoutExtraMembers * EXTRA_MEMBER_CHARGE).toFixed(2)),
+    [checkoutExtraMembers]
+  );
 
   const confirmCheckout = async () => {
     if (!checkoutBooking) return;
@@ -288,10 +329,25 @@ export const StaffGamingBookingPage = () => {
         if (paidFoodOrder) latestFoodAmount = paidFoodOrder.totals.totalAmount;
       }
 
-      const grandTotal = Number(checkoutFinalAmount) || Number((checkoutSystemAmount + latestFoodAmount).toFixed(2));
+      const derivedSystemTotal = Number((checkoutSystemAmount + latestFoodAmount).toFixed(2));
+      const grandTotal = Number(checkoutFinalAmount) || derivedSystemTotal;
+      const overrideReason = checkoutOverrideReason.trim();
+      if (Math.abs(grandTotal - derivedSystemTotal) > AMOUNT_DIFF_THRESHOLD && !overrideReason) {
+        toast({
+          status: "warning",
+          title: "Reason required",
+          description: "Please enter why final amount differs from system amount."
+        });
+        setSaving(false);
+        return;
+      }
       await gamingBookingsService.checkoutBooking(checkoutBooking.localBookingId, {
         checkOutAt: toIsoFromLocal(checkoutAtLocal),
         finalAmount: grandTotal,
+        systemCalculatedAmount: derivedSystemTotal,
+        extraMemberCount: checkoutExtraMembers,
+        extraMemberCharge: checkoutExtraCharge,
+        amountOverrideReason: overrideReason || undefined,
         paymentStatus: checkoutPaymentStatus,
         paymentMode: checkoutPaymentStatus === "paid" ? checkoutPaymentMode : undefined
       });
@@ -416,7 +472,21 @@ export const StaffGamingBookingPage = () => {
       {
         key: "amount",
         header: "Amount",
-        render: (booking) => <Text fontWeight={800}>{formatINR(gamingBookingsService.getLiveAmount(booking))}</Text>
+        render: (booking) => (
+          <VStack align="start" spacing={0}>
+            <Text fontWeight={800}>
+              {formatINR(booking.status === "completed" ? booking.finalAmount : gamingBookingsService.getLiveAmount(booking))}
+            </Text>
+            <Text fontSize="xs" color="#705A50">
+              System {formatINR(booking.systemCalculatedAmount)}
+            </Text>
+            {booking.amountOverrideReason ? (
+              <Text fontSize="xs" color="#B45309">
+                Override: {booking.amountOverrideReason}
+              </Text>
+            ) : null}
+          </VStack>
+        )
       },
       {
         key: "foodOrder",
@@ -605,6 +675,12 @@ export const StaffGamingBookingPage = () => {
                 <FormControl><FormLabel>Players</FormLabel><Input type="number" min={1} step={1} value={form.playerCount} onChange={(e) => setForm((p) => ({ ...p, playerCount: e.target.value }))} /></FormControl>
                 <FormControl><FormLabel>Status</FormLabel><Select isDisabled={isEditMode} value={form.bookingStatus} onChange={(e) => setForm((p) => ({ ...p, bookingStatus: e.target.value as BookingForm["bookingStatus"] }))}><option value="ongoing">Ongoing</option><option value="upcoming">Upcoming</option>{formMode === "edit" ? <option value="cancelled">Cancelled</option> : null}</Select></FormControl>
               </SimpleGrid>
+              {form.bookingType === "snooker" ? (
+                <Text fontSize="sm" color="#705A50">
+                  4 players included. Extra players: {formExtraMembers} x {formatINR(EXTRA_MEMBER_CHARGE)} ={" "}
+                  {formatINR(formExtraCharge)}
+                </Text>
+              ) : null}
               {!isEditMode ? <Text fontSize="sm" color="#705A50">You can select multiple boards/consoles and create bookings in one click.</Text> : null}
               <SimpleGrid columns={{ base: 1, md: 2 }} spacing={3}><FormControl><FormLabel>Payment Status</FormLabel><Select value={form.paymentStatus} onChange={(e) => setForm((p) => ({ ...p, paymentStatus: e.target.value as "pending" | "paid" }))}><option value="pending">Pending</option><option value="paid">Paid</option></Select></FormControl><FormControl isDisabled={form.paymentStatus !== "paid"}><FormLabel>Payment Mode</FormLabel><Select value={form.paymentMode} onChange={(e) => setForm((p) => ({ ...p, paymentMode: e.target.value as GamingPaymentMode }))}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option></Select></FormControl></SimpleGrid>
               {isEditMode ? <Text fontSize="sm" color="#705A50">Locked fields: booking type, board/console, check-in time, rate and status. Only customers and payment can be updated after check-in.</Text> : null}
@@ -650,8 +726,32 @@ export const StaffGamingBookingPage = () => {
             <VStack align="stretch" spacing={3}>
               <Box p={3} borderRadius="12px" border="1px solid rgba(132,79,52,0.18)" bg="#FFFCF7"><Text fontWeight={800}>{checkoutBooking?.resourceLabel ?? "-"}</Text><Text fontSize="sm" color="#6D584E">{checkoutBooking?.primaryCustomerName ?? "-"} ({checkoutBooking?.primaryCustomerPhone ?? "-"})</Text></Box>
               <FormControl><FormLabel>Checkout Time</FormLabel><Input type="datetime-local" value={checkoutAtLocal} onChange={(e) => setCheckoutAtLocal(e.target.value)} /></FormControl>
-              <SimpleGrid columns={{ base: 1, md: 2 }} spacing={3}><FormControl><FormLabel>Game Amount (System)</FormLabel><Input value={formatINR(checkoutSystemAmount)} readOnly /></FormControl><FormControl><FormLabel>Food & Beverage</FormLabel><Input value={formatINR(checkoutFoodAmount)} readOnly /></FormControl></SimpleGrid>
+              <SimpleGrid columns={{ base: 1, md: 2 }} spacing={3}>
+                <FormControl>
+                  <FormLabel>Game Amount (System)</FormLabel>
+                  <Input value={formatINR(checkoutSystemAmount)} readOnly />
+                </FormControl>
+                <FormControl>
+                  <FormLabel>Food & Beverage</FormLabel>
+                  <Input value={formatINR(checkoutFoodAmount)} readOnly />
+                </FormControl>
+              </SimpleGrid>
+              <Text fontSize="sm" color="#705A50">
+                Extra players: {checkoutExtraMembers} x {formatINR(EXTRA_MEMBER_CHARGE)} = {formatINR(checkoutExtraCharge)}
+              </Text>
+              <FormControl>
+                <FormLabel>System Total</FormLabel>
+                <Input value={formatINR(checkoutSystemTotal)} readOnly />
+              </FormControl>
               <FormControl><FormLabel>Final Amount (Editable)</FormLabel><Input type="number" min={0} value={checkoutFinalAmount} onChange={(e) => setCheckoutFinalAmount(e.target.value)} /></FormControl>
+              <FormControl isRequired={Math.abs((Number(checkoutFinalAmount) || 0) - checkoutSystemTotal) > AMOUNT_DIFF_THRESHOLD}>
+                <FormLabel>Amount Change Reason</FormLabel>
+                <Input
+                  placeholder="Why final amount changed from system amount?"
+                  value={checkoutOverrideReason}
+                  onChange={(e) => setCheckoutOverrideReason(e.target.value)}
+                />
+              </FormControl>
               <SimpleGrid columns={{ base: 1, md: 2 }} spacing={3}><FormControl><FormLabel>Payment Status</FormLabel><Select value={checkoutPaymentStatus} onChange={(e) => setCheckoutPaymentStatus(e.target.value as "pending" | "paid")}><option value="pending">Pending</option><option value="paid">Paid</option></Select></FormControl><FormControl isDisabled={checkoutPaymentStatus !== "paid"}><FormLabel>Payment Mode</FormLabel><Select value={checkoutPaymentMode} onChange={(e) => setCheckoutPaymentMode(e.target.value as GamingPaymentMode)}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option></Select></FormControl></SimpleGrid>
               <Text fontSize="sm" color="#705A50">
                 If marked as paid, the linked Dip & Dash food order will be moved to the paid invoice queue automatically.

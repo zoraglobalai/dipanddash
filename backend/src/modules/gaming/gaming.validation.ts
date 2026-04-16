@@ -79,6 +79,10 @@ export const gamingCreateSchema = z.object({
     paymentStatus: z.enum(GAMING_PAYMENT_STATUSES).optional(),
     paymentMode: z.enum(GAMING_PAYMENT_MODES).optional(),
     finalAmount: z.coerce.number().min(0).optional(),
+    systemCalculatedAmount: z.coerce.number().min(0).optional(),
+    extraMemberCount: z.coerce.number().int().min(0).optional(),
+    extraMemberCharge: z.coerce.number().min(0).optional(),
+    amountOverrideReason: z.string().trim().max(500).optional(),
     foodOrderReference: z.string().trim().max(80).optional(),
     foodInvoiceNumber: z.string().trim().max(64).optional(),
     foodInvoiceStatus: z.enum(["none", "pending", "paid", "cancelled"]).optional(),
@@ -90,6 +94,18 @@ export const gamingCreateSchema = z.object({
         code: z.ZodIssueCode.custom,
         message: "Payment mode is required when payment status is paid.",
         path: ["paymentMode"]
+      });
+    }
+    if (
+      body.finalAmount !== undefined &&
+      body.systemCalculatedAmount !== undefined &&
+      Math.abs(body.finalAmount - body.systemCalculatedAmount) > 0.01 &&
+      !body.amountOverrideReason?.trim()
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Reason is required when final amount is changed from system amount.",
+        path: ["amountOverrideReason"]
       });
     }
   }),
@@ -131,6 +147,11 @@ export const gamingUpdateSchema = z.object({
     status: z.enum(["upcoming", "ongoing", "cancelled"]).optional(),
     paymentStatus: z.enum(["pending", "paid"]).optional(),
     paymentMode: z.enum(GAMING_PAYMENT_MODES).optional(),
+    finalAmount: z.coerce.number().min(0).optional(),
+    systemCalculatedAmount: z.coerce.number().min(0).optional(),
+    extraMemberCount: z.coerce.number().int().min(0).optional(),
+    extraMemberCharge: z.coerce.number().min(0).optional(),
+    amountOverrideReason: z.string().trim().max(500).optional(),
     foodOrderReference: z.string().trim().max(80).optional(),
     foodInvoiceNumber: z.string().trim().max(64).optional(),
     foodInvoiceStatus: z.enum(["none", "pending", "paid", "cancelled"]).optional(),
@@ -141,6 +162,18 @@ export const gamingUpdateSchema = z.object({
         code: z.ZodIssueCode.custom,
         message: "Payment mode is required when payment status is paid.",
         path: ["paymentMode"]
+      });
+    }
+    if (
+      body.finalAmount !== undefined &&
+      body.systemCalculatedAmount !== undefined &&
+      Math.abs(body.finalAmount - body.systemCalculatedAmount) > 0.01 &&
+      !body.amountOverrideReason?.trim()
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Reason is required when final amount is changed from system amount.",
+        path: ["amountOverrideReason"]
       });
     }
   }),
@@ -154,6 +187,10 @@ export const gamingCheckoutSchema = z.object({
   body: z.object({
     checkOutAt: z.string().datetime().optional(),
     finalAmount: z.coerce.number().min(0).optional(),
+    systemCalculatedAmount: z.coerce.number().min(0).optional(),
+    extraMemberCount: z.coerce.number().int().min(0).optional(),
+    extraMemberCharge: z.coerce.number().min(0).optional(),
+    amountOverrideReason: z.string().trim().max(500).optional(),
     paymentStatus: z.enum(["pending", "paid"]).default("pending"),
     paymentMode: z.enum(GAMING_PAYMENT_MODES).optional()
   }).superRefine((body, ctx) => {
@@ -162,6 +199,18 @@ export const gamingCheckoutSchema = z.object({
         code: z.ZodIssueCode.custom,
         message: "Select payment mode when status is paid.",
         path: ["paymentMode"]
+      });
+    }
+    if (
+      body.finalAmount !== undefined &&
+      body.systemCalculatedAmount !== undefined &&
+      Math.abs(body.finalAmount - body.systemCalculatedAmount) > 0.01 &&
+      !body.amountOverrideReason?.trim()
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Reason is required when final amount is changed from system amount.",
+        path: ["amountOverrideReason"]
       });
     }
   }),

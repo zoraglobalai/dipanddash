@@ -33,6 +33,7 @@ export const PaymentModal = ({ isOpen, totalAmount, onClose, onConfirm }: Paymen
   const [receivedAmount, setReceivedAmount] = useState<number>(roundMoney(totalAmount));
   const [referenceNo, setReferenceNo] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   useEffect(() => {
     setReceivedAmount(roundMoney(totalAmount));
@@ -56,6 +57,7 @@ export const PaymentModal = ({ isOpen, totalAmount, onClose, onConfirm }: Paymen
       return;
     }
     setIsSubmitting(true);
+    setSubmitError(null);
     try {
       await onConfirm({
         mode,
@@ -66,6 +68,10 @@ export const PaymentModal = ({ isOpen, totalAmount, onClose, onConfirm }: Paymen
       setMode("cash");
       setReceivedAmount(roundedTotal);
       setReferenceNo("");
+      setSubmitError(null);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to complete payment. Please try again.";
+      setSubmitError(message);
     } finally {
       setIsSubmitting(false);
     }
@@ -131,6 +137,11 @@ export const PaymentModal = ({ isOpen, totalAmount, onClose, onConfirm }: Paymen
                 ) : null}
               </FormControl>
             )}
+            {submitError ? (
+              <Text mt={1} fontSize="xs" color="red.500">
+                {submitError}
+              </Text>
+            ) : null}
           </VStack>
         </ModalBody>
         <ModalFooter gap={2}>

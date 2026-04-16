@@ -71,6 +71,18 @@ export class GamingBooking {
   @Column({ type: "numeric", precision: 12, scale: 2, default: 0 })
   finalAmount!: number;
 
+  @Column({ type: "numeric", precision: 12, scale: 2, default: 0 })
+  systemCalculatedAmount!: number;
+
+  @Column({ type: "integer", default: 0 })
+  extraMemberCount!: number;
+
+  @Column({ type: "numeric", precision: 12, scale: 2, default: 0 })
+  extraMemberCharge!: number;
+
+  @Column({ type: "text", nullable: true })
+  amountOverrideReason!: string | null;
+
   @Column({ type: "varchar", length: 20, default: GAMING_BOOKING_STATUSES[1] })
   status!: GamingBookingStatus;
 

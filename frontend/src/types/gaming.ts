@@ -27,7 +27,12 @@ export type GamingBookingRow = {
   hourlyRate: number;
   durationMinutes: number;
   calculatedAmount: number;
+  systemCalculatedAmount: number;
   finalAmount: number;
+  extraMemberCount: number;
+  extraMemberCharge: number;
+  amountOverrideReason: string | null;
+  isAmountOverridden: boolean;
   status: GamingBookingStatus;
   paymentStatus: GamingPaymentStatus;
   paymentMode: GamingPaymentMode | null;

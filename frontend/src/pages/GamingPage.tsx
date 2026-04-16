@@ -299,16 +299,25 @@ export const GamingPage = () => {
         },
         {
           key: "amount",
-          header: "Amount",
+          header: "System / Final",
           render: (row: GamingBookingRow) => (
             <VStack align="start" spacing={0}>
+              <Text fontSize="xs" color="#7A6258">
+                System {formatCurrency(row.systemCalculatedAmount)}
+              </Text>
               <Text fontWeight={700}>{formatCurrency(row.finalAmount)}</Text>
               <Text fontSize="xs" color="#7A6258">
-                Live {formatCurrency(row.calculatedAmount)} | {row.durationMinutes} mins
+                Game {formatCurrency(row.calculatedAmount)} | Extra {formatCurrency(row.extraMemberCharge)} (
+                {row.extraMemberCount})
               </Text>
               <Text fontSize="xs" color="#7A6258">
                 F&B {formatCurrency(row.foodAndBeverageAmount)} | {row.foodInvoiceStatus}
               </Text>
+              {row.isAmountOverridden ? (
+                <Text fontSize="xs" color="#B45309">
+                  Override: {row.amountOverrideReason || "Reason not provided"}
+                </Text>
+              ) : null}
             </VStack>
           )
         },

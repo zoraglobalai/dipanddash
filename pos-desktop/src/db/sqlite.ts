@@ -83,7 +83,18 @@ const normalizeGamingBookingRow = (row: GamingBooking) => ({
   resourceCodes: normalizeResourceCodes(
     (row as GamingBooking & { resourceCodes?: string[] }).resourceCodes,
     row.resourceCode
-  ) as GamingBooking["resourceCodes"]
+  ) as GamingBooking["resourceCodes"],
+  systemCalculatedAmount: Number.isFinite(Number((row as GamingBooking & { systemCalculatedAmount?: number }).systemCalculatedAmount))
+    ? Number((row as GamingBooking & { systemCalculatedAmount?: number }).systemCalculatedAmount)
+    : 0,
+  extraMemberCount: Math.max(0, Math.floor(Number((row as GamingBooking & { extraMemberCount?: number }).extraMemberCount ?? 0))),
+  extraMemberCharge: Number.isFinite(Number((row as GamingBooking & { extraMemberCharge?: number }).extraMemberCharge))
+    ? Number((row as GamingBooking & { extraMemberCharge?: number }).extraMemberCharge)
+    : 0,
+  amountOverrideReason:
+    typeof (row as GamingBooking & { amountOverrideReason?: unknown }).amountOverrideReason === "string"
+      ? ((row as GamingBooking & { amountOverrideReason?: string }).amountOverrideReason ?? null)
+      : null
 });
 
 class PosStorage {
@@ -175,6 +186,32 @@ class PosStorage {
         await this.db.execute(
           "ALTER TABLE gaming_bookings_local ADD COLUMN resource_codes_json TEXT NOT NULL DEFAULT '[]'"
         );
+      } catch {
+        // no-op: column already exists
+      }
+      try {
+        await this.db.execute(
+          "ALTER TABLE gaming_bookings_local ADD COLUMN system_calculated_amount REAL NOT NULL DEFAULT 0"
+        );
+      } catch {
+        // no-op: column already exists
+      }
+      try {
+        await this.db.execute(
+          "ALTER TABLE gaming_bookings_local ADD COLUMN extra_member_count INTEGER NOT NULL DEFAULT 0"
+        );
+      } catch {
+        // no-op: column already exists
+      }
+      try {
+        await this.db.execute(
+          "ALTER TABLE gaming_bookings_local ADD COLUMN extra_member_charge REAL NOT NULL DEFAULT 0"
+        );
+      } catch {
+        // no-op: column already exists
+      }
+      try {
+        await this.db.execute("ALTER TABLE gaming_bookings_local ADD COLUMN amount_override_reason TEXT");
       } catch {
         // no-op: column already exists
       }
@@ -815,7 +852,7 @@ class PosStorage {
 
     if (this.db) {
       await this.db.execute(
-        "INSERT OR REPLACE INTO gaming_bookings_local (local_booking_id, server_booking_id, booking_number, booking_type, resource_code, resource_codes_json, resource_label, player_count, customers_json, primary_customer_name, primary_customer_phone, check_in_at, check_out_at, hourly_rate, final_amount, status, payment_status, payment_mode, food_order_reference, food_invoice_number, food_invoice_status, food_and_beverage_amount, note, booking_channel, source_device_id, staff_id, staff_name, sync_status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT OR REPLACE INTO gaming_bookings_local (local_booking_id, server_booking_id, booking_number, booking_type, resource_code, resource_codes_json, resource_label, player_count, customers_json, primary_customer_name, primary_customer_phone, check_in_at, check_out_at, hourly_rate, final_amount, system_calculated_amount, extra_member_count, extra_member_charge, amount_override_reason, status, payment_status, payment_mode, food_order_reference, food_invoice_number, food_invoice_status, food_and_beverage_amount, note, booking_channel, source_device_id, staff_id, staff_name, sync_status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [
           booking.localBookingId,
           booking.serverBookingId,
@@ -832,6 +869,10 @@ class PosStorage {
           booking.checkOutAt,
           booking.hourlyRate,
           booking.finalAmount,
+          booking.systemCalculatedAmount,
+          booking.extraMemberCount,
+          booking.extraMemberCharge,
+          booking.amountOverrideReason,
           booking.status,
           booking.paymentStatus,
           booking.paymentMode,
@@ -881,6 +922,10 @@ class PosStorage {
         check_out_at: string | null;
         hourly_rate: number;
         final_amount: number;
+        system_calculated_amount: number;
+        extra_member_count: number;
+        extra_member_charge: number;
+        amount_override_reason: string | null;
         status: GamingBooking["status"];
         payment_status: GamingBooking["paymentStatus"];
         payment_mode: GamingBooking["paymentMode"];
@@ -922,6 +967,10 @@ class PosStorage {
         checkOutAt: row.check_out_at,
         hourlyRate: Number(row.hourly_rate),
         finalAmount: Number(row.final_amount),
+        systemCalculatedAmount: Number(row.system_calculated_amount ?? 0),
+        extraMemberCount: Math.max(0, Math.floor(Number(row.extra_member_count ?? 0))),
+        extraMemberCharge: Number(row.extra_member_charge ?? 0),
+        amountOverrideReason: row.amount_override_reason ?? null,
         status: row.status,
         paymentStatus: row.payment_status,
         paymentMode: row.payment_mode ?? null,
@@ -988,6 +1037,10 @@ class PosStorage {
         check_out_at: string | null;
         hourly_rate: number;
         final_amount: number;
+        system_calculated_amount: number;
+        extra_member_count: number;
+        extra_member_charge: number;
+        amount_override_reason: string | null;
         status: GamingBooking["status"];
         payment_status: GamingBooking["paymentStatus"];
         payment_mode: GamingBooking["paymentMode"];
@@ -1026,6 +1079,10 @@ class PosStorage {
             checkOutAt: row.check_out_at,
             hourlyRate: Number(row.hourly_rate),
             finalAmount: Number(row.final_amount),
+            systemCalculatedAmount: Number(row.system_calculated_amount ?? 0),
+            extraMemberCount: Math.max(0, Math.floor(Number(row.extra_member_count ?? 0))),
+            extraMemberCharge: Number(row.extra_member_charge ?? 0),
+            amountOverrideReason: row.amount_override_reason ?? null,
             status: row.status,
             paymentStatus: row.payment_status,
             paymentMode: row.payment_mode ?? null,

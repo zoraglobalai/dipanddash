@@ -128,6 +128,10 @@ type GamingBookingUpsertEvent = {
     paymentStatus?: "pending" | "paid" | "refunded";
     paymentMode?: "cash" | "upi" | "card";
     finalAmount?: number;
+    systemCalculatedAmount?: number;
+    extraMemberCount?: number;
+    extraMemberCharge?: number;
+    amountOverrideReason?: string;
     foodOrderReference?: string;
     foodInvoiceNumber?: string;
     foodInvoiceStatus?: "none" | "pending" | "paid" | "cancelled";
