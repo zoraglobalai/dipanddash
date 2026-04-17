@@ -14,6 +14,7 @@ export const STAFF_ASSIGNABLE_MODULE_KEYS = [
   "items-entry",
   "offers",
   "customer-data",
+  "pending",
   "assets-entry",
   "outlets",
   "attendance",

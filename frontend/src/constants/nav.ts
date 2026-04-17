@@ -59,6 +59,7 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "Items Entry", path: "/items-entry", icon: FiTag, roles: [UserRole.ADMIN], moduleKey: "items-entry" },
   { label: "Offers", path: "/offers", icon: FiGift, roles: [UserRole.ADMIN], moduleKey: "offers" },
   { label: "Customer Data", path: "/customer-data", icon: FiUsers, roles: [UserRole.ADMIN], moduleKey: "customer-data" },
+  { label: "Pending", path: "/pending", icon: FiDollarSign, roles: [UserRole.ADMIN], moduleKey: "pending" },
   { label: "Assets Entry", path: "/assets-entry", icon: FiShield, roles: [UserRole.ADMIN], moduleKey: "assets-entry" },
   { label: "Outlets", path: "/outlets", icon: FiMapPin, roles: [UserRole.ADMIN], moduleKey: "outlets" },
   { label: "Attendance", path: "/attendance", icon: FiClipboard, roles: [UserRole.ADMIN], moduleKey: "attendance" },

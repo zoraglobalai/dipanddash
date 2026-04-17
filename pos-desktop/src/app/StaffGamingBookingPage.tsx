@@ -2,6 +2,7 @@
   Badge,
   Box,
   Button,
+  Divider,
   FormControl,
   FormLabel,
   HStack,
@@ -26,7 +27,7 @@
   useToast
 } from "@chakra-ui/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { FiEdit2, FiPlus, FiShoppingBag } from "react-icons/fi";
+import { FiEdit2, FiEye, FiPlus, FiShoppingBag } from "react-icons/fi";
 
 import { usePosAuth } from "@/app/PosAuthContext";
 import { usePos } from "@/app/PosContext";
@@ -34,7 +35,7 @@ import { PosDataTable, type PosTableColumn } from "@/components/common/PosDataTa
 import { customersService } from "@/services/customers.service";
 import { gamingBookingsService } from "@/services/gaming-bookings.service";
 import { snookerOrderService } from "@/services/snooker-order.service";
-import type { CatalogSnapshot, GamingBooking, GamingBookingStatus, GamingBookingType, GamingPaymentMode } from "@/types/pos";
+import type { CatalogSnapshot, GamingBooking, GamingBookingStatus, GamingBookingType, GamingPaymentMode, PosOrder } from "@/types/pos";
 import { formatINR } from "@/utils/currency";
 
 type CustomerDraft = { name: string; phone: string };
@@ -131,6 +132,8 @@ export const StaffGamingBookingPage = () => {
 
   const bookingModal = useDisclosure();
   const checkoutModal = useDisclosure();
+  const checkoutConfirmModal = useDisclosure();
+  const viewModal = useDisclosure();
   const foodModal = useDisclosure();
 
   const [bookings, setBookings] = useState<GamingBooking[]>([]);
@@ -143,11 +146,17 @@ export const StaffGamingBookingPage = () => {
   const [form, setForm] = useState<BookingForm>(defaultForm());
 
   const [checkoutBooking, setCheckoutBooking] = useState<GamingBooking | null>(null);
+  const [checkoutFoodOrder, setCheckoutFoodOrder] = useState<PosOrder | null>(null);
+  const [isCheckoutFoodOrderLoading, setIsCheckoutFoodOrderLoading] = useState(false);
   const [checkoutAtLocal, setCheckoutAtLocal] = useState(getNowLocalDateTime());
   const [checkoutFinalAmount, setCheckoutFinalAmount] = useState("0");
-  const [checkoutPaymentStatus, setCheckoutPaymentStatus] = useState<"pending" | "paid">("pending");
+  const [checkoutPaymentStatus, setCheckoutPaymentStatus] = useState<"pending" | "paid">("paid");
   const [checkoutPaymentMode, setCheckoutPaymentMode] = useState<GamingPaymentMode>("cash");
+  const [checkoutPaymentReference, setCheckoutPaymentReference] = useState("");
   const [checkoutOverrideReason, setCheckoutOverrideReason] = useState("");
+  const [viewBooking, setViewBooking] = useState<GamingBooking | null>(null);
+  const [viewFoodOrder, setViewFoodOrder] = useState<PosOrder | null>(null);
+  const [isViewFoodOrderLoading, setIsViewFoodOrderLoading] = useState(false);
 
   const [foodBooking, setFoodBooking] = useState<GamingBooking | null>(null);
   const [foodLines, setFoodLines] = useState<FoodDraftLine[]>([createFoodLine()]);
@@ -285,23 +294,68 @@ export const StaffGamingBookingPage = () => {
       toast({ status: "error", title: formMode === "create" ? "Unable to create booking" : "Unable to update booking", description: error instanceof Error ? error.message : "Please retry." });
     } finally { setSaving(false); }
   };
-  const openCheckout = (booking: GamingBooking) => {
-    if (booking.status === "completed") return;
-    const nowLocal = getNowLocalDateTime();
-    const systemAmount = calcCheckoutAmount(booking, toIsoFromLocal(nowLocal));
-    const foodAmount = booking.foodAndBeverageAmount || 0;
-    const systemTotal = Number((systemAmount + foodAmount).toFixed(2));
-    setCheckoutBooking(booking);
-    setCheckoutAtLocal(nowLocal);
-    setCheckoutFinalAmount(String(systemTotal));
-    setCheckoutPaymentStatus(booking.paymentStatus === "paid" ? "paid" : "pending");
-    setCheckoutPaymentMode(booking.paymentMode ?? "cash");
-    setCheckoutOverrideReason(booking.amountOverrideReason ?? "");
-    checkoutModal.onOpen();
-  };
+  const loadLinkedFoodOrder = useCallback(
+    async (orderReference: string | null | undefined) => {
+      if (!orderReference) {
+        return null;
+      }
+      try {
+        return await snookerOrderService.getFoodOrderByReference(orderReference);
+      } catch (error) {
+        toast({
+          status: "warning",
+          title: "Unable to load linked products",
+          description: error instanceof Error ? error.message : "Please retry."
+        });
+        return null;
+      }
+    },
+    [toast]
+  );
+
+  const openView = useCallback(
+    async (booking: GamingBooking) => {
+      setViewBooking(booking);
+      setViewFoodOrder(null);
+      setIsViewFoodOrderLoading(Boolean(booking.foodOrderReference));
+      viewModal.onOpen();
+      const linkedOrder = await loadLinkedFoodOrder(booking.foodOrderReference);
+      setViewFoodOrder(linkedOrder);
+      setIsViewFoodOrderLoading(false);
+    },
+    [loadLinkedFoodOrder, viewModal]
+  );
+
+  const openCheckout = useCallback(
+    async (booking: GamingBooking) => {
+      if (booking.status === "completed") return;
+      const nowLocal = getNowLocalDateTime();
+      const systemAmount = calcCheckoutAmount(booking, toIsoFromLocal(nowLocal));
+      const foodAmount = booking.foodAndBeverageAmount || 0;
+      const systemTotal = Number((systemAmount + foodAmount).toFixed(2));
+      setCheckoutBooking(booking);
+      setCheckoutFoodOrder(null);
+      setIsCheckoutFoodOrderLoading(Boolean(booking.foodOrderReference));
+      setCheckoutAtLocal(nowLocal);
+      setCheckoutFinalAmount(String(systemTotal));
+      setCheckoutPaymentStatus(booking.paymentStatus === "paid" ? "paid" : "pending");
+      setCheckoutPaymentMode(booking.paymentMode ?? "cash");
+      setCheckoutPaymentReference("");
+      setCheckoutOverrideReason(booking.amountOverrideReason ?? "");
+      checkoutConfirmModal.onClose();
+      checkoutModal.onOpen();
+      const linkedOrder = await loadLinkedFoodOrder(booking.foodOrderReference);
+      setCheckoutFoodOrder(linkedOrder);
+      setIsCheckoutFoodOrderLoading(false);
+    },
+    [checkoutConfirmModal, checkoutModal, loadLinkedFoodOrder]
+  );
 
   const checkoutSystemAmount = useMemo(() => (checkoutBooking ? calcCheckoutAmount(checkoutBooking, toIsoFromLocal(checkoutAtLocal)) : 0), [checkoutAtLocal, checkoutBooking]);
-  const checkoutFoodAmount = useMemo(() => checkoutBooking?.foodAndBeverageAmount ?? 0, [checkoutBooking]);
+  const checkoutFoodAmount = useMemo(
+    () => checkoutFoodOrder?.totals.totalAmount ?? checkoutBooking?.foodAndBeverageAmount ?? 0,
+    [checkoutBooking, checkoutFoodOrder]
+  );
   const checkoutSystemTotal = useMemo(
     () => Number((checkoutSystemAmount + checkoutFoodAmount).toFixed(2)),
     [checkoutFoodAmount, checkoutSystemAmount]
@@ -317,20 +371,41 @@ export const StaffGamingBookingPage = () => {
     () => Number((checkoutExtraMembers * EXTRA_MEMBER_CHARGE).toFixed(2)),
     [checkoutExtraMembers]
   );
+  const checkoutProductLines = useMemo(() => checkoutFoodOrder?.lines ?? [], [checkoutFoodOrder]);
+  const checkoutFinalAmountNumber = useMemo(() => {
+    const parsed = Number(checkoutFinalAmount);
+    return Number.isFinite(parsed) ? Math.max(0, parsed) : checkoutSystemTotal;
+  }, [checkoutFinalAmount, checkoutSystemTotal]);
+  const checkoutRequiresOverrideReason = useMemo(
+    () => Math.abs(checkoutFinalAmountNumber - checkoutSystemTotal) > AMOUNT_DIFF_THRESHOLD,
+    [checkoutFinalAmountNumber, checkoutSystemTotal]
+  );
+  const checkoutRequiresReference = useMemo(
+    () => checkoutPaymentStatus === "paid" && (checkoutPaymentMode === "upi" || checkoutPaymentMode === "card"),
+    [checkoutPaymentMode, checkoutPaymentStatus]
+  );
+  const viewProductLines = useMemo(() => viewFoodOrder?.lines ?? [], [viewFoodOrder]);
 
   const confirmCheckout = async () => {
     if (!checkoutBooking) return;
-    if (!window.confirm(`Confirm checkout and mark ${checkoutPaymentStatus.toUpperCase()}?`)) return;
+    if (checkoutRequiresReference && !checkoutPaymentReference.trim()) {
+      toast({
+        status: "warning",
+        title: "Reference ID required",
+        description: "Enter card/UPI reference before checkout."
+      });
+      return;
+    }
     setSaving(true);
     try {
       let latestFoodAmount = checkoutFoodAmount;
-      if (checkoutPaymentStatus === "paid" && catalog) {
+      if (catalog && checkoutPaymentStatus === "paid") {
         const paidFoodOrder = await snookerOrderService.markFoodOrderPaidForCheckout({ booking: checkoutBooking, snapshot: catalog, paymentMode: checkoutPaymentMode });
         if (paidFoodOrder) latestFoodAmount = paidFoodOrder.totals.totalAmount;
       }
 
       const derivedSystemTotal = Number((checkoutSystemAmount + latestFoodAmount).toFixed(2));
-      const grandTotal = Number(checkoutFinalAmount) || derivedSystemTotal;
+      const grandTotal = checkoutFinalAmountNumber;
       const overrideReason = checkoutOverrideReason.trim();
       if (Math.abs(grandTotal - derivedSystemTotal) > AMOUNT_DIFF_THRESHOLD && !overrideReason) {
         toast({
@@ -352,12 +427,33 @@ export const StaffGamingBookingPage = () => {
         paymentMode: checkoutPaymentStatus === "paid" ? checkoutPaymentMode : undefined
       });
 
+      checkoutConfirmModal.onClose();
       checkoutModal.onClose();
       await refreshAllViews();
-      toast({ status: "success", title: "Checkout completed", description: "Booking is now locked." });
+      toast({
+        status: "success",
+        title: "Checkout completed",
+        description:
+          checkoutPaymentStatus === "paid"
+            ? "Booking is now locked as paid."
+            : "Booking is now locked with pending payment."
+      });
     } catch (error) {
       toast({ status: "error", title: "Checkout failed", description: error instanceof Error ? error.message : "Please retry." });
     } finally { setSaving(false); }
+  };
+
+  const openCheckoutConfirmation = () => {
+    if (!checkoutBooking) return;
+    if (checkoutRequiresOverrideReason && !checkoutOverrideReason.trim()) {
+      toast({
+        status: "warning",
+        title: "Reason required",
+        description: "Please enter why final amount differs from system amount."
+      });
+      return;
+    }
+    checkoutConfirmModal.onOpen();
   };
 
   const openFoodOrderModal = (booking: GamingBooking) => {
@@ -536,32 +632,38 @@ export const StaffGamingBookingPage = () => {
         key: "actions",
         header: "Actions",
         alwaysVisible: true,
-        render: (booking) =>
-          booking.status === "completed" ? (
-            <Text fontSize="xs" fontWeight={700} color="#705A50">
-              Locked
-            </Text>
-          ) : (
-            <HStack>
-              <Button size="xs" variant="outline" leftIcon={<FiEdit2 size={12} />} onClick={() => openEdit(booking)}>
-                Edit
-              </Button>
-              <Button
-                size="xs"
-                variant="outline"
-                leftIcon={<FiShoppingBag size={12} />}
-                onClick={() => openFoodOrderModal(booking)}
-              >
-                F&B Order
-              </Button>
-              <Button size="xs" onClick={() => openCheckout(booking)}>
-                Checkout
-              </Button>
-            </HStack>
-          )
+        render: (booking) => (
+          <HStack>
+            <Button size="xs" variant="outline" leftIcon={<FiEye size={12} />} onClick={() => void openView(booking)}>
+              View
+            </Button>
+            {booking.status === "completed" ? (
+              <Text fontSize="xs" fontWeight={700} color="#705A50">
+                Locked
+              </Text>
+            ) : (
+              <>
+                <Button size="xs" variant="outline" leftIcon={<FiEdit2 size={12} />} onClick={() => openEdit(booking)}>
+                  Edit
+                </Button>
+                <Button
+                  size="xs"
+                  variant="outline"
+                  leftIcon={<FiShoppingBag size={12} />}
+                  onClick={() => openFoodOrderModal(booking)}
+                >
+                  F&B Order
+                </Button>
+                <Button size="xs" onClick={() => void openCheckout(booking)}>
+                  Checkout
+                </Button>
+              </>
+            )}
+          </HStack>
+        )
       }
     ],
-    [openCheckout, openEdit, openFoodOrderModal]
+    [openCheckout, openEdit, openFoodOrderModal, openView]
   );
 
   return (
@@ -720,45 +822,219 @@ export const StaffGamingBookingPage = () => {
         </ModalContent>
       </Modal>
 
-      <Modal isOpen={checkoutModal.isOpen} onClose={checkoutModal.onClose} size="lg" closeOnOverlayClick={false}>
-        <ModalOverlay /><ModalContent><ModalHeader>Checkout Booking</ModalHeader><ModalCloseButton />
+      <Modal isOpen={viewModal.isOpen} onClose={viewModal.onClose} size="lg" closeOnOverlayClick={false}>
+        <ModalOverlay />
+        <ModalContent>
+          <ModalHeader>Booking View</ModalHeader>
+          <ModalCloseButton />
           <ModalBody>
             <VStack align="stretch" spacing={3}>
-              <Box p={3} borderRadius="12px" border="1px solid rgba(132,79,52,0.18)" bg="#FFFCF7"><Text fontWeight={800}>{checkoutBooking?.resourceLabel ?? "-"}</Text><Text fontSize="sm" color="#6D584E">{checkoutBooking?.primaryCustomerName ?? "-"} ({checkoutBooking?.primaryCustomerPhone ?? "-"})</Text></Box>
-              <FormControl><FormLabel>Checkout Time</FormLabel><Input type="datetime-local" value={checkoutAtLocal} onChange={(e) => setCheckoutAtLocal(e.target.value)} /></FormControl>
+              <Box p={3} borderRadius="12px" border="1px solid rgba(132,79,52,0.18)" bg="#FFFCF7">
+                <Text fontWeight={800}>{viewBooking?.bookingNumber ?? "-"}</Text>
+                <Text fontSize="sm" color="#6D584E">
+                  {viewBooking?.resourceLabel ?? "-"} • {viewBooking?.primaryCustomerName ?? "-"} ({viewBooking?.primaryCustomerPhone ?? "-"})
+                </Text>
+              </Box>
               <SimpleGrid columns={{ base: 1, md: 2 }} spacing={3}>
-                <FormControl>
-                  <FormLabel>Game Amount (System)</FormLabel>
-                  <Input value={formatINR(checkoutSystemAmount)} readOnly />
-                </FormControl>
-                <FormControl>
-                  <FormLabel>Food & Beverage</FormLabel>
-                  <Input value={formatINR(checkoutFoodAmount)} readOnly />
-                </FormControl>
+                <Box p={3} borderRadius="10px" border="1px solid rgba(132,79,52,0.14)">
+                  <Text fontSize="xs" color="#705A50">Check In Time</Text>
+                  <Text fontWeight={700}>{formatDateTime(viewBooking?.checkInAt ?? null)}</Text>
+                </Box>
+                <Box p={3} borderRadius="10px" border="1px solid rgba(132,79,52,0.14)">
+                  <Text fontSize="xs" color="#705A50">Players</Text>
+                  <Text fontWeight={700}>{viewBooking?.playerCount ?? 0}</Text>
+                </Box>
+              </SimpleGrid>
+              <SimpleGrid columns={{ base: 1, md: 3 }} spacing={3}>
+                <Box p={3} borderRadius="10px" border="1px solid rgba(132,79,52,0.14)">
+                  <Text fontSize="xs" color="#705A50">Game Amount</Text>
+                  <Text fontWeight={700}>{formatINR(viewBooking ? gamingBookingsService.getLiveAmount(viewBooking) : 0)}</Text>
+                </Box>
+                <Box p={3} borderRadius="10px" border="1px solid rgba(132,79,52,0.14)">
+                  <Text fontSize="xs" color="#705A50">Extra Charge</Text>
+                  <Text fontWeight={700}>{formatINR(viewBooking?.extraMemberCharge ?? 0)}</Text>
+                </Box>
+                <Box p={3} borderRadius="10px" border="1px solid rgba(132,79,52,0.14)">
+                  <Text fontSize="xs" color="#705A50">Total</Text>
+                  <Text fontWeight={800}>{formatINR(viewBooking?.systemCalculatedAmount ?? 0)}</Text>
+                </Box>
+              </SimpleGrid>
+              <Divider />
+              <Box>
+                <Text fontWeight={700} mb={2}>Products Bought</Text>
+                {isViewFoodOrderLoading ? (
+                  <Text fontSize="sm" color="#705A50">Loading linked products...</Text>
+                ) : viewProductLines.length ? (
+                  <VStack align="stretch" spacing={2}>
+                    {viewProductLines.map((line) => (
+                      <HStack key={line.lineId} justify="space-between" p={2} borderRadius="8px" bg="#FFF9F0">
+                        <Text>{line.name} x {line.quantity}</Text>
+                        <Text fontWeight={700}>{formatINR(line.quantity * line.unitPrice)}</Text>
+                      </HStack>
+                    ))}
+                  </VStack>
+                ) : (
+                  <Text fontSize="sm" color="#705A50">No linked product order.</Text>
+                )}
+              </Box>
+            </VStack>
+          </ModalBody>
+          <ModalFooter>
+            <Button variant="outline" onClick={viewModal.onClose}>Close</Button>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
+
+      <Modal isOpen={checkoutModal.isOpen} onClose={checkoutModal.onClose} size="2xl" closeOnOverlayClick={false}>
+        <ModalOverlay /><ModalContent maxW="1100px"><ModalHeader>Checkout Booking</ModalHeader><ModalCloseButton />
+          <ModalBody>
+            <VStack align="stretch" spacing={3}>
+              <Box p={3} borderRadius="12px" border="1px solid rgba(132,79,52,0.18)" bg="#FFFCF7">
+                <Text fontWeight={800}>{checkoutBooking?.bookingNumber ?? "-"}</Text>
+                <Text fontSize="sm" color="#6D584E">
+                  {checkoutBooking?.resourceLabel ?? "-"} • {checkoutBooking?.primaryCustomerName ?? "-"} ({checkoutBooking?.primaryCustomerPhone ?? "-"})
+                </Text>
+              </Box>
+              <SimpleGrid columns={{ base: 1, lg: 2 }} spacing={4}>
+                <VStack align="stretch" spacing={3}>
+                  <SimpleGrid columns={{ base: 1, md: 2 }} spacing={3}>
+                    <FormControl>
+                      <FormLabel>Check In Time</FormLabel>
+                      <Input value={formatDateTime(checkoutBooking?.checkInAt ?? null)} readOnly />
+                    </FormControl>
+                    <FormControl>
+                      <FormLabel>Checkout Time</FormLabel>
+                      <Input type="datetime-local" value={checkoutAtLocal} onChange={(e) => setCheckoutAtLocal(e.target.value)} />
+                    </FormControl>
+                  </SimpleGrid>
+                  <SimpleGrid columns={{ base: 2, md: 3 }} spacing={3}>
+                    <Box p={3} borderRadius="10px" border="1px solid rgba(132,79,52,0.14)">
+                      <Text fontSize="xs" color="#705A50">Total Players</Text>
+                      <Text fontWeight={700}>{checkoutBooking?.playerCount ?? 0}</Text>
+                    </Box>
+                    <Box p={3} borderRadius="10px" border="1px solid rgba(132,79,52,0.14)">
+                      <Text fontSize="xs" color="#705A50">Extra Players</Text>
+                      <Text fontWeight={700}>{checkoutExtraMembers}</Text>
+                    </Box>
+                    <Box p={3} borderRadius="10px" border="1px solid rgba(132,79,52,0.14)">
+                      <Text fontSize="xs" color="#705A50">Extra Charge</Text>
+                      <Text fontWeight={700}>{formatINR(checkoutExtraCharge)}</Text>
+                    </Box>
+                  </SimpleGrid>
+                  <SimpleGrid columns={{ base: 1, md: 2 }} spacing={3}>
+                    <FormControl>
+                      <FormLabel>Game Amount (System)</FormLabel>
+                      <Input value={formatINR(checkoutSystemAmount)} readOnly />
+                    </FormControl>
+                    <FormControl>
+                      <FormLabel>Food & Beverage</FormLabel>
+                      <Input value={formatINR(checkoutFoodAmount)} readOnly />
+                    </FormControl>
+                  </SimpleGrid>
+                  <SimpleGrid columns={{ base: 1, md: 2 }} spacing={3}>
+                    <FormControl>
+                      <FormLabel>System Total</FormLabel>
+                      <Input value={formatINR(checkoutSystemTotal)} readOnly />
+                    </FormControl>
+                    <FormControl>
+                      <FormLabel>Final Amount (Editable)</FormLabel>
+                      <Input type="number" min={0} value={checkoutFinalAmount} onChange={(e) => setCheckoutFinalAmount(e.target.value)} />
+                    </FormControl>
+                  </SimpleGrid>
+                  <FormControl isRequired={checkoutRequiresOverrideReason}>
+                    <FormLabel>Amount Change Reason</FormLabel>
+                    <Input
+                      placeholder="Why final amount changed from system amount?"
+                      value={checkoutOverrideReason}
+                      onChange={(e) => setCheckoutOverrideReason(e.target.value)}
+                    />
+                  </FormControl>
+                </VStack>
+                <VStack align="stretch" spacing={3}>
+                  <SimpleGrid columns={{ base: 1, md: 2 }} spacing={3}>
+                    <FormControl>
+                      <FormLabel>Payment Status</FormLabel>
+                      <Select
+                        value={checkoutPaymentStatus}
+                        onChange={(event) => setCheckoutPaymentStatus(event.target.value as "pending" | "paid")}
+                      >
+                        <option value="paid">Paid</option>
+                        <option value="pending">Pending</option>
+                      </Select>
+                    </FormControl>
+                    <FormControl isDisabled={checkoutPaymentStatus !== "paid"}>
+                      <FormLabel>Payment Mode</FormLabel>
+                      <Select value={checkoutPaymentMode} onChange={(e) => setCheckoutPaymentMode(e.target.value as GamingPaymentMode)}>
+                        <option value="cash">Cash</option>
+                        <option value="upi">UPI</option>
+                        <option value="card">Card</option>
+                      </Select>
+                    </FormControl>
+                  </SimpleGrid>
+                  {checkoutRequiresReference ? (
+                    <FormControl>
+                      <FormLabel>Reference ID</FormLabel>
+                      <Input
+                        placeholder="Enter UPI/Card reference"
+                        value={checkoutPaymentReference}
+                        onChange={(event) => setCheckoutPaymentReference(event.target.value)}
+                      />
+                    </FormControl>
+                  ) : null}
+                  <Box border="1px solid rgba(132,79,52,0.14)" borderRadius="10px" p={3}>
+                    <Text fontWeight={700} mb={2}>Products Bought</Text>
+                    {isCheckoutFoodOrderLoading ? (
+                      <Text fontSize="sm" color="#705A50">Loading linked products...</Text>
+                    ) : checkoutProductLines.length ? (
+                      <VStack align="stretch" spacing={2} maxH="240px" overflowY="auto" pr={1}>
+                        {checkoutProductLines.map((line) => (
+                          <HStack key={line.lineId} justify="space-between" p={2} borderRadius="8px" bg="#FFF9F0">
+                            <Text>{line.name} x {line.quantity}</Text>
+                            <Text fontWeight={700}>{formatINR(line.quantity * line.unitPrice)}</Text>
+                          </HStack>
+                        ))}
+                      </VStack>
+                    ) : (
+                      <Text fontSize="sm" color="#705A50">No linked product order.</Text>
+                    )}
+                  </Box>
+                </VStack>
               </SimpleGrid>
               <Text fontSize="sm" color="#705A50">
-                Extra players: {checkoutExtraMembers} x {formatINR(EXTRA_MEMBER_CHARGE)} = {formatINR(checkoutExtraCharge)}
-              </Text>
-              <FormControl>
-                <FormLabel>System Total</FormLabel>
-                <Input value={formatINR(checkoutSystemTotal)} readOnly />
-              </FormControl>
-              <FormControl><FormLabel>Final Amount (Editable)</FormLabel><Input type="number" min={0} value={checkoutFinalAmount} onChange={(e) => setCheckoutFinalAmount(e.target.value)} /></FormControl>
-              <FormControl isRequired={Math.abs((Number(checkoutFinalAmount) || 0) - checkoutSystemTotal) > AMOUNT_DIFF_THRESHOLD}>
-                <FormLabel>Amount Change Reason</FormLabel>
-                <Input
-                  placeholder="Why final amount changed from system amount?"
-                  value={checkoutOverrideReason}
-                  onChange={(e) => setCheckoutOverrideReason(e.target.value)}
-                />
-              </FormControl>
-              <SimpleGrid columns={{ base: 1, md: 2 }} spacing={3}><FormControl><FormLabel>Payment Status</FormLabel><Select value={checkoutPaymentStatus} onChange={(e) => setCheckoutPaymentStatus(e.target.value as "pending" | "paid")}><option value="pending">Pending</option><option value="paid">Paid</option></Select></FormControl><FormControl isDisabled={checkoutPaymentStatus !== "paid"}><FormLabel>Payment Mode</FormLabel><Select value={checkoutPaymentMode} onChange={(e) => setCheckoutPaymentMode(e.target.value as GamingPaymentMode)}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option></Select></FormControl></SimpleGrid>
-              <Text fontSize="sm" color="#705A50">
-                If marked as paid, the linked Dip & Dash food order will be moved to the paid invoice queue automatically.
+                You can close booking with `Paid` or `Pending`. Pending dues can be settled later from Pending menu.
               </Text>
             </VStack>
           </ModalBody>
-          <ModalFooter><HStack><Button variant="outline" onClick={checkoutModal.onClose}>Cancel</Button><Button isLoading={saving} onClick={() => void confirmCheckout()}>Confirm Checkout</Button></HStack></ModalFooter>
+          <ModalFooter><HStack><Button variant="outline" onClick={checkoutModal.onClose}>Cancel</Button><Button isLoading={saving} onClick={openCheckoutConfirmation}>Review Confirmation</Button></HStack></ModalFooter>
+        </ModalContent>
+      </Modal>
+
+      <Modal isOpen={checkoutConfirmModal.isOpen} onClose={checkoutConfirmModal.onClose} isCentered closeOnOverlayClick={false}>
+        <ModalOverlay />
+        <ModalContent>
+          <ModalHeader>Confirm Checkout</ModalHeader>
+          <ModalCloseButton />
+          <ModalBody>
+            <VStack align="stretch" spacing={2}>
+              <Text>Booking: <b>{checkoutBooking?.bookingNumber ?? "-"}</b></Text>
+              <Text>Customer: <b>{checkoutBooking?.primaryCustomerName ?? "-"}</b></Text>
+              <Text>Players: <b>{checkoutBooking?.playerCount ?? 0}</b> (Extra: <b>{checkoutExtraMembers}</b>)</Text>
+              <Text>
+                Payment: <b>{checkoutPaymentStatus.toUpperCase()}</b>
+                {checkoutPaymentStatus === "paid" ? <> via <b>{checkoutPaymentMode.toUpperCase()}</b></> : null}
+              </Text>
+              {checkoutRequiresReference ? (
+                <Text>Reference: <b>{checkoutPaymentReference.trim() || "-"}</b></Text>
+              ) : null}
+              <Text>Final Total: <b>{formatINR(checkoutFinalAmountNumber)}</b></Text>
+            </VStack>
+          </ModalBody>
+          <ModalFooter>
+            <HStack>
+              <Button variant="outline" onClick={checkoutConfirmModal.onClose}>Back</Button>
+              <Button isLoading={saving} onClick={() => void confirmCheckout()}>Confirm Checkout</Button>
+            </HStack>
+          </ModalFooter>
         </ModalContent>
       </Modal>
     </VStack>

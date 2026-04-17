@@ -160,6 +160,13 @@ const queueInvoiceSync = async (
 };
 
 export const snookerOrderService = {
+  async getFoodOrderByReference(orderReference: string | null | undefined) {
+    if (!orderReference) {
+      return null;
+    }
+    return ordersRepository.getById(orderReference);
+  },
+
   async upsertFoodOrder(input: UpsertSnookerFoodOrderInput) {
     if (!input.lines.length) {
       throw new Error("Add at least one food/product line before sending.");

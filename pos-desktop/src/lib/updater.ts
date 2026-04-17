@@ -5,7 +5,16 @@ import { isTauriRuntime } from "@/lib/tauri";
 
 let hasCheckedForUpdates = false;
 
-export const checkForDesktopUpdates = async (): Promise<void> => {
+export type UpdateConfirmInput = {
+  title: string;
+  description: string;
+  confirmLabel: string;
+  cancelLabel?: string;
+};
+
+export type UpdateConfirmHandler = (input: UpdateConfirmInput) => Promise<boolean>;
+
+export const checkForDesktopUpdates = async (requestConfirm?: UpdateConfirmHandler): Promise<void> => {
   if (hasCheckedForUpdates || !isTauriRuntime() || !import.meta.env.PROD) {
     return;
   }
@@ -18,9 +27,16 @@ export const checkForDesktopUpdates = async (): Promise<void> => {
       return;
     }
 
-    const shouldInstall = window.confirm(
-      `A new Dip & Dash POS update (${update.version}) is available.\n\nDownload and install now?`
-    );
+    if (!requestConfirm) {
+      return;
+    }
+
+    const shouldInstall = await requestConfirm({
+      title: "POS Update Available",
+      description: `A new Dip & Dash POS update (${update.version}) is available. Download and install now?`,
+      confirmLabel: "Install Now",
+      cancelLabel: "Later"
+    });
 
     if (!shouldInstall) {
       return;
@@ -28,9 +44,12 @@ export const checkForDesktopUpdates = async (): Promise<void> => {
 
     await update.downloadAndInstall();
 
-    const shouldRestart = window.confirm(
-      "Update installed successfully. Restart now to apply the new version?"
-    );
+    const shouldRestart = await requestConfirm({
+      title: "Restart Required",
+      description: "Update installed successfully. Restart now to apply the new version?",
+      confirmLabel: "Restart Now",
+      cancelLabel: "Not Now"
+    });
 
     if (shouldRestart) {
       await relaunch();

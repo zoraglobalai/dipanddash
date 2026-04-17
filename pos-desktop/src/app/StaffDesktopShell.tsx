@@ -52,6 +52,7 @@ import { StaffCashAuditPage } from "@/app/StaffCashAuditPage";
 import { StaffDumpPage } from "@/app/StaffDumpPage";
 import { StaffOutletTransferPage } from "@/app/StaffOutletTransferPage";
 import { StaffSnookerProductSalesPage } from "@/app/StaffSnookerProductSalesPage";
+import { StaffPendingPage } from "@/app/StaffPendingPage";
 import { PosTopBar } from "@/components/layout/PosTopBar";
 import { ShortcutHelpModal } from "@/components/pos/ShortcutHelpModal";
 import { useNetworkStatus } from "@/hooks/useNetworkStatus";
@@ -71,6 +72,7 @@ type StaffViewKey =
   | "cash-audit"
   | "dump"
   | "outlet-transfer"
+  | "pending"
   | "profile"
   | "gaming-booking"
   | "gaming-product-sale";
@@ -100,6 +102,7 @@ const MAIN_MENUS: StaffMenuConfig[] = [
   { key: "tables", label: "Tables", icon: FiUsers },
   { key: "kitchen", label: "Kitchen", icon: FiCoffee },
   { key: "order", label: "Order", icon: FiClipboard },
+  { key: "pending", label: "Pending", icon: FiDollarSign },
   { key: "attendance", label: "Attendance", icon: FiClock },
   { key: "closing", label: "Closing", icon: FiCheckCircle },
   { key: "cash-audit", label: "Cash Audit", icon: FiDollarSign },
@@ -112,6 +115,7 @@ const SNOOKER_STAFF_MENUS: StaffMenuConfig[] = [
   { key: "dashboard", label: "Dashboard", icon: FiGrid },
   { key: "gaming-booking", label: "New Booking", icon: FiPlusSquare },
   { key: "gaming-product-sale", label: "Product Sale", icon: FiShoppingBag },
+  { key: "pending", label: "Pending", icon: FiDollarSign },
   { key: "cash-audit", label: "Cash Audit", icon: FiDollarSign },
   { key: "attendance", label: "Attendance", icon: FiClock }
 ];
@@ -119,6 +123,7 @@ const SNOOKER_STAFF_MENUS: StaffMenuConfig[] = [
 const SNOOKER_ALLOWED_VIEWS = new Set<StaffViewKey>([
   "dashboard",
   "attendance",
+  "pending",
   "gaming-booking",
   "gaming-product-sale",
   "cash-audit"
@@ -172,6 +177,10 @@ const PAGE_TITLES: Record<StaffViewKey, { title: string; subtitle: string }> = {
   dump: {
     title: "Dump / Wastage",
     subtitle: "Record ingredient/item/product wastage with stock-linked deduction."
+  },
+  pending: {
+    title: "Pending Collections",
+    subtitle: "Track customer pending dues and collect payments with history."
   },
   "outlet-transfer": {
     title: "Outlet Transfer",
@@ -276,6 +285,8 @@ export const StaffDesktopShell = () => {
         );
       case "order":
         return <StaffOrdersPage />;
+      case "pending":
+        return <StaffPendingPage />;
       case "kitchen":
         return <StaffKitchenPage />;
       case "tables":

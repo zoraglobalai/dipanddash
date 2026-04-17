@@ -17,6 +17,7 @@ export const APP_ROUTES = {
   CASH_AUDIT: "/cash-audit",
   OUTLETS: "/outlets",
   OFFERS: "/offers",
+  PENDING: "/pending",
   REPORTS: "/reports",
   ORDERS: "/orders",
   INVOICES: "/invoices",

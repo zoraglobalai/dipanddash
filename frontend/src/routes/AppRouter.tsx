@@ -71,6 +71,9 @@ const AssetsEntryPage = lazy(() =>
 const ReportsPage = lazy(() =>
   import("@/pages/ReportsPage").then((module) => ({ default: module.ReportsPage }))
 );
+const PendingCollectionsPage = lazy(() =>
+  import("@/pages/PendingCollectionsPage").then((module) => ({ default: module.PendingCollectionsPage }))
+);
 const ProfilePage = lazy(() => import("@/pages/ProfilePage").then((module) => ({ default: module.ProfilePage })));
 const ModulePlaceholderPage = lazy(() =>
   import("@/pages/ModulePlaceholderPage").then((module) => ({ default: module.ModulePlaceholderPage }))
@@ -178,6 +181,16 @@ export const AppRouter = () => {
                 <ModuleGuard allow={["offers"]}>
                   <Suspended>
                     <OffersPage />
+                  </Suspended>
+                </ModuleGuard>
+              }
+            />
+            <Route
+              path={APP_ROUTES.PENDING}
+              element={
+                <ModuleGuard allow={["pending", "orders", "invoices", "gaming"]}>
+                  <Suspended>
+                    <PendingCollectionsPage />
                   </Suspended>
                 </ModuleGuard>
               }
