@@ -14,6 +14,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import {
   FiCheckCircle,
+  FiCalendar,
   FiChevronDown,
   FiChevronLeft,
   FiChevronRight,
@@ -47,6 +48,7 @@ import { StaffOrdersPage } from "@/app/StaffOrdersPage";
 import { StaffPlaceholderPage } from "@/app/StaffPlaceholderPage";
 import { StaffTablesPage } from "@/app/StaffTablesPage";
 import { StaffGamingBookingPage } from "@/app/StaffGamingBookingPage";
+import { StaffGamingHistoryPage } from "@/app/StaffGamingHistoryPage";
 import { SnookerDashboardPage } from "@/app/SnookerDashboardPage";
 import { StaffCashAuditPage } from "@/app/StaffCashAuditPage";
 import { StaffDumpPage } from "@/app/StaffDumpPage";
@@ -75,7 +77,8 @@ type StaffViewKey =
   | "pending"
   | "profile"
   | "gaming-booking"
-  | "gaming-product-sale";
+  | "gaming-product-sale"
+  | "gaming-history";
 
 type StaffMenuItem = {
   key: StaffViewKey;
@@ -114,6 +117,7 @@ const MAIN_MENUS: StaffMenuConfig[] = [
 const SNOOKER_STAFF_MENUS: StaffMenuConfig[] = [
   { key: "dashboard", label: "Dashboard", icon: FiGrid },
   { key: "gaming-booking", label: "New Booking", icon: FiPlusSquare },
+  { key: "gaming-history", label: "Booking History", icon: FiCalendar },
   { key: "gaming-product-sale", label: "Product Sale", icon: FiShoppingBag },
   { key: "pending", label: "Pending", icon: FiDollarSign },
   { key: "cash-audit", label: "Cash Audit", icon: FiDollarSign },
@@ -126,6 +130,7 @@ const SNOOKER_ALLOWED_VIEWS = new Set<StaffViewKey>([
   "pending",
   "gaming-booking",
   "gaming-product-sale",
+  "gaming-history",
   "cash-audit"
 ]);
 
@@ -197,6 +202,10 @@ const PAGE_TITLES: Record<StaffViewKey, { title: string; subtitle: string }> = {
   "gaming-product-sale": {
     title: "Product Sale",
     subtitle: "Direct product billing for snooker counter sales with payment capture."
+  },
+  "gaming-history": {
+    title: "Booking History",
+    subtitle: "Date-wise view of all bookings with payment status and amounts."
   }
 };
 
@@ -238,7 +247,7 @@ export const StaffDesktopShell = () => {
       return;
     }
 
-    if (activeView === "gaming-booking" || activeView === "gaming-product-sale") {
+    if (activeView === "gaming-booking" || activeView === "gaming-product-sale" || activeView === "gaming-history") {
       setActiveView("new-order/take-away");
     }
   }, [activeView, isSnookerStaff]);
@@ -264,6 +273,8 @@ export const StaffDesktopShell = () => {
         return <StaffGamingBookingPage />;
       case "gaming-product-sale":
         return <StaffSnookerProductSalesPage />;
+      case "gaming-history":
+        return <StaffGamingHistoryPage />;
       case "new-order/dine-in":
         return <NewOrderPage channel="dine-in" />;
       case "new-order/take-away":
