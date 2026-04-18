@@ -16,6 +16,8 @@
     "seed:admin:prod": "node dist/seeds/seedAdmin.js",
     "seed:admin:prod:optional": "node dist/seeds/seedAdminIfConfigured.js",
     "import:legacy-workbook": "ts-node src/scripts/importLegacyWorkbookFromRoot.ts",
+    "import:menu-ingredient-workbook": "ts-node src/scripts/importMenuAndIngredientsFromRoot.ts",
+    "import:purchase-workbook": "ts-node src/scripts/importPurchaseWorkbookFromRoot.ts",
     "import:snooker-product-sales": "ts-node src/scripts/importSnookerProductSalesCsv.ts",
     "typeorm": "typeorm-ts-node-commonjs -d src/database/data-source.ts",
     "migration:generate": "npm run typeorm -- migration:generate src/database/migrations/AutoMigration",
