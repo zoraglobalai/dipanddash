@@ -33,6 +33,7 @@ type PaginationInput = {
 
 type ListBookingsInput = PaginationInput & {
   search?: string;
+  customerPhone?: string;
   bookingType?: GamingBookingType;
   status?: GamingBookingStatus;
   paymentStatus?: GamingPaymentStatus;
@@ -43,7 +44,7 @@ type ListBookingsInput = PaginationInput & {
 
 type BookingCustomerMember = {
   name: string;
-  phone: string;
+  phone?: string;
 };
 
 type CreateBookingInput = {
@@ -53,6 +54,7 @@ type CreateBookingInput = {
   resourceCodes?: string[];
   checkInAt?: string;
   hourlyRate: number;
+  playerCount?: number;
   customers: BookingCustomerMember[];
   bookingChannel?: string;
   note?: string;
@@ -78,12 +80,14 @@ type UpdateBookingInput = {
   resourceCode?: string;
   resourceCodes?: string[];
   checkInAt?: string;
+  checkOutAt?: string;
   hourlyRate?: number;
+  playerCount?: number;
   customers?: BookingCustomerMember[];
   bookingChannel?: string;
   note?: string;
-  status?: "upcoming" | "ongoing" | "cancelled";
-  paymentStatus?: "pending" | "paid";
+  status?: GamingBookingStatus;
+  paymentStatus?: GamingPaymentStatus;
   paymentMode?: GamingPaymentMode;
   finalAmount?: number;
   systemCalculatedAmount?: number;
@@ -208,14 +212,21 @@ export class GamingService {
     const sanitized = customers
       .map((member) => ({
         name: member.name.trim(),
-        phone: normalizePhone(member.phone)
+        phone: normalizePhone(member.phone ?? "")
       }))
-      .filter((member) => member.name.length > 0 && member.phone.length > 0);
+      .filter((member) => member.name.length > 0);
 
     if (!sanitized.length) {
-      throw new AppError(422, "Add at least one customer name and phone for booking.");
+      throw new AppError(422, "Add customer name for each player.");
+    }
+    if (!sanitized.some((member) => member.phone.length >= 8)) {
+      throw new AppError(422, "At least one customer contact number is required.");
     }
     return sanitized;
+  }
+
+  private resolvePrimaryCustomer(customerGroup: Array<{ name: string; phone?: string }>) {
+    return customerGroup.find((member) => (member.phone?.length ?? 0) >= 8) ?? customerGroup[0] ?? null;
   }
 
   private sanitizePayment(input: { paymentStatus?: string; paymentMode?: string }, fallbackStatus: GamingPaymentStatus) {
@@ -238,14 +249,20 @@ export class GamingService {
     };
   }
 
-  private calculateExtraMemberBreakdown(input: { bookingType: GamingBookingType; customerCount: number }) {
+  private calculateExtraMemberBreakdown(input: {
+    bookingType: GamingBookingType;
+    customerCount: number;
+    resourceCount?: number;
+  }) {
     if (input.bookingType !== "snooker") {
       return {
         extraMemberCount: 0,
         extraMemberCharge: 0
       };
     }
-    const extraMemberCount = Math.max(0, input.customerCount - SNOOKER_INCLUDED_MEMBERS);
+    const normalizedResourceCount = Math.max(1, Math.floor(toNumber(input.resourceCount, 1)));
+    const includedMembers = normalizedResourceCount * SNOOKER_INCLUDED_MEMBERS;
+    const extraMemberCount = Math.max(0, input.customerCount - includedMembers);
     const extraMemberCharge = roundCurrency(extraMemberCount * SNOOKER_EXTRA_MEMBER_FEE);
     return {
       extraMemberCount,
@@ -256,12 +273,14 @@ export class GamingService {
   private buildSystemCalculatedAmount(input: {
     bookingType: GamingBookingType;
     customerCount: number;
+    resourceCount?: number;
     gameAmount: number;
     foodAndBeverageAmount: number;
   }) {
     const breakdown = this.calculateExtraMemberBreakdown({
       bookingType: input.bookingType,
-      customerCount: input.customerCount
+      customerCount: input.customerCount,
+      resourceCount: input.resourceCount
     });
     return {
       ...breakdown,
@@ -289,6 +308,7 @@ export class GamingService {
     const hourlyRate = toNumber(booking.hourlyRate);
     const finalAmountStored = toNumber(booking.finalAmount);
     const storedFoodAmount = toNumber(booking.foodAndBeverageAmount);
+    const resourceCodes = booking.resourceCodes?.length ? booking.resourceCodes : [booking.resourceCode];
     const computed = this.calculateAmount({
       checkInAt: booking.checkInAt,
       checkOutAt: booking.checkOutAt,
@@ -298,6 +318,7 @@ export class GamingService {
     const systemFromFormula = this.buildSystemCalculatedAmount({
       bookingType: booking.bookingType,
       customerCount: (booking.customerGroup ?? []).length,
+      resourceCount: resourceCodes.length,
       gameAmount: computed.amount,
       foodAndBeverageAmount: storedFoodAmount
     });
@@ -310,7 +331,6 @@ export class GamingService {
       booking.status === "completed"
         ? (finalAmountStored > 0 ? finalAmountStored : fallbackFinalAmount)
         : fallbackFinalAmount;
-    const resourceCodes = booking.resourceCodes?.length ? booking.resourceCodes : [booking.resourceCode];
     return {
       id: booking.id,
       bookingNumber: booking.bookingNumber,
@@ -425,9 +445,11 @@ export class GamingService {
       status
     });
     const initialFoodAmount = roundCurrency(Math.max(0, toNumber(input.foodAndBeverageAmount)));
+    const effectivePlayerCount = Math.max(1, Math.floor(toNumber(input.playerCount, customerGroup.length)));
     const systemSnapshot = this.buildSystemCalculatedAmount({
       bookingType,
-      customerCount: customerGroup.length,
+      customerCount: effectivePlayerCount,
+      resourceCount: resourceCodes.length,
       gameAmount: calculated.amount,
       foodAndBeverageAmount: initialFoodAmount
     });
@@ -446,8 +468,8 @@ export class GamingService {
       resourceCodes,
       resourceLabel: this.buildResourceLabel(resourceCodes),
       customerGroup,
-      primaryCustomerName: customerGroup[0]?.name ?? null,
-      primaryCustomerPhone: customerGroup[0]?.phone ?? null,
+      primaryCustomerName: this.resolvePrimaryCustomer(customerGroup)?.name ?? null,
+      primaryCustomerPhone: this.resolvePrimaryCustomer(customerGroup)?.phone ?? null,
       checkInAt,
       checkOutAt,
       hourlyRate,
@@ -491,19 +513,21 @@ export class GamingService {
     if (!booking) {
       throw new AppError(404, "Booking not found.");
     }
-    if (!isPrivileged(context.role) && booking.staffId !== context.userId) {
+    const privilegedRole = isPrivileged(context.role);
+    if (!privilegedRole && booking.staffId !== context.userId) {
       throw new AppError(403, "You can only edit your own bookings.");
     }
-    if (booking.status === "completed") {
+    if (!privilegedRole && booking.status === "completed") {
       throw new AppError(409, "Completed bookings cannot be edited.");
     }
 
-    const isStaffRole = !isPrivileged(context.role);
+    const isStaffRole = !privilegedRole;
     if (isStaffRole) {
       const restrictedLabels: string[] = [];
       if (input.bookingType !== undefined) restrictedLabels.push("booking type");
       if (input.resourceCode !== undefined) restrictedLabels.push("board/console");
       if (input.checkInAt !== undefined) restrictedLabels.push("check-in time");
+      if (input.checkOutAt !== undefined) restrictedLabels.push("check-out time");
       if (input.hourlyRate !== undefined) restrictedLabels.push("hourly rate");
       if (input.status !== undefined) restrictedLabels.push("status");
       if (input.bookingChannel !== undefined) restrictedLabels.push("booking channel");
@@ -527,19 +551,27 @@ export class GamingService {
           resourceCodes: input.resourceCodes ?? booking.resourceCodes
         });
     const nextResourceCode = nextResourceCodes[0];
+    const nextCheckInAt = isStaffRole
+      ? booking.checkInAt
+      : parseDateOrThrow(input.checkInAt, "Check-in time") ?? booking.checkInAt;
+    const nextStatus = isStaffRole ? booking.status : input.status ?? booking.status;
+    const nextCheckOutAt = isStaffRole
+      ? booking.checkOutAt
+      : parseDateOrThrow(input.checkOutAt, "Check-out time") ?? booking.checkOutAt;
+
+    if (nextCheckOutAt && nextCheckOutAt < nextCheckInAt) {
+      throw new AppError(422, "Check-out time must be after check-in time.");
+    }
 
     if (
       JSON.stringify(nextResourceCodes) !==
         JSON.stringify(booking.resourceCodes?.length ? booking.resourceCodes : [booking.resourceCode]) ||
       nextBookingType !== booking.bookingType
     ) {
-      await this.assertResourcesAvailable(nextResourceCodes, booking.id);
+      if (nextStatus === "upcoming" || nextStatus === "ongoing") {
+        await this.assertResourcesAvailable(nextResourceCodes, booking.id);
+      }
     }
-
-    const nextCheckInAt = isStaffRole
-      ? booking.checkInAt
-      : parseDateOrThrow(input.checkInAt, "Check-in time") ?? booking.checkInAt;
-    const nextStatus = isStaffRole ? booking.status : input.status ?? booking.status;
 
     const payment = this.sanitizePayment(
       {
@@ -554,6 +586,7 @@ export class GamingService {
     booking.resourceCodes = nextResourceCodes;
     booking.resourceLabel = this.buildResourceLabel(nextResourceCodes);
     booking.checkInAt = nextCheckInAt;
+    booking.checkOutAt = nextCheckOutAt;
     booking.status = nextStatus;
     booking.hourlyRate = isStaffRole
       ? booking.hourlyRate
@@ -578,8 +611,8 @@ export class GamingService {
     const nextCustomerGroup = input.customers?.length ? this.sanitizeCustomerGroup(input.customers) : booking.customerGroup ?? [];
     if (input.customers?.length) {
       booking.customerGroup = nextCustomerGroup;
-      booking.primaryCustomerName = nextCustomerGroup[0]?.name ?? null;
-      booking.primaryCustomerPhone = nextCustomerGroup[0]?.phone ?? null;
+      booking.primaryCustomerName = this.resolvePrimaryCustomer(nextCustomerGroup)?.name ?? null;
+      booking.primaryCustomerPhone = this.resolvePrimaryCustomer(nextCustomerGroup)?.phone ?? null;
     }
 
     const recalculatedGameAmount = this.calculateAmount({
@@ -588,9 +621,22 @@ export class GamingService {
       hourlyRate: toNumber(booking.hourlyRate),
       status: booking.status
     }).amount;
+    const existingPlayerCountBaseline =
+      booking.bookingType === "snooker"
+        ? Math.max(
+            nextCustomerGroup.length,
+            SNOOKER_INCLUDED_MEMBERS * Math.max(1, nextResourceCodes.length) +
+              Math.max(0, Math.floor(toNumber(booking.extraMemberCount)))
+          )
+        : nextCustomerGroup.length;
+    const effectivePlayerCount =
+      input.playerCount !== undefined
+        ? Math.max(1, Math.floor(toNumber(input.playerCount, existingPlayerCountBaseline)))
+        : existingPlayerCountBaseline;
     const derivedSystemSnapshot = this.buildSystemCalculatedAmount({
       bookingType: booking.bookingType,
-      customerCount: nextCustomerGroup.length,
+      customerCount: effectivePlayerCount,
+      resourceCount: nextResourceCodes.length,
       gameAmount: recalculatedGameAmount,
       foodAndBeverageAmount: booking.foodAndBeverageAmount
     });
@@ -610,7 +656,21 @@ export class GamingService {
       booking.finalAmount = nextFinalAmount;
       booking.amountOverrideReason =
         hasAmountDiff(nextFinalAmount, booking.systemCalculatedAmount) && overrideReason ? overrideReason : null;
-    } else if (input.amountOverrideReason !== undefined) {
+    } else if (booking.status === "completed" && toNumber(booking.finalAmount) <= 0) {
+      booking.finalAmount = booking.systemCalculatedAmount;
+    }
+
+    if (booking.status === "completed") {
+      const overrideReason = cleanText(input.amountOverrideReason ?? booking.amountOverrideReason);
+      this.assertAmountOverrideReason(toNumber(booking.finalAmount), booking.systemCalculatedAmount, overrideReason);
+      booking.amountOverrideReason =
+        hasAmountDiff(toNumber(booking.finalAmount), booking.systemCalculatedAmount) && overrideReason
+          ? overrideReason
+          : null;
+      if (!booking.checkOutAt) {
+        booking.checkOutAt = new Date();
+      }
+    } else if (input.amountOverrideReason !== undefined && input.finalAmount === undefined) {
       booking.amountOverrideReason = cleanText(input.amountOverrideReason);
     }
 
@@ -676,6 +736,7 @@ export class GamingService {
     const derivedSystemSnapshot = this.buildSystemCalculatedAmount({
       bookingType: booking.bookingType,
       customerCount: (booking.customerGroup ?? []).length,
+      resourceCount: (booking.resourceCodes?.length ? booking.resourceCodes : [booking.resourceCode]).length,
       gameAmount: calculated.amount,
       foodAndBeverageAmount: toNumber(booking.foodAndBeverageAmount)
     });
@@ -741,6 +802,22 @@ export class GamingService {
     return this.toDto(saved);
   }
 
+  async deleteBooking(id: string, context: GamingContext) {
+    const booking = await this.bookingRepository.findOne({
+      where: { id },
+      relations: { staff: true }
+    });
+    if (!booking) {
+      throw new AppError(404, "Booking not found.");
+    }
+    if (!isPrivileged(context.role)) {
+      throw new AppError(403, "Only admin or manager roles can delete bookings.");
+    }
+
+    await this.bookingRepository.remove(booking);
+    return { id };
+  }
+
   async listBookings(filters: ListBookingsInput, _context: GamingContext) {
     const query = this.bookingRepository
       .createQueryBuilder("booking")
@@ -770,6 +847,13 @@ export class GamingService {
       query.andWhere(
         "(booking.bookingNumber ILIKE :search OR booking.primaryCustomerName ILIKE :search OR booking.primaryCustomerPhone ILIKE :search OR booking.resourceLabel ILIKE :search OR staff.fullName ILIKE :search)",
         { search }
+      );
+    }
+    if (filters.customerPhone?.trim()) {
+      const customerPhone = normalizePhone(filters.customerPhone);
+      query.andWhere(
+        "(booking.primaryCustomerPhone = :customerPhone OR EXISTS (SELECT 1 FROM jsonb_array_elements(COALESCE(booking.\"customerGroup\", '[]'::jsonb)) AS customer WHERE regexp_replace(COALESCE(customer->>'phone', ''), '[^0-9+]', '', 'g') = :customerPhone))",
+        { customerPhone }
       );
     }
 
@@ -1027,8 +1111,8 @@ export class GamingService {
     existing.resourceCodes = resourceCodes;
     existing.resourceLabel = this.buildResourceLabel(resourceCodes);
     existing.customerGroup = customerGroup;
-    existing.primaryCustomerName = customerGroup[0]?.name ?? null;
-    existing.primaryCustomerPhone = customerGroup[0]?.phone ?? null;
+    existing.primaryCustomerName = this.resolvePrimaryCustomer(customerGroup)?.name ?? null;
+    existing.primaryCustomerPhone = this.resolvePrimaryCustomer(customerGroup)?.phone ?? null;
     existing.checkInAt = checkInAt;
     existing.checkOutAt = checkOutAt ?? existing.checkOutAt;
     existing.hourlyRate = roundCurrency(Math.max(0, toNumber(input.hourlyRate, toNumber(existing.hourlyRate))));
@@ -1050,6 +1134,7 @@ export class GamingService {
     const derivedSystemSnapshot = this.buildSystemCalculatedAmount({
       bookingType: existing.bookingType,
       customerCount: existing.customerGroup?.length ?? 0,
+      resourceCount: resourceCodes.length,
       gameAmount: this.calculateAmount({
         checkInAt: existing.checkInAt,
         checkOutAt: existing.checkOutAt,

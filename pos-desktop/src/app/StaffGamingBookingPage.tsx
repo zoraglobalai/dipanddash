@@ -41,6 +41,7 @@ import { formatINR } from "@/utils/currency";
 type CustomerDraft = { name: string; phone: string };
 type FormMode = "create" | "edit";
 type FoodDraftLine = { id: string; refId: string; quantity: string };
+type ProductOption = { id: string; label: string; unitPrice: number; gstPercentage: number };
 
 type BookingForm = {
   bookingType: GamingBookingType;
@@ -108,6 +109,7 @@ const foodStatusColor = (status: GamingBooking["foodInvoiceStatus"]) => status =
 const SNOOKER_INCLUDED_MEMBERS = 4;
 const EXTRA_MEMBER_CHARGE = 50;
 const AMOUNT_DIFF_THRESHOLD = 0.01;
+const BOOKINGS_PER_PAGE = 10;
 
 const calcCheckoutAmount = (booking: GamingBooking, checkOutAtIso: string) => {
   const checkIn = new Date(booking.checkInAt).getTime();
@@ -121,8 +123,24 @@ const calcCheckoutAmount = (booking: GamingBooking, checkOutAtIso: string) => {
 };
 
 const getGamingProductOptions = (snapshot: CatalogSnapshot | null) => {
-  if (!snapshot) return [] as Array<{ id: string; label: string; unitPrice: number; gstPercentage: number }>;
-  return (snapshot.products ?? []).filter((x) => x.isActive).map((x) => ({ id: x.id, label: x.name, unitPrice: x.sellingPrice, gstPercentage: 0 }));
+  if (!snapshot) return [] as ProductOption[];
+  return (snapshot.products ?? [])
+    .filter((x) => x.isActive && (x.targetSection === "gaming" || x.targetSection === "both"))
+    .map((x) => ({ id: x.id, label: x.name, unitPrice: x.sellingPrice, gstPercentage: 0 }));
+};
+
+const mapOrderToDraftLines = (order: PosOrder | null | undefined): FoodDraftLine[] => {
+  if (!order) {
+    return [createFoodLine()];
+  }
+  const mapped = order.lines
+    .filter((line) => line.lineType === "product" && Boolean(line.refId))
+    .map((line) => ({
+      id: createFoodLine().id,
+      refId: line.refId,
+      quantity: String(Math.max(1, Math.round(Number(line.quantity) || 1)))
+    }));
+  return mapped.length ? mapped : [createFoodLine()];
 };
 
 export const StaffGamingBookingPage = () => {
@@ -139,6 +157,7 @@ export const StaffGamingBookingPage = () => {
   const [bookings, setBookings] = useState<GamingBooking[]>([]);
   const [statusFilter, setStatusFilter] = useState<GamingBookingStatus | "all">("all");
   const [search, setSearch] = useState("");
+  const [tablePage, setTablePage] = useState(1);
   const [saving, setSaving] = useState(false);
 
   const [formMode, setFormMode] = useState<FormMode>("create");
@@ -161,7 +180,14 @@ export const StaffGamingBookingPage = () => {
   const [foodBooking, setFoodBooking] = useState<GamingBooking | null>(null);
   const [foodLines, setFoodLines] = useState<FoodDraftLine[]>([createFoodLine()]);
   const [foodSearch, setFoodSearch] = useState("");
+  const [isFoodOrderLoading, setIsFoodOrderLoading] = useState(false);
+  const [bookingProductLines, setBookingProductLines] = useState<FoodDraftLine[]>([createFoodLine()]);
+  const [bookingProductSearch, setBookingProductSearch] = useState("");
+  const [isBookingProductLoading, setIsBookingProductLoading] = useState(false);
   const isEditMode = formMode === "edit";
+
+  const productOptions = useMemo(() => getGamingProductOptions(catalog), [catalog]);
+  const productOptionMap = useMemo(() => new Map(productOptions.map((entry) => [entry.id, entry])), [productOptions]);
 
   const loadBookings = useCallback(async (forceServerSync = false) => {
     const rows = await gamingBookingsService.listBookings({ status: statusFilter, search }, 500, {
@@ -171,6 +197,10 @@ export const StaffGamingBookingPage = () => {
   }, [search, statusFilter]);
 
   useEffect(() => { void loadBookings(); }, [loadBookings]);
+
+  useEffect(() => {
+    setTablePage(1);
+  }, [search, statusFilter]);
 
   const refreshAllViews = useCallback(async () => {
     await Promise.all([
@@ -226,6 +256,18 @@ export const StaffGamingBookingPage = () => {
     };
   }, [bookings]);
 
+  const totalTablePages = useMemo(
+    () => Math.max(1, Math.ceil(bookings.length / BOOKINGS_PER_PAGE)),
+    [bookings.length]
+  );
+  const safeTablePage = Math.min(tablePage, totalTablePages);
+  const pagedBookings = useMemo(() => {
+    const start = (safeTablePage - 1) * BOOKINGS_PER_PAGE;
+    return bookings.slice(start, start + BOOKINGS_PER_PAGE);
+  }, [bookings, safeTablePage]);
+  const tableStartIndex = bookings.length ? (safeTablePage - 1) * BOOKINGS_PER_PAGE + 1 : 0;
+  const tableEndIndex = Math.min(safeTablePage * BOOKINGS_PER_PAGE, bookings.length);
+
   const applyCustomerLookup = async (index: number) => {
     const row = form.customers[index];
     if (!row?.phone.trim() || row.name.trim()) return;
@@ -234,12 +276,23 @@ export const StaffGamingBookingPage = () => {
     setForm((prev) => ({ ...prev, customers: prev.customers.map((entry, i) => (i === index ? { name: found.name, phone: found.phone } : entry)) }));
   };
 
-  const openCreate = () => { setFormMode("create"); setEditingBooking(null); setForm(defaultForm()); bookingModal.onOpen(); };
+  const openCreate = () => {
+    setFormMode("create");
+    setEditingBooking(null);
+    setForm(defaultForm());
+    setBookingProductSearch("");
+    setBookingProductLines([createFoodLine()]);
+    setIsBookingProductLoading(false);
+    bookingModal.onOpen();
+  };
 
-  const openEdit = (booking: GamingBooking) => {
+  const openEdit = async (booking: GamingBooking) => {
     if (booking.status === "completed") return;
     setFormMode("edit");
     setEditingBooking(booking);
+    setBookingProductSearch("");
+    setBookingProductLines([createFoodLine()]);
+    setIsBookingProductLoading(Boolean(booking.foodOrderReference));
     setForm({
       bookingType: booking.bookingType,
       resourceCodes: booking.resourceCodes?.length ? booking.resourceCodes : [booking.resourceCode],
@@ -253,6 +306,22 @@ export const StaffGamingBookingPage = () => {
       customers: booking.customers.length ? booking.customers.map((entry) => ({ ...entry })) : [{ name: "", phone: "" }]
     });
     bookingModal.onOpen();
+    if (!booking.foodOrderReference) {
+      setIsBookingProductLoading(false);
+      return;
+    }
+    try {
+      const linkedOrder = await snookerOrderService.getFoodOrderByReference(booking.foodOrderReference);
+      setBookingProductLines(mapOrderToDraftLines(linkedOrder));
+    } catch (error) {
+      toast({
+        status: "warning",
+        title: "Unable to load linked products",
+        description: error instanceof Error ? error.message : "Please retry."
+      });
+    } finally {
+      setIsBookingProductLoading(false);
+    }
   };
 
   const saveBooking = async () => {
@@ -262,10 +331,40 @@ export const StaffGamingBookingPage = () => {
       return;
     }
     const playerCount = formPlayerCount;
+    const selectedProductLines = bookingProductLines.filter((line) => line.refId);
+    const parsedProductLines = selectedProductLines.map((line) => {
+      const option = productOptionMap.get(line.refId);
+      const quantity = Math.max(1, Math.round(Number(line.quantity) || 0));
+      if (!option || !Number.isFinite(quantity) || quantity <= 0) {
+        return null;
+      }
+      return {
+        lineType: "product" as const,
+        refId: option.id,
+        name: option.label,
+        quantity,
+        unitPrice: option.unitPrice,
+        gstPercentage: option.gstPercentage
+      };
+    });
+    const hasInvalidProductLine = parsedProductLines.some((line) => line === null);
+    if (hasInvalidProductLine) {
+      toast({ status: "warning", title: "Please fix selected product lines" });
+      return;
+    }
+    if (selectedProductLines.length > 0 && !catalog) {
+      toast({
+        status: "warning",
+        title: "Catalog still syncing",
+        description: "Please wait for product catalog sync and retry."
+      });
+      return;
+    }
     setSaving(true);
     try {
+      let savedBooking: GamingBooking | null = null;
       if (formMode === "create") {
-        await gamingBookingsService.createBooking({
+        savedBooking = await gamingBookingsService.createBooking({
           bookingType: form.bookingType,
           resourceCodes: selectedResourceCodes,
           playerCount,
@@ -280,13 +379,22 @@ export const StaffGamingBookingPage = () => {
         }, session);
         toast({ status: "success", title: "Booking created successfully" });
       } else if (editingBooking) {
-        await gamingBookingsService.updateBooking(editingBooking.localBookingId, {
+        savedBooking = await gamingBookingsService.updateBooking(editingBooking.localBookingId, {
           customers: form.customers,
           playerCount,
           paymentStatus: form.paymentStatus,
           paymentMode: form.paymentStatus === "paid" ? form.paymentMode : undefined
         });
         toast({ status: "success", title: "Booking updated successfully" });
+      }
+      const payloadLines = parsedProductLines.filter((line): line is NonNullable<typeof line> => Boolean(line));
+      if (savedBooking && catalog && payloadLines.length > 0) {
+        await snookerOrderService.upsertFoodOrder({
+          booking: savedBooking,
+          snapshot: catalog,
+          lines: payloadLines,
+          notes: `Snooker booking ${savedBooking.bookingNumber}`
+        });
       }
       bookingModal.onClose();
       await loadBookings();
@@ -456,11 +564,15 @@ export const StaffGamingBookingPage = () => {
     checkoutConfirmModal.onOpen();
   };
 
-  const openFoodOrderModal = (booking: GamingBooking) => {
+  const openFoodOrderModal = async (booking: GamingBooking) => {
     setFoodBooking(booking);
     setFoodSearch("");
     setFoodLines([createFoodLine()]);
+    setIsFoodOrderLoading(Boolean(booking.foodOrderReference));
     foodModal.onOpen();
+    const linkedOrder = await loadLinkedFoodOrder(booking.foodOrderReference);
+    setFoodLines(mapOrderToDraftLines(linkedOrder));
+    setIsFoodOrderLoading(false);
   };
 
   const updateFoodLine = (lineId: string, next: Partial<FoodDraftLine>) => {
@@ -474,29 +586,36 @@ export const StaffGamingBookingPage = () => {
   const foodDraftTotal = useMemo(() => {
     return foodLines.reduce((sum, line) => {
       const quantity = Number(line.quantity) || 0;
-      const option = getGamingProductOptions(catalog).find((entry) => entry.id === line.refId);
+      const option = productOptionMap.get(line.refId);
       if (!option || quantity <= 0) return sum;
       return sum + option.unitPrice * quantity;
     }, 0);
-  }, [catalog, foodLines]);
+  }, [foodLines, productOptionMap]);
 
   const getFilteredOptions = () => {
     const query = foodSearch.trim().toLowerCase();
-    const options = getGamingProductOptions(catalog);
-    if (!query) return options;
-    return options.filter((entry) => entry.label.toLowerCase().includes(query));
+    if (!query) return productOptions;
+    return productOptions.filter((entry) => entry.label.toLowerCase().includes(query));
   };
 
   const saveFoodOrder = async () => {
     if (!foodBooking || !catalog) return;
     const payloadLines = foodLines.map((line) => {
-      const option = getGamingProductOptions(catalog).find((entry) => entry.id === line.refId);
+      if (!line.refId) {
+        return null;
+      }
+      const option = productOptionMap.get(line.refId);
       const quantity = Number(line.quantity);
       if (!option || !Number.isFinite(quantity) || quantity <= 0) return null;
       return { lineType: "product" as const, refId: option.id, name: option.label, quantity, unitPrice: option.unitPrice, gstPercentage: option.gstPercentage };
     }).filter((line): line is NonNullable<typeof line> => Boolean(line));
 
-    if (!payloadLines.length || payloadLines.length !== foodLines.length) {
+    if (!payloadLines.length) {
+      toast({ status: "warning", title: "Select at least one product line" });
+      return;
+    }
+
+    if (payloadLines.length !== foodLines.filter((line) => line.refId).length) {
       toast({ status: "warning", title: "Please select valid product lines" });
       return;
     }
@@ -506,9 +625,9 @@ export const StaffGamingBookingPage = () => {
       await snookerOrderService.upsertFoodOrder({ booking: foodBooking, snapshot: catalog, lines: payloadLines, notes: `Snooker booking ${foodBooking.bookingNumber}` });
       foodModal.onClose();
       await refreshAllViews();
-      toast({ status: "success", title: "Sent to Dip & Dash pending orders" });
+      toast({ status: "success", title: "Snooker product order saved" });
     } catch (error) {
-      toast({ status: "error", title: "Unable to send order", description: error instanceof Error ? error.message : "Please retry." });
+      toast({ status: "error", title: "Unable to save product order", description: error instanceof Error ? error.message : "Please retry." });
     } finally { setSaving(false); }
   };
 
@@ -586,7 +705,7 @@ export const StaffGamingBookingPage = () => {
       },
       {
         key: "foodOrder",
-        header: "Food Order",
+        header: "Product Order",
         render: (booking) => (
           <VStack align="start" spacing={1}>
             <Badge colorScheme={foodStatusColor(booking.foodInvoiceStatus)} textTransform="capitalize">
@@ -643,16 +762,16 @@ export const StaffGamingBookingPage = () => {
               </Text>
             ) : (
               <>
-                <Button size="xs" variant="outline" leftIcon={<FiEdit2 size={12} />} onClick={() => openEdit(booking)}>
+                <Button size="xs" variant="outline" leftIcon={<FiEdit2 size={12} />} onClick={() => void openEdit(booking)}>
                   Edit
                 </Button>
                 <Button
                   size="xs"
                   variant="outline"
                   leftIcon={<FiShoppingBag size={12} />}
-                  onClick={() => openFoodOrderModal(booking)}
+                  onClick={() => void openFoodOrderModal(booking)}
                 >
-                  F&B Order
+                  Products
                 </Button>
                 <Button size="xs" onClick={() => void openCheckout(booking)}>
                   Checkout
@@ -693,12 +812,38 @@ export const StaffGamingBookingPage = () => {
         </SimpleGrid>
 
         <PosDataTable
-          rows={bookings}
+          rows={pagedBookings}
           columns={bookingColumns}
           getRowId={(booking) => booking.localBookingId}
           emptyMessage="No bookings found for current filters."
           maxColumns={6}
         />
+        <HStack justify="space-between" flexWrap="wrap" gap={3} mt={3}>
+          <Text fontSize="sm" color="#705A50">
+            Showing {tableStartIndex}-{tableEndIndex} of {bookings.length} records
+          </Text>
+          <HStack>
+            <Button
+              size="sm"
+              variant="outline"
+              isDisabled={safeTablePage <= 1}
+              onClick={() => setTablePage((current) => Math.max(1, current - 1))}
+            >
+              Previous
+            </Button>
+            <Text fontWeight={700} fontSize="sm">
+              Page {safeTablePage} of {totalTablePages}
+            </Text>
+            <Button
+              size="sm"
+              variant="outline"
+              isDisabled={safeTablePage >= totalTablePages}
+              onClick={() => setTablePage((current) => Math.min(totalTablePages, current + 1))}
+            >
+              Next
+            </Button>
+          </HStack>
+        </HStack>
       </Box>
 
       <Modal isOpen={bookingModal.isOpen} onClose={bookingModal.onClose} size="3xl" closeOnOverlayClick={false}>
@@ -787,6 +932,64 @@ export const StaffGamingBookingPage = () => {
               <SimpleGrid columns={{ base: 1, md: 2 }} spacing={3}><FormControl><FormLabel>Payment Status</FormLabel><Select value={form.paymentStatus} onChange={(e) => setForm((p) => ({ ...p, paymentStatus: e.target.value as "pending" | "paid" }))}><option value="pending">Pending</option><option value="paid">Paid</option></Select></FormControl><FormControl isDisabled={form.paymentStatus !== "paid"}><FormLabel>Payment Mode</FormLabel><Select value={form.paymentMode} onChange={(e) => setForm((p) => ({ ...p, paymentMode: e.target.value as GamingPaymentMode }))}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option></Select></FormControl></SimpleGrid>
               {isEditMode ? <Text fontSize="sm" color="#705A50">Locked fields: booking type, board/console, check-in time, rate and status. Only customers and payment can be updated after check-in.</Text> : null}
               <Box border="1px solid rgba(132,79,52,0.16)" borderRadius="12px" p={3}><HStack justify="space-between" mb={2}><Text fontWeight={800}>Customers</Text><Button size="sm" variant="outline" leftIcon={<FiPlus size={14} />} onClick={() => setForm((p) => ({ ...p, customers: [...p.customers, { name: "", phone: "" }] }))}>Add Customer</Button></HStack><VStack align="stretch" spacing={2}>{form.customers.map((customer, index) => <HStack key={`customer-${index}`} align="end"><FormControl><FormLabel fontSize="xs">Name</FormLabel><Input value={customer.name} onChange={(e) => setForm((p) => ({ ...p, customers: p.customers.map((entry, i) => i === index ? { ...entry, name: e.target.value } : entry) }))} /></FormControl><FormControl><FormLabel fontSize="xs">Phone</FormLabel><Input value={customer.phone} onBlur={() => void applyCustomerLookup(index)} onChange={(e) => setForm((p) => ({ ...p, customers: p.customers.map((entry, i) => i === index ? { ...entry, phone: e.target.value } : entry) }))} /></FormControl></HStack>)}</VStack></Box>
+              <Box border="1px solid rgba(132,79,52,0.16)" borderRadius="12px" p={3}>
+                <HStack justify="space-between" mb={2} flexWrap="wrap" gap={2}>
+                  <Text fontWeight={800}>Snooker Products (Optional)</Text>
+                  <Button size="sm" variant="outline" leftIcon={<FiPlus size={14} />} onClick={() => setBookingProductLines((prev) => [...prev, createFoodLine()])}>
+                    Add Product
+                  </Button>
+                </HStack>
+                <FormControl mb={2}>
+                  <FormLabel fontSize="xs">Search Product</FormLabel>
+                  <Input value={bookingProductSearch} onChange={(e) => setBookingProductSearch(e.target.value)} placeholder="Type product name" />
+                </FormControl>
+                {isBookingProductLoading ? (
+                  <Text fontSize="sm" color="#705A50">Loading linked products...</Text>
+                ) : (
+                  <VStack align="stretch" spacing={2}>
+                    {bookingProductLines.map((line) => {
+                      const quantity = Math.max(1, Math.round(Number(line.quantity) || 1));
+                      const option = productOptionMap.get(line.refId);
+                      const lineTotal = (option?.unitPrice ?? 0) * quantity;
+                      const filteredOptions = bookingProductSearch.trim()
+                        ? productOptions.filter((entry) => entry.label.toLowerCase().includes(bookingProductSearch.trim().toLowerCase()))
+                        : productOptions;
+                      return (
+                        <SimpleGrid key={line.id} columns={{ base: 1, md: 4 }} spacing={2} border="1px solid rgba(132,79,52,0.14)" borderRadius="10px" p={2}>
+                          <FormControl>
+                            <FormLabel fontSize="xs">Product</FormLabel>
+                            <Select value={line.refId} onChange={(e) => setBookingProductLines((prev) => prev.map((entry) => entry.id === line.id ? { ...entry, refId: e.target.value } : entry))}>
+                              <option value="">Select product</option>
+                              {filteredOptions.map((entry) => (
+                                <option key={`${line.id}-${entry.id}`} value={entry.id}>
+                                  {entry.label} ({formatINR(entry.unitPrice)})
+                                </option>
+                              ))}
+                            </Select>
+                          </FormControl>
+                          <FormControl>
+                            <FormLabel fontSize="xs">Quantity</FormLabel>
+                            <Input type="number" min={1} value={line.quantity} onChange={(e) => setBookingProductLines((prev) => prev.map((entry) => entry.id === line.id ? { ...entry, quantity: e.target.value } : entry))} />
+                          </FormControl>
+                          <FormControl>
+                            <FormLabel fontSize="xs">Line Total</FormLabel>
+                            <Input value={formatINR(lineTotal)} readOnly />
+                          </FormControl>
+                          <FormControl>
+                            <FormLabel fontSize="xs">Action</FormLabel>
+                            <Button variant="outline" size="sm" onClick={() => setBookingProductLines((prev) => prev.length <= 1 ? prev : prev.filter((entry) => entry.id !== line.id))} isDisabled={bookingProductLines.length <= 1}>
+                              Remove
+                            </Button>
+                          </FormControl>
+                        </SimpleGrid>
+                      );
+                    })}
+                  </VStack>
+                )}
+                <Text mt={2} fontSize="sm" color="#705A50">
+                  Product lines are saved with this booking and can be edited later.
+                </Text>
+              </Box>
               {!isEditMode ? <FormControl><FormLabel>Note</FormLabel><Input value={form.note} onChange={(e) => setForm((p) => ({ ...p, note: e.target.value }))} placeholder="Booking note" /></FormControl> : null}
             </VStack>
           </ModalBody>
@@ -795,18 +998,22 @@ export const StaffGamingBookingPage = () => {
       </Modal>
 
       <Modal isOpen={foodModal.isOpen} onClose={foodModal.onClose} size="4xl" closeOnOverlayClick={false}>
-        <ModalOverlay /><ModalContent><ModalHeader>Food / Product Order to Dip & Dash</ModalHeader><ModalCloseButton />
+        <ModalOverlay /><ModalContent><ModalHeader>Snooker Product Order</ModalHeader><ModalCloseButton />
           <ModalBody>
             <VStack align="stretch" spacing={3}>
               <Box p={3} borderRadius="12px" border="1px solid rgba(132,79,52,0.18)" bg="#FFFCF7"><Text fontWeight={800}>{foodBooking?.bookingNumber ?? "-"}</Text><Text fontSize="sm" color="#6D584E">{foodBooking?.primaryCustomerName} ({foodBooking?.primaryCustomerPhone}) • {foodBooking?.resourceLabel}</Text></Box>
               <FormControl><FormLabel>Search Product</FormLabel><Input value={foodSearch} onChange={(e) => setFoodSearch(e.target.value)} placeholder="Type to filter products" /></FormControl>
-              {foodLines.map((line) => (
-                <SimpleGrid key={line.id} columns={{ base: 1, md: 3 }} spacing={3} border="1px solid rgba(132,79,52,0.14)" borderRadius="10px" p={3}>
-                  <FormControl><FormLabel>Product</FormLabel><Select value={line.refId} onChange={(e) => updateFoodLine(line.id, { refId: e.target.value })}><option value="">Select product</option>{getFilteredOptions().map((option) => <option key={`${line.id}-${option.id}`} value={option.id}>{option.label} ({formatINR(option.unitPrice)})</option>)}</Select></FormControl>
-                  <FormControl><FormLabel>Quantity</FormLabel><Input type="number" min={1} value={line.quantity} onChange={(e) => updateFoodLine(line.id, { quantity: e.target.value })} /></FormControl>
-                  <FormControl><FormLabel>Action</FormLabel><Button variant="outline" size="sm" onClick={() => removeFoodLine(line.id)} isDisabled={foodLines.length <= 1}>Remove</Button></FormControl>
-                </SimpleGrid>
-              ))}
+              {isFoodOrderLoading ? (
+                <Text fontSize="sm" color="#705A50">Loading linked products...</Text>
+              ) : (
+                foodLines.map((line) => (
+                  <SimpleGrid key={line.id} columns={{ base: 1, md: 3 }} spacing={3} border="1px solid rgba(132,79,52,0.14)" borderRadius="10px" p={3}>
+                    <FormControl><FormLabel>Product</FormLabel><Select value={line.refId} onChange={(e) => updateFoodLine(line.id, { refId: e.target.value })}><option value="">Select product</option>{getFilteredOptions().map((option) => <option key={`${line.id}-${option.id}`} value={option.id}>{option.label} ({formatINR(option.unitPrice)})</option>)}</Select></FormControl>
+                    <FormControl><FormLabel>Quantity</FormLabel><Input type="number" min={1} value={line.quantity} onChange={(e) => updateFoodLine(line.id, { quantity: e.target.value })} /></FormControl>
+                    <FormControl><FormLabel>Action</FormLabel><Button variant="outline" size="sm" onClick={() => removeFoodLine(line.id)} isDisabled={foodLines.length <= 1}>Remove</Button></FormControl>
+                  </SimpleGrid>
+                ))
+              )}
               <HStack justify="space-between" flexWrap="wrap" gap={2}>
                 <Button leftIcon={<FiPlus size={14} />} variant="outline" onClick={() => setFoodLines((prev) => [...prev, createFoodLine()])}>
                   Add Line
@@ -814,11 +1021,11 @@ export const StaffGamingBookingPage = () => {
                 <Text fontWeight={800}>Draft Total: {formatINR(foodDraftTotal)}</Text>
               </HStack>
               <Text fontSize="sm" color="#705A50">
-                This will create a pending <b>snooker</b> order in the Dip & Dash staff queue.
+                This creates or updates the linked snooker product order for this booking.
               </Text>
             </VStack>
           </ModalBody>
-          <ModalFooter><HStack><Button variant="outline" onClick={foodModal.onClose}>Cancel</Button><Button isLoading={saving} onClick={() => void saveFoodOrder()}>Send to Dip & Dash</Button></HStack></ModalFooter>
+          <ModalFooter><HStack><Button variant="outline" onClick={foodModal.onClose}>Cancel</Button><Button isLoading={saving} onClick={() => void saveFoodOrder()}>Save Product Order</Button></HStack></ModalFooter>
         </ModalContent>
       </Modal>
 

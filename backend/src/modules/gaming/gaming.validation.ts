@@ -8,14 +8,26 @@ import {
   GAMING_PAYMENT_STATUSES
 } from "./gaming.constants";
 
+const optionalCustomerPhoneSchema = z.preprocess(
+  (value) => {
+    if (typeof value !== "string") {
+      return value;
+    }
+    const trimmed = value.trim();
+    return trimmed.length ? trimmed : undefined;
+  },
+  z.string().trim().min(8, "Customer phone should be at least 8 digits").max(20).optional()
+);
+
 const customerGroupMemberSchema = z.object({
   name: z.string().trim().min(1, "Customer name is required").max(120),
-  phone: z.string().trim().min(8, "Customer phone is required").max(20)
+  phone: optionalCustomerPhoneSchema
 });
 
 export const gamingListSchema = z.object({
   query: z.object({
     search: z.string().trim().max(120).optional(),
+    customerPhone: z.string().trim().min(8).max(20).optional(),
     bookingType: z.enum(GAMING_BOOKING_TYPES).optional(),
     status: z.enum(GAMING_BOOKING_STATUSES).optional(),
     paymentStatus: z.enum(GAMING_PAYMENT_STATUSES).optional(),
@@ -71,6 +83,7 @@ export const gamingCreateSchema = z.object({
     checkInAt: z.string().datetime().optional(),
     checkOutAt: z.string().datetime().optional(),
     hourlyRate: z.coerce.number().min(0),
+    playerCount: z.coerce.number().int().min(1).optional(),
     customers: z.array(customerGroupMemberSchema).min(1, "At least one customer is required"),
     bookingChannel: z.string().trim().max(40).optional(),
     note: z.string().trim().max(1200).optional(),
@@ -89,6 +102,13 @@ export const gamingCreateSchema = z.object({
     foodAndBeverageAmount: z.coerce.number().min(0).optional(),
     staffId: z.string().uuid().optional()
   }).superRefine((body, ctx) => {
+    if (!body.customers.some((member) => (member.phone?.trim().length ?? 0) >= 8)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "At least one customer contact number is required.",
+        path: ["customers"]
+      });
+    }
     if (body.paymentStatus === "paid" && !body.paymentMode) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -140,12 +160,14 @@ export const gamingUpdateSchema = z.object({
       .min(1)
       .optional(),
     checkInAt: z.string().datetime().optional(),
+    checkOutAt: z.string().datetime().optional(),
     hourlyRate: z.coerce.number().min(0).optional(),
+    playerCount: z.coerce.number().int().min(1).optional(),
     customers: z.array(customerGroupMemberSchema).min(1, "At least one customer is required").optional(),
     bookingChannel: z.string().trim().max(40).optional(),
     note: z.string().trim().max(1200).optional(),
-    status: z.enum(["upcoming", "ongoing", "cancelled"]).optional(),
-    paymentStatus: z.enum(["pending", "paid"]).optional(),
+    status: z.enum(GAMING_BOOKING_STATUSES).optional(),
+    paymentStatus: z.enum(GAMING_PAYMENT_STATUSES).optional(),
     paymentMode: z.enum(GAMING_PAYMENT_MODES).optional(),
     finalAmount: z.coerce.number().min(0).optional(),
     systemCalculatedAmount: z.coerce.number().min(0).optional(),
@@ -157,6 +179,13 @@ export const gamingUpdateSchema = z.object({
     foodInvoiceStatus: z.enum(["none", "pending", "paid", "cancelled"]).optional(),
     foodAndBeverageAmount: z.coerce.number().min(0).optional()
   }).superRefine((body, ctx) => {
+    if (body.customers && !body.customers.some((member) => (member.phone?.trim().length ?? 0) >= 8)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "At least one customer contact number is required.",
+        path: ["customers"]
+      });
+    }
     if (body.paymentStatus === "paid" && !body.paymentMode) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -178,6 +207,14 @@ export const gamingUpdateSchema = z.object({
     }
   }),
   query: z.object({}).optional()
+});
+
+export const gamingDeleteSchema = z.object({
+  params: z.object({
+    id: z.string().uuid("Invalid booking id")
+  }),
+  query: z.object({}).optional(),
+  body: z.object({}).optional()
 });
 
 export const gamingCheckoutSchema = z.object({

@@ -21,6 +21,9 @@ export class PosBillingControl {
   @Column({ type: "boolean", default: true })
   enforceDailyAllocation!: boolean;
 
+  @Column({ type: "boolean", default: true })
+  enforceIngredientStock!: boolean;
+
   @Column({ type: "varchar", length: 255, nullable: true })
   reason!: string | null;
 
@@ -37,4 +40,3 @@ export class PosBillingControl {
   @UpdateDateColumn({ type: "timestamptz" })
   updatedAt!: Date;
 }
-

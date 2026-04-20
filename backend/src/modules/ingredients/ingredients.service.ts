@@ -1692,6 +1692,7 @@ export class IngredientsService {
     const created = this.posBillingControlRepository.create({
       isBillingEnabled: true,
       enforceDailyAllocation: false,
+      enforceIngredientStock: true,
       reason: null,
       updatedByUserId: null
     });
@@ -1912,6 +1913,7 @@ export class IngredientsService {
     return {
       isBillingEnabled: control.isBillingEnabled,
       enforceDailyAllocation: control.enforceDailyAllocation,
+      enforceIngredientStock: control.enforceIngredientStock,
       reason: control.reason,
       updatedAt: control.updatedAt,
       updatedByUserId: control.updatedByUserId,
@@ -1922,6 +1924,7 @@ export class IngredientsService {
   async updatePosBillingControl(payload: {
     isBillingEnabled?: boolean;
     enforceDailyAllocation?: boolean;
+    enforceIngredientStock?: boolean;
     reason?: string;
   }, updatedByUserId: string) {
     const control = await this.getOrCreatePosBillingControl();
@@ -1932,6 +1935,9 @@ export class IngredientsService {
     if (payload.enforceDailyAllocation !== undefined) {
       control.enforceDailyAllocation = payload.enforceDailyAllocation;
     }
+    if (payload.enforceIngredientStock !== undefined) {
+      control.enforceIngredientStock = payload.enforceIngredientStock;
+    }
     if (payload.reason !== undefined) {
       control.reason = payload.reason.trim() || null;
     }
@@ -1941,6 +1947,7 @@ export class IngredientsService {
     return {
       isBillingEnabled: saved.isBillingEnabled,
       enforceDailyAllocation: saved.enforceDailyAllocation,
+      enforceIngredientStock: saved.enforceIngredientStock,
       reason: saved.reason,
       updatedAt: saved.updatedAt,
       updatedByUserId: saved.updatedByUserId
@@ -1962,6 +1969,7 @@ export class IngredientsService {
       posBillingControl: {
         isBillingEnabled: gate.control.isBillingEnabled,
         enforceDailyAllocation: gate.control.enforceDailyAllocation,
+        enforceIngredientStock: gate.control.enforceIngredientStock,
         reason: gate.control.reason
       },
       draft: {
@@ -2447,6 +2455,7 @@ export class IngredientsService {
       posBillingControl: {
         isBillingEnabled: control.isBillingEnabled,
         enforceDailyAllocation: control.enforceDailyAllocation,
+        enforceIngredientStock: control.enforceIngredientStock,
         reason: control.reason,
         updatedAt: control.updatedAt
       },

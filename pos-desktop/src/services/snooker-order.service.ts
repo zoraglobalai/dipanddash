@@ -80,7 +80,7 @@ const buildNewPendingOrder = (
     orderType: "snooker",
     orderChannel: "snooker",
     tableLabel: booking.resourceLabel,
-    kitchenStatus: "queued",
+    kitchenStatus: "served",
     status: "pending",
     paymentMode: null,
     customer: buildCustomerSnapshot(booking),
@@ -169,7 +169,18 @@ export const snookerOrderService = {
 
   async upsertFoodOrder(input: UpsertSnookerFoodOrderInput) {
     if (!input.lines.length) {
-      throw new Error("Add at least one food/product line before sending.");
+      throw new Error("Add at least one product line before saving.");
+    }
+    const allowedProductIds = new Set(
+      input.snapshot.products
+        .filter((product) => product.targetSection === "gaming" || product.targetSection === "both")
+        .map((product) => product.id)
+    );
+    const invalidProductLines = input.lines.filter(
+      (line) => line.lineType === "product" && !allowedProductIds.has(line.refId)
+    );
+    if (invalidProductLines.length) {
+      throw new Error("Only snooker-assigned products can be added in this order.");
     }
 
     const normalizedLines = input.lines.map(toCartLine);
@@ -187,7 +198,7 @@ export const snookerOrderService = {
             orderChannel: "snooker",
             tableLabel: input.booking.resourceLabel,
             customer: buildCustomerSnapshot(input.booking),
-            kitchenStatus: existing.kitchenStatus === "served" ? "queued" : existing.kitchenStatus,
+            kitchenStatus: "served",
             status: existing.status === "paid" ? "paid" : "pending",
             paymentMode: existing.status === "paid" ? existing.paymentMode : null,
             lines: normalizedLines,
@@ -289,7 +300,11 @@ export const snookerOrderService = {
       throw new Error("Reference ID is required for UPI and Card payments.");
     }
 
-    const productMap = new Map(input.snapshot.products.map((product) => [product.id, product]));
+    const productMap = new Map(
+      input.snapshot.products
+        .filter((product) => product.targetSection === "gaming" || product.targetSection === "both")
+        .map((product) => [product.id, product])
+    );
     const normalizedLines: CartLine[] = [];
     const aggregateQuantityByProduct = new Map<string, number>();
 

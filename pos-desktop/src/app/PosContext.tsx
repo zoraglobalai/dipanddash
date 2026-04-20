@@ -336,6 +336,13 @@ export const PosProvider = ({ children }: PropsWithChildren) => {
         };
       }
 
+      const shouldEnforceIngredientStock = catalog.controls?.enforceIngredientStock ?? true;
+      if (!shouldEnforceIngredientStock) {
+        return {
+          ok: true as const
+        };
+      }
+
       const stockByIngredient = new Map(
         (catalog.ingredientStocks ?? []).map((stock) => [stock.ingredientId, stock.availableQuantity])
       );

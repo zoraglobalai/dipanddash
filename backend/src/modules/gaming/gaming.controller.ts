@@ -22,6 +22,7 @@ export class GamingController {
     const data = await this.gamingService.listBookings(
       {
         search: typeof req.query.search === "string" ? req.query.search : undefined,
+        customerPhone: typeof req.query.customerPhone === "string" ? req.query.customerPhone : undefined,
         bookingType: typeof req.query.bookingType === "string" ? (req.query.bookingType as "snooker" | "console") : undefined,
         status: typeof req.query.status === "string" ? (req.query.status as "upcoming" | "ongoing" | "completed" | "cancelled") : undefined,
         paymentStatus:
@@ -65,6 +66,11 @@ export class GamingController {
   updateBooking = async (req: Request, res: Response): Promise<Response> => {
     const booking = await this.gamingService.updateBooking(req.params.id, req.body, resolveContext(req));
     return sendSuccess(res, StatusCodes.OK, "Gaming booking updated successfully", { booking });
+  };
+
+  deleteBooking = async (req: Request, res: Response): Promise<Response> => {
+    const data = await this.gamingService.deleteBooking(req.params.id, resolveContext(req));
+    return sendSuccess(res, StatusCodes.OK, "Gaming booking deleted successfully", data);
   };
 
   checkoutBooking = async (req: Request, res: Response): Promise<Response> => {

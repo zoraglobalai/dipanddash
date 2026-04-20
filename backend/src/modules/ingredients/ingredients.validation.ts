@@ -200,12 +200,14 @@ export const updatePosBillingControlSchema = z.object({
     .object({
       isBillingEnabled: z.boolean().optional(),
       enforceDailyAllocation: z.boolean().optional(),
+      enforceIngredientStock: z.boolean().optional(),
       reason: z.string().trim().max(255).optional()
     })
     .refine(
       (value) =>
         value.isBillingEnabled !== undefined ||
         value.enforceDailyAllocation !== undefined ||
+        value.enforceIngredientStock !== undefined ||
         value.reason !== undefined,
       "At least one field must be provided"
     )

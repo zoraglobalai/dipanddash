@@ -30,6 +30,7 @@ export type InvoiceListRow = {
   taxAmount: number;
   totalAmount: number;
   syncedFromPos: boolean;
+  sourceCreatedAt: string | null;
   createdAt: string;
   updatedAt: string;
 };

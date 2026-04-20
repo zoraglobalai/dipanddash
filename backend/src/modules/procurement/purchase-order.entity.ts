@@ -11,7 +11,7 @@ import {
 } from "typeorm";
 
 import { User } from "../users/user.entity";
-import type { PurchaseOrderType } from "./procurement.constants";
+import type { PurchaseOrderType, PurchaseSection } from "./procurement.constants";
 import { Supplier } from "./supplier.entity";
 import { PurchaseOrderLine } from "./purchase-order-line.entity";
 
@@ -37,6 +37,9 @@ export class PurchaseOrder {
 
   @Column({ type: "varchar", length: 20 })
   purchaseType!: PurchaseOrderType;
+
+  @Column({ type: "varchar", length: 20, default: "dip_and_dash" })
+  purchaseSection!: PurchaseSection;
 
   @Column({ type: "numeric", precision: 12, scale: 2, default: 0 })
   totalAmount!: number;

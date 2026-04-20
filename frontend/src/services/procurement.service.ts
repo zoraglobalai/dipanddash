@@ -222,6 +222,9 @@ export const procurementService = {
 
   getProductLedger: async (params?: {
     date?: string;
+    dateFrom?: string;
+    dateTo?: string;
+    productId?: string;
     search?: string;
     targetSection?: "dip_and_dash" | "gaming" | "both";
     page?: number;

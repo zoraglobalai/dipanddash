@@ -7,6 +7,7 @@ import { Customer } from "../customers/customer.entity";
 import { DailyAllocation } from "../ingredients/daily-allocation.entity";
 import { Ingredient } from "../ingredients/ingredient.entity";
 import { IngredientStock } from "../ingredients/ingredient-stock.entity";
+import { PosBillingControl } from "../ingredients/pos-billing-control.entity";
 import { Product } from "../procurement/product.entity";
 import { User } from "../users/user.entity";
 import {
@@ -25,8 +26,11 @@ import { Invoice } from "./invoice.entity";
 type InvoiceListFilters = {
   search?: string;
   status?: InvoiceStatus;
+  statuses?: InvoiceStatus[];
   kitchenStatus?: KitchenStatus;
   paymentMode?: PaymentMode;
+  orderType?: InvoiceOrderType;
+  excludeOrderType?: InvoiceOrderType;
   staffId?: string;
   dateFrom?: string;
   dateTo?: string;
@@ -36,6 +40,8 @@ type InvoiceListFilters = {
 
 type InvoiceStatsFilters = {
   staffId?: string;
+  orderType?: InvoiceOrderType;
+  excludeOrderType?: InvoiceOrderType;
   dateFrom?: string;
   dateTo?: string;
 };
@@ -139,6 +145,7 @@ const getPaginationMeta = (page: number, limit: number, total: number) => ({
 
 const isAdminLikeRole = (role: UserRole) =>
   role === UserRole.ADMIN || role === UserRole.MANAGER || role === UserRole.ACCOUNTANT;
+const EFFECTIVE_INVOICE_DATE_SQL = "COALESCE(invoice.sourceCreatedAt, invoice.createdAt)";
 
 export class InvoicesService {
   private readonly invoiceRepository = AppDataSource.getRepository(Invoice);
@@ -207,6 +214,9 @@ export class InvoicesService {
       baseUnit?: string;
       usageDate: string;
       consumedQuantity: number;
+    },
+    options?: {
+      enforceIngredientStock?: boolean;
     }
   ) {
     if (!usage.ingredientId) {
@@ -223,7 +233,8 @@ export class InvoicesService {
     });
 
     const availableStock = toQty(Number(stock?.totalStock ?? 0));
-    if (availableStock + 0.000001 < consumedQuantity) {
+    const shouldEnforceIngredientStock = options?.enforceIngredientStock ?? true;
+    if (shouldEnforceIngredientStock && availableStock + 0.000001 < consumedQuantity) {
       const ingredientLabel = usage.ingredientNameSnapshot?.trim() || "ingredient";
       const unitLabel = usage.baseUnit?.trim() || "unit";
       throw new AppError(
@@ -232,10 +243,18 @@ export class InvoicesService {
       );
     }
 
+    const nextStock = toQty(availableStock - consumedQuantity);
     if (stock) {
-      stock.totalStock = toQty(availableStock - consumedQuantity);
+      stock.totalStock = nextStock;
       stock.lastUpdatedAt = new Date();
       await manager.save(IngredientStock, stock);
+    } else {
+      const createdStock = manager.create(IngredientStock, {
+        ingredientId: usage.ingredientId,
+        totalStock: nextStock,
+        lastUpdatedAt: new Date()
+      });
+      await manager.save(IngredientStock, createdStock);
     }
 
     const activeAllocations = await manager.find(DailyAllocation, {
@@ -398,12 +417,163 @@ export class InvoicesService {
     }
   }
 
+  private async revertProductSalesToStock(
+    manager: EntityManager,
+    lines: Array<{
+      lineType: SyncInvoiceLinePayload["lineType"];
+      referenceId?: string | null;
+      quantity: number;
+    }>,
+    orderType: InvoiceOrderType
+  ) {
+    const soldByProductId = new Map<string, number>();
+    const isSnookerOrder = orderType === "snooker";
+
+    for (const line of lines) {
+      if (line.lineType !== "product" || !line.referenceId) {
+        continue;
+      }
+
+      const soldQuantity = toQty(Number(line.quantity));
+      if (!Number.isFinite(soldQuantity) || soldQuantity <= 0) {
+        continue;
+      }
+
+      const current = soldByProductId.get(line.referenceId) ?? 0;
+      soldByProductId.set(line.referenceId, toQty(current + soldQuantity));
+    }
+
+    if (!soldByProductId.size) {
+      return;
+    }
+
+    const productIds = [...soldByProductId.keys()];
+    const products = await manager.find(Product, {
+      where: { id: In(productIds) }
+    });
+    const productMap = new Map(products.map((product) => [product.id, product]));
+
+    const touchedProducts: Product[] = [];
+    for (const productId of productIds) {
+      const product = productMap.get(productId);
+      if (!product) {
+        continue;
+      }
+
+      const soldQuantity = soldByProductId.get(productId) ?? 0;
+      const availableStock = toQty(Number(product.currentStock));
+      let dipAndDashStock = toQty(Number(product.dipAndDashStock));
+      let gamingStock = toQty(Number(product.gamingStock));
+
+      if (product.targetSection === "dip_and_dash") {
+        dipAndDashStock = availableStock;
+        gamingStock = 0;
+      } else if (product.targetSection === "gaming") {
+        dipAndDashStock = 0;
+        gamingStock = availableStock;
+      } else {
+        const sectionTotal = toQty(dipAndDashStock + gamingStock);
+        if (Math.abs(sectionTotal - availableStock) > 0.001) {
+          if (sectionTotal > 0) {
+            const ratio = dipAndDashStock / sectionTotal;
+            dipAndDashStock = toQty(availableStock * ratio);
+            gamingStock = toQty(Math.max(availableStock - dipAndDashStock, 0));
+          } else {
+            dipAndDashStock = toQty(availableStock / 2);
+            gamingStock = toQty(Math.max(availableStock - dipAndDashStock, 0));
+          }
+        }
+      }
+
+      if (isSnookerOrder) {
+        gamingStock = toQty(Math.max(gamingStock + soldQuantity, 0));
+      } else {
+        dipAndDashStock = toQty(Math.max(dipAndDashStock + soldQuantity, 0));
+      }
+
+      product.dipAndDashStock = dipAndDashStock;
+      product.gamingStock = gamingStock;
+      product.currentStock = toQty(Math.max(dipAndDashStock + gamingStock, 0));
+      touchedProducts.push(product);
+    }
+
+    if (touchedProducts.length) {
+      await manager.save(Product, touchedProducts);
+    }
+  }
+
+  private async revertUsageToStockAndDailyAllocation(
+    manager: EntityManager,
+    usage: {
+      ingredientId: string | null;
+      consumedQuantity: number;
+    }
+  ) {
+    if (!usage.ingredientId) {
+      return;
+    }
+
+    const consumedQuantity = toQty(Number(usage.consumedQuantity));
+    if (!Number.isFinite(consumedQuantity) || consumedQuantity <= 0) {
+      return;
+    }
+
+    const stock = await manager.findOne(IngredientStock, {
+      where: { ingredientId: usage.ingredientId }
+    });
+
+    if (stock) {
+      stock.totalStock = toQty(Number(stock.totalStock) + consumedQuantity);
+      stock.lastUpdatedAt = new Date();
+      await manager.save(IngredientStock, stock);
+    } else {
+      const createdStock = manager.create(IngredientStock, {
+        ingredientId: usage.ingredientId,
+        totalStock: consumedQuantity,
+        lastUpdatedAt: new Date()
+      });
+      await manager.save(IngredientStock, createdStock);
+    }
+
+    const usedAllocations = await manager.find(DailyAllocation, {
+      where: {
+        ingredientId: usage.ingredientId,
+        usedQuantity: MoreThan(0)
+      },
+      order: {
+        date: "DESC",
+        updatedAt: "DESC"
+      }
+    });
+
+    let remainingToRevert = consumedQuantity;
+    for (const allocation of usedAllocations) {
+      if (remainingToRevert <= 0) {
+        break;
+      }
+
+      const used = toQty(Number(allocation.usedQuantity));
+      if (used <= 0) {
+        continue;
+      }
+
+      const revertedNow = toQty(Math.min(used, remainingToRevert));
+      allocation.usedQuantity = toQty(Math.max(used - revertedNow, 0));
+      allocation.remainingQuantity = toQty(
+        Math.max(Number(allocation.allocatedQuantity) - Number(allocation.usedQuantity), 0)
+      );
+      await manager.save(DailyAllocation, allocation);
+      remainingToRevert = toQty(remainingToRevert - revertedNow);
+    }
+  }
+
   async listInvoices(filters: InvoiceListFilters, contextUser: ContextUser) {
     const query = this.invoiceRepository
       .createQueryBuilder("invoice")
       .leftJoinAndSelect("invoice.customer", "customer")
       .leftJoinAndSelect("invoice.staff", "staff")
-      .orderBy("invoice.createdAt", "DESC")
+      .orderBy("invoice.sourceCreatedAt", "DESC", "NULLS LAST")
+      .addOrderBy("invoice.createdAt", "DESC")
       .skip((filters.page - 1) * filters.limit)
       .take(filters.limit);
 
@@ -425,6 +595,10 @@ export class InvoicesService {
       query.andWhere("invoice.status = :status", { status: filters.status });
     }
 
+    if (filters.statuses?.length) {
+      query.andWhere("invoice.status IN (:...statuses)", { statuses: filters.statuses });
+    }
+
     if (filters.kitchenStatus) {
       query.andWhere("invoice.kitchenStatus = :kitchenStatus", { kitchenStatus: filters.kitchenStatus });
     }
@@ -433,12 +607,20 @@ export class InvoicesService {
       query.andWhere("invoice.paymentMode = :paymentMode", { paymentMode: filters.paymentMode });
     }
 
+    if (filters.orderType) {
+      query.andWhere("invoice.orderType = :orderType", { orderType: filters.orderType });
+    }
+
+    if (filters.excludeOrderType) {
+      query.andWhere("invoice.orderType != :excludeOrderType", { excludeOrderType: filters.excludeOrderType });
+    }
+
     if (filters.dateFrom) {
-      query.andWhere("invoice.createdAt >= :dateFrom", { dateFrom: new Date(filters.dateFrom) });
+      query.andWhere(`${EFFECTIVE_INVOICE_DATE_SQL} >= :dateFrom`, { dateFrom: new Date(filters.dateFrom) });
     }
 
     if (filters.dateTo) {
-      query.andWhere("invoice.createdAt <= :dateTo", { dateTo: new Date(filters.dateTo) });
+      query.andWhere(`${EFFECTIVE_INVOICE_DATE_SQL} <= :dateTo`, { dateTo: new Date(filters.dateTo) });
     }
 
     const [invoices, total] = await query.getManyAndCount();
@@ -466,6 +648,7 @@ export class InvoicesService {
         taxAmount: toMoney(invoice.taxAmount),
         totalAmount: toMoney(invoice.totalAmount),
         syncedFromPos: invoice.syncedFromPos,
+        sourceCreatedAt: invoice.sourceCreatedAt,
         createdAt: invoice.createdAt,
         updatedAt: invoice.updatedAt
       })),
@@ -483,11 +666,19 @@ export class InvoicesService {
     }
 
     if (filters.dateFrom) {
-      query.andWhere("invoice.createdAt >= :dateFrom", { dateFrom: new Date(filters.dateFrom) });
+      query.andWhere(`${EFFECTIVE_INVOICE_DATE_SQL} >= :dateFrom`, { dateFrom: new Date(filters.dateFrom) });
     }
 
     if (filters.dateTo) {
-      query.andWhere("invoice.createdAt <= :dateTo", { dateTo: new Date(filters.dateTo) });
+      query.andWhere(`${EFFECTIVE_INVOICE_DATE_SQL} <= :dateTo`, { dateTo: new Date(filters.dateTo) });
+    }
+
+    if (filters.orderType) {
+      query.andWhere("invoice.orderType = :orderType", { orderType: filters.orderType });
+    }
+
+    if (filters.excludeOrderType) {
+      query.andWhere("invoice.orderType != :excludeOrderType", { excludeOrderType: filters.excludeOrderType });
     }
 
     const [total, paid, pending, cancelled, refunded, cash, card, upi, mixed, totals] =
@@ -612,13 +803,6 @@ export class InvoicesService {
       relations: { customer: true, staff: true }
     });
 
-    if (existingByInvoiceNumber && existingByInvoiceNumber.status === "paid" && payload.status !== "paid") {
-      return {
-        created: false,
-        invoice: existingByInvoiceNumber
-      };
-    }
-
     const staff = await this.userRepository.findOne({
       where: { id: contextUser.id }
     });
@@ -639,6 +823,7 @@ export class InvoicesService {
           });
 
         const wasPaid = invoice.status === "paid";
+        const previousOrderType = invoice.orderType;
 
         invoice.idempotencyKey = payload.idempotencyKey;
         invoice.invoiceNumber = payload.invoiceNumber.trim();
@@ -669,7 +854,37 @@ export class InvoicesService {
 
         const savedInvoice = await manager.save(invoice);
 
+        let previousLines: InvoiceLine[] = [];
+        let previousUsageEvents: InvoiceUsageEvent[] = [];
+
         if (isUpdate) {
+          if (wasPaid) {
+            previousLines = await manager.find(InvoiceLine, {
+              where: { invoiceId: savedInvoice.id }
+            });
+            previousUsageEvents = await manager.find(InvoiceUsageEvent, {
+              where: { invoiceId: savedInvoice.id }
+            });
+
+            await this.revertProductSalesToStock(
+              manager,
+              previousLines.map((line) => ({
+                lineType: line.lineType,
+                referenceId: line.referenceId,
+                quantity: Number(line.quantity)
+              })),
+              previousOrderType
+            );
+
+            for (const event of previousUsageEvents) {
+              await this.revertUsageToStockAndDailyAllocation(manager, {
+                ingredientId: event.ingredientId ?? null,
+                consumedQuantity: Number(event.consumedQuantity)
+              });
+            }
+          }
+
+          await manager.delete(InvoiceUsageEvent, { invoiceId: savedInvoice.id });
           await manager.delete(InvoiceLine, { invoiceId: savedInvoice.id });
           await manager.delete(InvoicePayment, { invoiceId: savedInvoice.id });
         }
@@ -728,12 +943,17 @@ export class InvoicesService {
           })
         );
 
-        const shouldApplyUsage = payload.status === "paid" && !wasPaid;
+        const shouldApplyUsage = payload.status === "paid";
         if (shouldApplyUsage) {
           await this.applyProductSalesToStock(manager, payload.lines, payload.orderType);
         }
 
         if (shouldApplyUsage && payload.usageEvents.length) {
+          const billingControl = await manager.findOne(PosBillingControl, {
+            where: {},
+            order: { updatedAt: "DESC" }
+          });
+          const enforceIngredientStock = billingControl?.enforceIngredientStock ?? true;
           const usageRows: InvoiceUsageEvent[] = [];
           for (const event of payload.usageEvents) {
             let ingredientNameSnapshot = event.ingredientNameSnapshot.trim();
@@ -768,6 +988,8 @@ export class InvoicesService {
               baseUnit: event.baseUnit,
               usageDate: event.usageDate,
               consumedQuantity: Number(event.consumedQuantity)
+            }, {
+              enforceIngredientStock
             });
           }
 
@@ -801,28 +1023,17 @@ export class InvoicesService {
     }
 
     const invoice = await this.resolveInvoiceOrFail(id);
-    if (invoice.status === "cancelled") {
-      return invoice;
-    }
     if (invoice.status === "refunded") {
       throw new AppError(422, "Refunded invoice cannot be cancelled");
     }
+    await this.deleteInvoice(id, contextUser);
 
-    invoice.status = "cancelled";
-    invoice.cancelledAt = new Date();
-    invoice.cancelledReason = cleanOptionalText(reason) ?? null;
-    await this.invoiceRepository.save(invoice);
-
-    await this.invoiceActivityRepository.save(
-      this.invoiceActivityRepository.create({
-        invoiceId: invoice.id,
-        actionType: "cancelled",
-        reason: cleanOptionalText(reason) ?? "Cancelled from admin",
-        performedByUserId: contextUser.id
-      })
-    );
-
-    return invoice;
+    return {
+      ...invoice,
+      status: "cancelled" as InvoiceStatus,
+      cancelledAt: new Date(),
+      cancelledReason: cleanOptionalText(reason) ?? "Cancelled and deleted from admin"
+    };
   }
 
   async refundInvoice(id: string, reason: string | undefined, contextUser: ContextUser) {
@@ -876,6 +1087,47 @@ export class InvoicesService {
     return invoice;
   }
 
+  async deleteInvoice(id: string, contextUser: ContextUser) {
+    if (!isAdminLikeRole(contextUser.role)) {
+      throw new AppError(403, "Only admin/manager roles can delete invoices");
+    }
+
+    const invoice = await this.resolveInvoiceOrFail(id);
+
+    await AppDataSource.transaction(async (manager) => {
+      const existingLines = await manager.find(InvoiceLine, {
+        where: { invoiceId: invoice.id }
+      });
+      const existingUsageEvents = await manager.find(InvoiceUsageEvent, {
+        where: { invoiceId: invoice.id }
+      });
+
+      if (invoice.status === "paid") {
+        await this.revertProductSalesToStock(
+          manager,
+          existingLines.map((line) => ({
+            lineType: line.lineType,
+            referenceId: line.referenceId,
+            quantity: Number(line.quantity)
+          })),
+          invoice.orderType
+        );
+
+        for (const event of existingUsageEvents) {
+          await this.revertUsageToStockAndDailyAllocation(manager, {
+            ingredientId: event.ingredientId ?? null,
+            consumedQuantity: Number(event.consumedQuantity)
+          });
+        }
+      }
+
+      await manager.delete(InvoiceUsageEvent, { invoiceId: invoice.id });
+      await manager.delete(Invoice, { id: invoice.id });
+    });
+
+    return { id: invoice.id, invoiceNumber: invoice.invoiceNumber };
+  }
+
   async recordUsageEvent(
     payload: SyncUsageEventPayload & {
       idempotencyKey: string;
@@ -917,6 +1169,11 @@ export class InvoicesService {
     });
 
     return AppDataSource.transaction(async (manager) => {
+      const billingControl = await manager.findOne(PosBillingControl, {
+        where: {},
+        order: { updatedAt: "DESC" }
+      });
+      const enforceIngredientStock = billingControl?.enforceIngredientStock ?? true;
       const saved = await manager.save(InvoiceUsageEvent, usageEvent);
       await this.applyUsageToStockAndDailyAllocation(manager, {
         ingredientId: payload.ingredientId ?? null,
@@ -924,6 +1181,8 @@ export class InvoicesService {
         baseUnit: payload.baseUnit,
         usageDate: payload.usageDate,
         consumedQuantity: Number(payload.consumedQuantity)
+      }, {
+        enforceIngredientStock
       });
       return saved;
     });

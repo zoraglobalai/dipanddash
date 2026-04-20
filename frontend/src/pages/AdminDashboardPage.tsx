@@ -10,11 +10,8 @@ import { useNavigate } from "react-router-dom";
 import {
   Bar,
   BarChart,
-  Cell,
   Line,
   LineChart,
-  Pie,
-  PieChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -35,7 +32,6 @@ import { dashboardService } from "@/services/dashboard.service";
 import { dumpService } from "@/services/dump.service";
 import { gamingService } from "@/services/gaming.service";
 import { ingredientsService } from "@/services/ingredients.service";
-import { useAppToast } from "@/hooks/useAppToast";
 import type { AttendanceSummary } from "@/types/attendance";
 import type { CashAuditStatsResponse } from "@/types/cash-audit";
 import type { DumpStatsResponse } from "@/types/dump";
@@ -71,11 +67,6 @@ const formatDateTime = (value?: string | null) => {
 
 const toDateInput = (value: Date) => value.toISOString().slice(0, 10);
 const getToday = () => toDateInput(new Date());
-const getDateBefore = (days: number) => {
-  const date = new Date();
-  date.setDate(date.getDate() - days);
-  return toDateInput(date);
-};
 
 const emptyAttendanceSummary: AttendanceSummary = {
   totalRecords: 0,
@@ -85,8 +76,6 @@ const emptyAttendanceSummary: AttendanceSummary = {
   breakHours: 0,
   totalHours: 0
 };
-
-const chartColors = ["#B91C1C", "#16A34A", "#D97706", "#7C2D12", "#1D4ED8", "#C2410C"];
 
 const InsightCard = ({
   label,
@@ -122,9 +111,8 @@ const InsightCard = ({
 
 export const AdminDashboardPage = () => {
   const navigate = useNavigate();
-  const toast = useAppToast();
-  const [dateFrom, setDateFrom] = useState(getDateBefore(6));
-  const [dateTo, setDateTo] = useState(getToday());
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastRefreshedAt, setLastRefreshedAt] = useState<string | null>(null);
@@ -148,13 +136,17 @@ export const AdminDashboardPage = () => {
     setLoading(true);
     setError(null);
     try {
+      const rangeParams = {
+        dateFrom: dateFrom || undefined,
+        dateTo: dateTo || undefined
+      };
       const [salesResponse, cashResponse, dumpResponse, ingredientResponse, gamingResponse, attendanceResponse] =
         await Promise.all([
-          dashboardService.getSalesStats({ dateFrom, dateTo }),
-          cashAuditService.getAdminStats({ dateFrom, dateTo, section: "dip_and_dash" }),
-          dumpService.getAdminStats({ dateFrom, dateTo }),
+          dashboardService.getSalesStats(rangeParams),
+          cashAuditService.getAdminStats({ ...rangeParams, section: "dip_and_dash" }),
+          dumpService.getAdminStats(rangeParams),
           ingredientsService.getAllocationStats({}),
-          gamingService.getStats({ dateFrom, dateTo }),
+          gamingService.getStats(rangeParams),
           attendanceService.getAdminRecords({ date: getToday(), page: 1, limit: 10 })
         ]);
 
@@ -175,15 +167,7 @@ export const AdminDashboardPage = () => {
   useEffect(() => {
     void fetchDashboard();
   }, [fetchDashboard]);
-
-  const paymentChartData = useMemo(
-    () =>
-      (salesStats?.paymentModeBreakdown ?? []).map((entry) => ({
-        name: entry.paymentMode.toUpperCase(),
-        value: entry.amount
-      })),
-    [salesStats]
-  );
+  const hasActiveDateFilter = Boolean(dateFrom || dateTo);
 
   const topCashierColumns = useMemo(
     () =>
@@ -235,7 +219,7 @@ export const AdminDashboardPage = () => {
 
       <AppCard
         title="Decision Window"
-        subtitle="Use this date range to evaluate performance and operational risk."
+        subtitle="Filter by date if needed. Leave blank to view full historical records."
         rightContent={
           <HStack spacing={2} flexWrap="wrap" justify="flex-end">
             <AppButton size="sm" variant="outline" onClick={() => applyPresetRange(1)}>
@@ -246,6 +230,17 @@ export const AdminDashboardPage = () => {
             </AppButton>
             <AppButton size="sm" variant="outline" onClick={() => applyPresetRange(30)}>
               Last 30 Days
+            </AppButton>
+            <AppButton
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                setDateFrom("");
+                setDateTo("");
+              }}
+              isDisabled={!hasActiveDateFilter}
+            >
+              Full Records
             </AppButton>
             <AppButton size="sm" onClick={() => void fetchDashboard()} isLoading={loading}>
               Refresh
@@ -291,7 +286,7 @@ export const AdminDashboardPage = () => {
               Selected Range
             </Text>
             <Text mt={1} fontWeight={800} color="#2A1A14">
-              {salesStats ? `${salesStats.range.days} days` : "-"}
+              {salesStats ? (hasActiveDateFilter ? `${salesStats.range.days} days` : "Full records") : "-"}
             </Text>
           </Box>
         </SimpleGrid>
@@ -307,9 +302,24 @@ export const AdminDashboardPage = () => {
               value={formatCurrency(salesStats.cards.netRevenue)}
               helper={
                 salesStats.cards.netRevenueGrowthPercentage === null
-                  ? `Gross ${formatCurrency(salesStats.cards.totalSales)} - Purchase ${formatCurrency(salesStats.cards.totalPurchaseAmount)}`
-                  : `${salesStats.cards.netRevenueGrowthPercentage >= 0 ? "+" : ""}${salesStats.cards.netRevenueGrowthPercentage}% vs previous | Gross ${formatCurrency(salesStats.cards.totalSales)} - Purchase ${formatCurrency(salesStats.cards.totalPurchaseAmount)}`
+                  ? `Sales ${formatCurrency(salesStats.cards.dipAndDashSales)} - Purchase ${formatCurrency(salesStats.cards.dipAndDashPurchaseAmount)}`
+                  : `${salesStats.cards.netRevenueGrowthPercentage >= 0 ? "+" : ""}${salesStats.cards.netRevenueGrowthPercentage}% vs previous | Sales ${formatCurrency(salesStats.cards.dipAndDashSales)} - Purchase ${formatCurrency(salesStats.cards.dipAndDashPurchaseAmount)}`
               }
+            />
+            <InsightCard
+              label="Dip & Dash Purchase"
+              value={formatCurrency(salesStats.cards.dipAndDashPurchaseAmount)}
+              helper={`Total purchase pool ${formatCurrency(salesStats.cards.totalPurchaseAmount)}`}
+            />
+            <InsightCard
+              label="Snooker Purchase"
+              value={formatCurrency(salesStats.cards.snookerPurchaseAmount)}
+              helper="Purchase records tagged for snooker/gaming"
+            />
+            <InsightCard
+              label="Dip & Dash Sales"
+              value={formatCurrency(salesStats.cards.dipAndDashSales)}
+              helper={`Orders ${salesStats.cards.totalOrders} | AOV ${formatCurrency(salesStats.cards.averageOrderValue)}`}
             />
             <InsightCard
               label="Orders & AOV"
@@ -327,9 +337,14 @@ export const AdminDashboardPage = () => {
               helper={`${dumpStats.totalEntries} dump entries`}
             />
             <InsightCard
-              label="Payment Mix"
-              value={`${formatCurrency(salesStats.cards.cashSales)} / ${formatCurrency(salesStats.cards.cardSales)} / ${formatCurrency(salesStats.cards.upiSales)}`}
-              helper="Cash / Card / UPI"
+              label="Snooker Gaming Profit"
+              value={formatCurrency(salesStats.cards.snookerGamingProfit)}
+              helper={`Revenue ${formatCurrency(salesStats.cards.snookerGamingRevenue)} - Purchase ${formatCurrency(salesStats.cards.snookerPurchaseAmount)}`}
+            />
+            <InsightCard
+              label="Product Sales Profit"
+              value={formatCurrency(salesStats.cards.productSalesProfit)}
+              helper="Estimated from sold product lines - purchase cost"
             />
             <InsightCard
               label="Inventory Risk"
@@ -343,7 +358,7 @@ export const AdminDashboardPage = () => {
             />
             <InsightCard
               label="Gaming Revenue"
-              value={formatCurrency(gamingStats.totals.totalRevenue)}
+              value={formatCurrency(salesStats.cards.snookerGamingRevenue)}
               helper={`${gamingStats.totals.pendingPayments} pending payments`}
             />
           </SimpleGrid>
@@ -362,23 +377,25 @@ export const AdminDashboardPage = () => {
               </Box>
             </AppCard>
 
-            <AppCard title="Payment Split" subtitle="Track mode-wise collections">
-              <Box h="300px">
-                {paymentChartData.length ? (
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie data={paymentChartData} dataKey="value" nameKey="name" innerRadius={60} outerRadius={95} paddingAngle={2}>
-                        {paymentChartData.map((_, index) => (
-                          <Cell key={`admin-payment-${index}`} fill={chartColors[index % chartColors.length]} />
-                        ))}
-                      </Pie>
-                      <Tooltip />
-                    </PieChart>
-                  </ResponsiveContainer>
-                ) : (
-                  <EmptyState title="No payment data" description="No paid invoices in selected range." />
-                )}
-              </Box>
+            <AppCard title="Purchase & Profit Snapshot" subtitle="Section-wise spend and profit visibility">
+              <VStack h="300px" align="stretch" justify="center" spacing={3}>
+                <InsightCard
+                  label="Dip & Dash Purchase"
+                  value={formatCurrency(salesStats.cards.dipAndDashPurchaseAmount)}
+                />
+                <InsightCard
+                  label="Snooker Purchase"
+                  value={formatCurrency(salesStats.cards.snookerPurchaseAmount)}
+                />
+                <InsightCard
+                  label="Snooker Gaming Profit"
+                  value={formatCurrency(salesStats.cards.snookerGamingProfit)}
+                />
+                <InsightCard
+                  label="Product Sales Profit"
+                  value={formatCurrency(salesStats.cards.productSalesProfit)}
+                />
+              </VStack>
             </AppCard>
           </SimpleGrid>
 

@@ -44,13 +44,6 @@ const formatCurrency = (value: number) =>
     maximumFractionDigits: 2
   }).format(value);
 
-const getToday = () => new Date().toISOString().slice(0, 10);
-const getSevenDaysBefore = () => {
-  const value = new Date();
-  value.setDate(value.getDate() - 6);
-  return value.toISOString().slice(0, 10);
-};
-
 const chartColors = ["#B91C1C", "#16A34A", "#D97706", "#7C2D12", "#C2410C", "#15803D"];
 
 const StatsCard = ({ label, value, helper }: { label: string; value: string; helper?: string }) => (
@@ -82,13 +75,16 @@ export const SalesStaticsPage = () => {
   const toast = useAppToast();
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState<SalesStatsResponse | null>(null);
-  const [dateFrom, setDateFrom] = useState(getSevenDaysBefore());
-  const [dateTo, setDateTo] = useState(getToday());
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
 
   const fetchStats = useCallback(async () => {
     setLoading(true);
     try {
-      const response = await dashboardService.getSalesStats({ dateFrom, dateTo });
+      const response = await dashboardService.getSalesStats({
+        dateFrom: dateFrom || undefined,
+        dateTo: dateTo || undefined
+      });
       setData(response.data);
     } catch (error) {
       toast.error(extractErrorMessage(error, "Unable to fetch sales analytics."));
@@ -148,9 +144,21 @@ export const SalesStaticsPage = () => {
           />
           <FormControl alignSelf="end">
             <FormLabel opacity={0}>Refresh</FormLabel>
-            <AppButton onClick={() => void fetchStats()} isLoading={loading}>
-              Refresh Stats
-            </AppButton>
+            <HStack>
+              <AppButton
+                variant="outline"
+                onClick={() => {
+                  setDateFrom("");
+                  setDateTo("");
+                }}
+                isDisabled={!dateFrom && !dateTo}
+              >
+                Full Records
+              </AppButton>
+              <AppButton onClick={() => void fetchStats()} isLoading={loading}>
+                Refresh Stats
+              </AppButton>
+            </HStack>
           </FormControl>
         </SimpleGrid>
       </AppCard>

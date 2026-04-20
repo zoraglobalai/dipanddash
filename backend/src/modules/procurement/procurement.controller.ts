@@ -127,6 +127,9 @@ export class ProcurementController {
   listProductLedger = async (req: Request, res: Response): Promise<Response> => {
     const data = await this.procurementService.getProductDayLedger({
       date: typeof req.query.date === "string" ? req.query.date : undefined,
+      dateFrom: typeof req.query.dateFrom === "string" ? req.query.dateFrom : undefined,
+      dateTo: typeof req.query.dateTo === "string" ? req.query.dateTo : undefined,
+      productId: typeof req.query.productId === "string" ? req.query.productId : undefined,
       search: typeof req.query.search === "string" ? req.query.search : undefined,
       targetSection:
         typeof req.query.targetSection === "string"

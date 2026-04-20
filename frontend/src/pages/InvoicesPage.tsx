@@ -33,6 +33,7 @@ import type {
   InvoiceDetail,
   InvoiceLineRow,
   InvoiceListRow,
+  InvoiceOrderType,
   InvoicePagination,
   InvoicePaymentMode,
   InvoicePaymentRow,
@@ -88,6 +89,32 @@ const statusStyleMap: Record<InvoiceStatus, { bg: string; color: string; label: 
   refunded: { bg: "purple.100", color: "purple.700", label: "Refunded" }
 };
 
+type InvoiceSection = "dip_and_dash" | "snooker_pos";
+
+const sectionConfig: Record<
+  InvoiceSection,
+  {
+    label: string;
+    subtitle: string;
+    listFilter: { orderType?: InvoiceOrderType; excludeOrderType?: InvoiceOrderType };
+  }
+> = {
+  dip_and_dash: {
+    label: "Dip & Dash Invoices",
+    subtitle: "Paid Dip & Dash invoices only.",
+    listFilter: {
+      excludeOrderType: "snooker"
+    }
+  },
+  snooker_pos: {
+    label: "Snooker POS Invoices",
+    subtitle: "Paid Snooker POS invoices only.",
+    listFilter: {
+      orderType: "snooker"
+    }
+  }
+};
+
 export const InvoicesPage = () => {
   const { user } = useAuth();
   const toast = useAppToast();
@@ -102,6 +129,7 @@ export const InvoicesPage = () => {
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebouncedValue(search, 400);
   const [paymentModeFilter, setPaymentModeFilter] = useState("");
+  const [section, setSection] = useState<InvoiceSection>("dip_and_dash");
   const [page, setPage] = useState(1);
   const [limit, setLimit] = useState(5);
 
@@ -137,22 +165,29 @@ export const InvoicesPage = () => {
   const fetchStats = useCallback(async () => {
     setStatsLoading(true);
     try {
-      const response = await invoicesService.getStats();
+      const filter = sectionConfig[section].listFilter;
+      const response = await invoicesService.getStats({
+        orderType: filter.orderType,
+        excludeOrderType: filter.excludeOrderType
+      });
       setStats(response.data);
     } catch (error) {
       toast.error(extractErrorMessage(error, "Unable to fetch invoice stats."));
     } finally {
       setStatsLoading(false);
     }
-  }, [toast]);
+  }, [section, toast]);
 
   const fetchInvoices = useCallback(async () => {
     setTableLoading(true);
     try {
+      const filter = sectionConfig[section].listFilter;
       const response = await invoicesService.getInvoices({
         search: debouncedSearch || undefined,
         status: "paid",
         paymentMode: (paymentModeFilter || undefined) as InvoicePaymentMode | undefined,
+        orderType: filter.orderType,
+        excludeOrderType: filter.excludeOrderType,
         page,
         limit
       });
@@ -163,7 +198,7 @@ export const InvoicesPage = () => {
     } finally {
       setTableLoading(false);
     }
-  }, [debouncedSearch, limit, page, paymentModeFilter, toast]);
+  }, [debouncedSearch, limit, page, paymentModeFilter, section, toast]);
 
   useEffect(() => {
     void fetchStats();
@@ -175,7 +210,7 @@ export const InvoicesPage = () => {
 
   useEffect(() => {
     setPage(1);
-  }, [debouncedSearch, paymentModeFilter, limit]);
+  }, [debouncedSearch, paymentModeFilter, limit, section]);
 
   const refreshAll = useCallback(async () => {
     await Promise.all([fetchStats(), fetchInvoices()]);
@@ -395,8 +430,26 @@ export const InvoicesPage = () => {
     <VStack spacing={6} align="stretch">
       <PageHeader
         title="Invoices"
-        subtitle="Monitor paid invoices only. Pending kitchen orders are available in the Orders module."
+        subtitle={sectionConfig[section].subtitle}
       />
+
+      <HStack spacing={3} flexWrap="wrap">
+        <AppButton
+          variant={section === "dip_and_dash" ? "solid" : "outline"}
+          onClick={() => setSection("dip_and_dash")}
+        >
+          Dip & Dash
+        </AppButton>
+        <AppButton
+          variant={section === "snooker_pos" ? "solid" : "outline"}
+          onClick={() => setSection("snooker_pos")}
+        >
+          Snooker POS
+        </AppButton>
+        <Text fontSize="sm" color="#7A6258" fontWeight={600}>
+          {sectionConfig[section].label}
+        </Text>
+      </HStack>
 
       <SimpleGrid columns={{ base: 1, md: 3, xl: 6 }} spacing={4}>
         {[
@@ -531,7 +584,7 @@ export const InvoicesPage = () => {
         isOpen={cancelDialog.isOpen}
         onClose={cancelDialog.onClose}
         title={`Cancel ${selectedRow?.invoiceNumber ?? "invoice"}?`}
-        description="This action will mark the invoice as cancelled. Please confirm."
+        description="This action removes the invoice and reverses product/ingredient impact."
         isLoading={mutationLoading}
         onConfirm={() =>
           void runRowAction(`cancel-${selectedRow?.id ?? "unknown"}`, async () => {

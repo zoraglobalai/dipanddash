@@ -83,6 +83,7 @@ export const StockAuditPage = () => {
   const [mismatchOnly, setMismatchOnly] = useState(false);
   const [loading, setLoading] = useState(true);
   const [reopeningReportId, setReopeningReportId] = useState<string | null>(null);
+  const [stockControlSaving, setStockControlSaving] = useState(false);
   const [data, setData] = useState<StockAuditData | null>(null);
 
   const fetchAudit = useCallback(async () => {
@@ -290,8 +291,41 @@ export const StockAuditPage = () => {
   const totalUnallocatedStock = data?.stats.totalUnallocatedStock ?? 0;
   const ingredientsWithUnallocated = data?.stats.ingredientsWithUnallocated ?? 0;
   const isPosBillingEnabled = data?.posBillingControl.isBillingEnabled ?? false;
+  const isIngredientStockEnforced = data?.posBillingControl.enforceIngredientStock ?? true;
   const mismatchRate = totalIngredients > 0 ? (mismatchedIngredients / totalIngredients) * 100 : 0;
   const matchRate = totalIngredients > 0 ? (matchedIngredients / totalIngredients) * 100 : 0;
+
+  const handleToggleIngredientStockGate = useCallback(
+    async (nextValue: boolean) => {
+      setStockControlSaving(true);
+      try {
+        const response = await ingredientsService.updatePosBillingControl({
+          enforceIngredientStock: nextValue
+        });
+        setData((previous) =>
+          previous
+            ? {
+                ...previous,
+                posBillingControl: {
+                  ...previous.posBillingControl,
+                  ...response.data
+                }
+              }
+            : previous
+        );
+        toast.success(
+          nextValue
+            ? "Strict stock check enabled. Orders will be blocked on ingredient shortage."
+            : "Strict stock check disabled. Orders can continue even with ingredient shortage."
+        );
+      } catch (error) {
+        toast.error(extractErrorMessage(error, "Unable to update stock gate control."));
+      } finally {
+        setStockControlSaving(false);
+      }
+    },
+    [toast]
+  );
 
   return (
     <VStack align="stretch" spacing={6}>
@@ -402,6 +436,9 @@ export const StockAuditPage = () => {
             <Text fontSize="sm" color="#6D584E">
               Match rate: {`${formatQuantity(matchRate)}%`} | Mismatch rate: {`${formatQuantity(mismatchRate)}%`}
             </Text>
+            <Text fontSize="xs" color="#7A6359">
+              Stock shortage gate: {isIngredientStockEnforced ? "Strict (block orders)" : "Flexible (allow orders)"}
+            </Text>
           </VStack>
           <HStack spacing={2}>
             <Badge colorScheme={isPosBillingEnabled ? "green" : "red"} borderRadius="full" px={3} py={1}>
@@ -414,6 +451,21 @@ export const StockAuditPage = () => {
               Matched {matchedIngredients}
             </Badge>
           </HStack>
+          <FormControl display="flex" alignItems="center" w={{ base: "100%", md: "auto" }} gap={3}>
+            <Switch
+              isChecked={isIngredientStockEnforced}
+              isDisabled={stockControlSaving}
+              onChange={(event) => void handleToggleIngredientStockGate(event.target.checked)}
+            />
+            <VStack align="start" spacing={0}>
+              <Text fontWeight={700} fontSize="sm">
+                Strict Ingredient Stock Check
+              </Text>
+              <Text fontSize="xs" color="#6D584E">
+                When OFF, billing is allowed even without stock; only usage will be deducted.
+              </Text>
+            </VStack>
+          </FormControl>
         </HStack>
       </AppCard>
 

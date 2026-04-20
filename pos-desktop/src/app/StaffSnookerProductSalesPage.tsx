@@ -47,7 +47,10 @@ export const StaffSnookerProductSalesPage = () => {
   const [isRefreshing, setIsRefreshing] = useState(false);
 
   const products = useMemo(
-    () => (catalog?.products ?? []).filter((product) => product.isActive),
+    () =>
+      (catalog?.products ?? []).filter(
+        (product) => product.isActive && (product.targetSection === "gaming" || product.targetSection === "both")
+      ),
     [catalog?.products]
   );
 

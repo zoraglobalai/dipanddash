@@ -12,6 +12,7 @@ import { GamingController } from "./gaming.controller";
 import {
   gamingCheckoutSchema,
   gamingCreateSchema,
+  gamingDeleteSchema,
   gamingListSchema,
   gamingPaymentSchema,
   gamingStatsSchema,
@@ -56,6 +57,12 @@ router.patch(
   authorizeScopedAdminModuleAccess("gaming"),
   validateRequest(gamingUpdateSchema),
   asyncHandler(gamingController.updateBooking)
+);
+router.delete(
+  "/bookings/:id",
+  authorizeScopedAdminModuleAccess("gaming"),
+  validateRequest(gamingDeleteSchema),
+  asyncHandler(gamingController.deleteBooking)
 );
 router.patch(
   "/bookings/:id/checkout",

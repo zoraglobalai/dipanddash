@@ -15,10 +15,12 @@ import {
   PRODUCT_UNITS,
   PURCHASE_LINE_TYPES,
   PURCHASE_ORDER_TYPES,
+  PURCHASE_SECTIONS,
   type PurchaseLineType,
   type ProductTargetSection,
   type ProductUnit,
-  type PurchaseOrderType
+  type PurchaseOrderType,
+  type PurchaseSection
 } from "./procurement.constants";
 import { PurchaseOrderLine } from "./purchase-order-line.entity";
 import { PurchaseOrder } from "./purchase-order.entity";
@@ -50,6 +52,9 @@ type ProductListFilters = PaginationFilters & {
 
 type ProductDayLedgerFilters = PaginationFilters & {
   date?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  productId?: string;
   search?: string;
   targetSection?: ProductTargetSection;
 };
@@ -115,6 +120,7 @@ type PurchaseOrderLinePayload = {
 type CreatePurchaseOrderPayload = {
   supplierId: string;
   purchaseDate?: string;
+  purchaseSection?: PurchaseSection;
   note?: string;
   invoiceImageUrl?: string;
   lines: PurchaseOrderLinePayload[];
@@ -190,6 +196,32 @@ const toNumber = (value: string | number | null | undefined) => {
 
 const toFixedQuantity = (value: number) => Number(value.toFixed(3));
 const toFixedPrice = (value: number) => Number(value.toFixed(2));
+const toYmd = (value: unknown) => {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return "";
+    }
+    if (/^\d{4}-\d{2}-\d{2}/.test(trimmed)) {
+      return trimmed.slice(0, 10);
+    }
+    const parsed = new Date(trimmed);
+    if (!Number.isNaN(parsed.getTime())) {
+      const year = parsed.getFullYear();
+      const month = String(parsed.getMonth() + 1).padStart(2, "0");
+      const day = String(parsed.getDate()).padStart(2, "0");
+      return `${year}-${month}-${day}`;
+    }
+    return trimmed;
+  }
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    const year = value.getFullYear();
+    const month = String(value.getMonth() + 1).padStart(2, "0");
+    const day = String(value.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+  return String(value ?? "");
+};
 
 const resolveDayRangeInUtc = (date: string) => {
   const start = new Date(`${date}T00:00:00.000+05:30`);
@@ -677,6 +709,10 @@ export class ProcurementService {
       return PURCHASE_ORDER_TYPES[0];
     }
     return PURCHASE_ORDER_TYPES[1];
+  }
+
+  private resolvePurchaseSection(input?: PurchaseSection): PurchaseSection {
+    return PURCHASE_SECTIONS.includes(input as PurchaseSection) ? (input as PurchaseSection) : "dip_and_dash";
   }
 
   getPurchaseBulkImportTemplate() {
@@ -1747,8 +1783,18 @@ export class ProcurementService {
     const page = Math.max(1, filters.page || 1);
     const limit = Math.min(200, Math.max(1, filters.limit || 12));
     const offset = (page - 1) * limit;
-    const date = filters.date || getTodayDate();
-    const { start: dayStartUtc, end: dayEndUtc } = resolveDayRangeInUtc(date);
+    const legacyDate = filters.date?.trim() || "";
+    const dateFrom = (filters.dateFrom?.trim() || legacyDate || "") || undefined;
+    const dateTo = (filters.dateTo?.trim() || legacyDate || "") || undefined;
+    if (dateFrom) {
+      resolveDayRangeInUtc(dateFrom);
+    }
+    if (dateTo) {
+      resolveDayRangeInUtc(dateTo);
+    }
+    if (dateFrom && dateTo && dateFrom > dateTo) {
+      throw new AppError(422, "Date to must be on or after date from.");
+    }
 
     const query = this.productRepository
       .createQueryBuilder("product")
@@ -1767,19 +1813,22 @@ export class ProcurementService {
       });
     }
 
-    const [products, total] = await Promise.all([
-      query.skip(offset).take(limit).getMany(),
-      query.getCount()
-    ]);
+    if (filters.productId) {
+      query.andWhere("product.id = :productId", { productId: filters.productId });
+    }
+
+    const products = await query.getMany();
 
     const productIds = products.map((product) => product.id);
     if (!productIds.length) {
       return {
-        date,
+        date: legacyDate || null,
+        dateFrom: dateFrom ?? null,
+        dateTo: dateTo ?? null,
         rows: [],
-        pagination: getPaginationMeta(page, limit, total),
+        pagination: getPaginationMeta(page, limit, 0),
         stats: {
-          totalProducts: total,
+          totalProducts: 0,
           totalOpeningStock: 0,
           totalPurchased: 0,
           totalConsumption: 0,
@@ -1790,124 +1839,178 @@ export class ProcurementService {
       };
     }
 
-    const [purchaseBeforeRows, purchaseTodayRows, salesBeforeRows, salesTodayRows, salesDipRows, salesGamingRows] =
-      await Promise.all([
-        this.purchaseOrderLineRepository
-          .createQueryBuilder("line")
-          .leftJoin("line.purchaseOrder", "purchaseOrder")
-          .select("line.productId", "productId")
-          .addSelect("COALESCE(SUM(line.stockAdded), 0)", "quantity")
-          .where("line.lineType = :lineType", { lineType: "product" })
-          .andWhere("line.productId IN (:...productIds)", { productIds })
-          .andWhere("purchaseOrder.purchaseDate < :date", { date })
-          .groupBy("line.productId")
-          .getRawMany<{ productId: string; quantity: string }>(),
-        this.purchaseOrderLineRepository
-          .createQueryBuilder("line")
-          .leftJoin("line.purchaseOrder", "purchaseOrder")
-          .select("line.productId", "productId")
-          .addSelect("COALESCE(SUM(line.stockAdded), 0)", "quantity")
-          .where("line.lineType = :lineType", { lineType: "product" })
-          .andWhere("line.productId IN (:...productIds)", { productIds })
-          .andWhere("purchaseOrder.purchaseDate = :date", { date })
-          .groupBy("line.productId")
-          .getRawMany<{ productId: string; quantity: string }>(),
-        this.invoiceLineRepository
-          .createQueryBuilder("line")
-          .leftJoin("line.invoice", "invoice")
-          .select("line.\"referenceId\"", "productId")
-          .addSelect("COALESCE(SUM(line.quantity), 0)", "quantity")
-          .where("line.lineType = :lineType", { lineType: "product" })
-          .andWhere("line.\"referenceId\"::text IN (:...productIds)", { productIds })
-          .andWhere("invoice.status = :status", { status: "paid" })
-          .andWhere("invoice.createdAt < :dayStartUtc", { dayStartUtc })
-          .groupBy("line.\"referenceId\"")
-          .getRawMany<{ productId: string; quantity: string }>(),
-        this.invoiceLineRepository
-          .createQueryBuilder("line")
-          .leftJoin("line.invoice", "invoice")
-          .select("line.\"referenceId\"", "productId")
-          .addSelect("COALESCE(SUM(line.quantity), 0)", "quantity")
-          .where("line.lineType = :lineType", { lineType: "product" })
-          .andWhere("line.\"referenceId\"::text IN (:...productIds)", { productIds })
-          .andWhere("invoice.status = :status", { status: "paid" })
-          .andWhere("invoice.createdAt >= :dayStartUtc AND invoice.createdAt < :dayEndUtc", {
-            dayStartUtc,
-            dayEndUtc
-          })
-          .groupBy("line.\"referenceId\"")
-          .getRawMany<{ productId: string; quantity: string }>(),
-        this.invoiceLineRepository
-          .createQueryBuilder("line")
-          .leftJoin("line.invoice", "invoice")
-          .select("line.\"referenceId\"", "productId")
-          .addSelect("COALESCE(SUM(line.quantity), 0)", "quantity")
-          .where("line.lineType = :lineType", { lineType: "product" })
-          .andWhere("line.\"referenceId\"::text IN (:...productIds)", { productIds })
-          .andWhere("invoice.status = :status", { status: "paid" })
-          .andWhere("invoice.orderType != :snookerOrderType", { snookerOrderType: "snooker" })
-          .andWhere("invoice.createdAt >= :dayStartUtc AND invoice.createdAt < :dayEndUtc", {
-            dayStartUtc,
-            dayEndUtc
-          })
-          .groupBy("line.\"referenceId\"")
-          .getRawMany<{ productId: string; quantity: string }>(),
-        this.invoiceLineRepository
-          .createQueryBuilder("line")
-          .leftJoin("line.invoice", "invoice")
-          .select("line.\"referenceId\"", "productId")
-          .addSelect("COALESCE(SUM(line.quantity), 0)", "quantity")
-          .where("line.lineType = :lineType", { lineType: "product" })
-          .andWhere("line.\"referenceId\"::text IN (:...productIds)", { productIds })
-          .andWhere("invoice.status = :status", { status: "paid" })
-          .andWhere("invoice.orderType = :snookerOrderType", { snookerOrderType: "snooker" })
-          .andWhere("invoice.createdAt >= :dayStartUtc AND invoice.createdAt < :dayEndUtc", {
-            dayStartUtc,
-            dayEndUtc
-          })
-          .groupBy("line.\"referenceId\"")
-          .getRawMany<{ productId: string; quantity: string }>()
-      ]);
+    const [purchaseMovementRows, salesMovementRows, purchaseBeforeRows, salesBeforeRows] = await Promise.all([
+      this.purchaseOrderLineRepository
+        .createQueryBuilder("line")
+        .leftJoin("line.purchaseOrder", "purchaseOrder")
+        .select("to_char(purchaseOrder.purchaseDate, 'YYYY-MM-DD')", "date")
+        .addSelect("line.productId", "productId")
+        .addSelect("COALESCE(SUM(line.stockAdded), 0)", "purchased")
+        .where("line.lineType = :lineType", { lineType: "product" })
+        .andWhere("line.productId IN (:...productIds)", { productIds })
+        .andWhere(dateFrom ? "purchaseOrder.purchaseDate >= :dateFrom" : "1=1", { dateFrom })
+        .andWhere(dateTo ? "purchaseOrder.purchaseDate <= :dateTo" : "1=1", { dateTo })
+        .groupBy("purchaseOrder.purchaseDate")
+        .addGroupBy("line.productId")
+        .getRawMany<{ date: string; productId: string; purchased: string }>(),
+      this.invoiceLineRepository
+        .createQueryBuilder("line")
+        .leftJoin("line.invoice", "invoice")
+        .select("to_char(timezone('Asia/Kolkata', invoice.\"createdAt\"), 'YYYY-MM-DD')", "date")
+        .addSelect("line.\"referenceId\"", "productId")
+        .addSelect("COALESCE(SUM(line.quantity), 0)", "consumption")
+        .addSelect(
+          "COALESCE(SUM(CASE WHEN invoice.\"orderType\" = :snookerOrderType THEN 0 ELSE line.quantity END), 0)",
+          "dipAndDashConsumption"
+        )
+        .addSelect(
+          "COALESCE(SUM(CASE WHEN invoice.\"orderType\" = :snookerOrderType THEN line.quantity ELSE 0 END), 0)",
+          "snookerConsumption"
+        )
+        .where("line.lineType = :lineType", { lineType: "product" })
+        .andWhere("line.\"referenceId\"::text IN (:...productIds)", { productIds })
+        .andWhere("invoice.status = :status", { status: "paid" })
+        .andWhere(dateFrom ? "timezone('Asia/Kolkata', invoice.\"createdAt\")::date >= :dateFrom" : "1=1", { dateFrom })
+        .andWhere(dateTo ? "timezone('Asia/Kolkata', invoice.\"createdAt\")::date <= :dateTo" : "1=1", { dateTo })
+        .setParameter("snookerOrderType", "snooker")
+        .groupBy("to_char(timezone('Asia/Kolkata', invoice.\"createdAt\"), 'YYYY-MM-DD')")
+        .addGroupBy("line.\"referenceId\"")
+        .getRawMany<{
+          date: string;
+          productId: string;
+          consumption: string;
+          dipAndDashConsumption: string;
+          snookerConsumption: string;
+        }>(),
+      dateFrom
+        ? this.purchaseOrderLineRepository
+            .createQueryBuilder("line")
+            .leftJoin("line.purchaseOrder", "purchaseOrder")
+            .select("line.productId", "productId")
+            .addSelect("COALESCE(SUM(line.stockAdded), 0)", "quantity")
+            .where("line.lineType = :lineType", { lineType: "product" })
+            .andWhere("line.productId IN (:...productIds)", { productIds })
+            .andWhere("purchaseOrder.purchaseDate < :dateFrom", { dateFrom })
+            .groupBy("line.productId")
+            .getRawMany<{ productId: string; quantity: string }>()
+        : Promise.resolve([] as Array<{ productId: string; quantity: string }>),
+      dateFrom
+        ? this.invoiceLineRepository
+            .createQueryBuilder("line")
+            .leftJoin("line.invoice", "invoice")
+            .select("line.\"referenceId\"", "productId")
+            .addSelect("COALESCE(SUM(line.quantity), 0)", "quantity")
+            .where("line.lineType = :lineType", { lineType: "product" })
+            .andWhere("line.\"referenceId\"::text IN (:...productIds)", { productIds })
+            .andWhere("invoice.status = :status", { status: "paid" })
+            .andWhere("timezone('Asia/Kolkata', invoice.\"createdAt\")::date < :dateFrom", { dateFrom })
+            .groupBy("line.\"referenceId\"")
+            .getRawMany<{ productId: string; quantity: string }>()
+        : Promise.resolve([] as Array<{ productId: string; quantity: string }>)
+    ]);
 
-    const toMap = (rows: Array<{ productId: string; quantity: string }>) =>
-      new Map(rows.map((row) => [row.productId, toFixedQuantity(toNumber(row.quantity))]));
-
-    const purchaseBeforeMap = toMap(purchaseBeforeRows);
-    const purchaseTodayMap = toMap(purchaseTodayRows);
-    const salesBeforeMap = toMap(salesBeforeRows);
-    const salesTodayMap = toMap(salesTodayRows);
-    const salesDipMap = toMap(salesDipRows);
-    const salesGamingMap = toMap(salesGamingRows);
-
-    const rows = products.map((product) => {
-      const openingStock = toFixedQuantity(
-        (purchaseBeforeMap.get(product.id) ?? 0) - (salesBeforeMap.get(product.id) ?? 0)
-      );
-      const purchased = purchaseTodayMap.get(product.id) ?? 0;
-      const consumption = salesTodayMap.get(product.id) ?? 0;
-      const dipAndDashConsumption = salesDipMap.get(product.id) ?? 0;
-      const snookerConsumption = salesGamingMap.get(product.id) ?? 0;
-      const closingStock = toFixedQuantity(openingStock + purchased - consumption);
-
-      return {
-        id: `${date}-${product.id}`,
+    const productMap = new Map(products.map((product) => [product.id, product]));
+    const movementMap = new Map<
+      string,
+      {
+        date: string;
+        productId: string;
+        purchased: number;
+        consumption: number;
+        dipAndDashConsumption: number;
+        snookerConsumption: number;
+      }
+    >();
+    const getMovement = (date: string, productId: string) => {
+      const key = `${date}::${productId}`;
+      const existing = movementMap.get(key);
+      if (existing) {
+        return existing;
+      }
+      const created = {
         date,
-        productId: product.id,
-        productName: product.name,
-        category: product.category,
-        unit: product.unit,
-        targetSection: product.targetSection,
-        openingStock,
-        purchased,
-        consumption,
-        dipAndDashConsumption,
-        snookerConsumption,
-        closingStock,
-        dipAndDashAssignedStock: toFixedQuantity(toNumber(product.dipAndDashStock)),
-        gamingAssignedStock: toFixedQuantity(toNumber(product.gamingStock)),
-        stockHealth: closingStock <= toNumber(product.minStock) ? "LOW_STOCK" : "HEALTHY"
+        productId,
+        purchased: 0,
+        consumption: 0,
+        dipAndDashConsumption: 0,
+        snookerConsumption: 0
       };
+      movementMap.set(key, created);
+      return created;
+    };
+
+    purchaseMovementRows.forEach((row) => {
+      const movement = getMovement(toYmd(row.date), row.productId);
+      movement.purchased = toFixedQuantity(toNumber(row.purchased));
     });
+    salesMovementRows.forEach((row) => {
+      const movement = getMovement(toYmd(row.date), row.productId);
+      movement.consumption = toFixedQuantity(toNumber(row.consumption));
+      movement.dipAndDashConsumption = toFixedQuantity(toNumber(row.dipAndDashConsumption));
+      movement.snookerConsumption = toFixedQuantity(toNumber(row.snookerConsumption));
+    });
+
+    const purchaseBeforeMap = new Map(purchaseBeforeRows.map((row) => [row.productId, toFixedQuantity(toNumber(row.quantity))]));
+    const salesBeforeMap = new Map(salesBeforeRows.map((row) => [row.productId, toFixedQuantity(toNumber(row.quantity))]));
+    const runningStockByProduct = new Map(
+      products.map((product) => [
+        product.id,
+        toFixedQuantity((purchaseBeforeMap.get(product.id) ?? 0) - (salesBeforeMap.get(product.id) ?? 0))
+      ])
+    );
+
+    const rows = Array.from(movementMap.values())
+      .sort((left, right) => {
+        const dateDiff = toYmd(left.date).localeCompare(toYmd(right.date));
+        if (dateDiff !== 0) {
+          return dateDiff;
+        }
+        const leftName = productMap.get(left.productId)?.name ?? left.productId;
+        const rightName = productMap.get(right.productId)?.name ?? right.productId;
+        return leftName.localeCompare(rightName);
+      })
+      .map((movement) => {
+        const product = productMap.get(movement.productId);
+        if (!product) {
+          return null;
+        }
+        const openingStock = toFixedQuantity(runningStockByProduct.get(product.id) ?? 0);
+        const purchased = toFixedQuantity(movement.purchased);
+        const consumption = toFixedQuantity(movement.consumption);
+        const dipAndDashConsumption = toFixedQuantity(movement.dipAndDashConsumption);
+        const snookerConsumption = toFixedQuantity(movement.snookerConsumption);
+        const closingStock = toFixedQuantity(openingStock + purchased - consumption);
+        runningStockByProduct.set(product.id, closingStock);
+        return {
+          id: `${movement.date}-${product.id}`,
+          date: movement.date,
+          productId: product.id,
+          productName: product.name,
+          category: product.category,
+          unit: product.unit,
+          targetSection: product.targetSection,
+          openingStock,
+          purchased,
+          consumption,
+          dipAndDashConsumption,
+          snookerConsumption,
+          closingStock,
+          dipAndDashAssignedStock: toFixedQuantity(toNumber(product.dipAndDashStock)),
+          gamingAssignedStock: toFixedQuantity(toNumber(product.gamingStock)),
+          stockHealth: closingStock <= toNumber(product.minStock) ? "LOW_STOCK" : "HEALTHY"
+        };
+      })
+      .filter((row): row is NonNullable<typeof row> => Boolean(row))
+      .sort((left, right) => {
+        const dateDiff = toYmd(right.date).localeCompare(toYmd(left.date));
+        if (dateDiff !== 0) {
+          return dateDiff;
+        }
+        return left.productName.localeCompare(right.productName);
+      });
+
+    const totalRows = rows.length;
+    const pagedRows = rows.slice(offset, offset + limit);
 
     const stats = rows.reduce(
       (acc, current) => {
@@ -1930,11 +2033,13 @@ export class ProcurementService {
     );
 
     return {
-      date,
-      rows,
-      pagination: getPaginationMeta(page, limit, total),
+      date: legacyDate || null,
+      dateFrom: dateFrom ?? null,
+      dateTo: dateTo ?? null,
+      rows: pagedRows,
+      pagination: getPaginationMeta(page, limit, totalRows),
       stats: {
-        totalProducts: total,
+        totalProducts: products.length,
         totalOpeningStock: toFixedQuantity(stats.totalOpeningStock),
         totalPurchased: toFixedQuantity(stats.totalPurchased),
         totalConsumption: toFixedQuantity(stats.totalConsumption),
@@ -2397,6 +2502,7 @@ export class ProcurementService {
   async createPurchaseOrder(payload: CreatePurchaseOrderPayload, createdByUserId: string | null) {
     const purchaseDate = payload.purchaseDate || getTodayDate();
     const purchaseType = this.resolvePurchaseType(payload.lines);
+    const purchaseSection = this.resolvePurchaseSection(payload.purchaseSection);
 
     const queryRunner = AppDataSource.createQueryRunner();
     await queryRunner.connect();
@@ -2423,6 +2529,7 @@ export class ProcurementService {
         supplierId: payload.supplierId,
         purchaseDate,
         purchaseType,
+        purchaseSection,
         totalAmount,
         note: payload.note?.trim() || null,
         invoiceImageUrl: payload.invoiceImageUrl?.trim() || null,
@@ -2448,6 +2555,7 @@ export class ProcurementService {
   async updatePurchaseOrder(id: string, payload: CreatePurchaseOrderPayload) {
     const purchaseDate = payload.purchaseDate || getTodayDate();
     const purchaseType = this.resolvePurchaseType(payload.lines);
+    const purchaseSection = this.resolvePurchaseSection(payload.purchaseSection);
 
     const queryRunner = AppDataSource.createQueryRunner();
     await queryRunner.connect();
@@ -2483,6 +2591,7 @@ export class ProcurementService {
       existingOrder.supplierId = payload.supplierId;
       existingOrder.purchaseDate = purchaseDate;
       existingOrder.purchaseType = purchaseType;
+      existingOrder.purchaseSection = purchaseSection;
       existingOrder.totalAmount = totalAmount;
       existingOrder.note = payload.note?.trim() || null;
       existingOrder.invoiceImageUrl = payload.invoiceImageUrl?.trim() || null;
@@ -2606,6 +2715,7 @@ export class ProcurementService {
           purchaseNumber: order.purchaseNumber,
           purchaseDate: order.purchaseDate,
           purchaseType: order.purchaseType,
+          purchaseSection: order.purchaseSection,
           supplierId: order.supplierId,
           supplierName: order.supplier?.name ?? "-",
           lineCount: lineCounts.total,
@@ -2655,6 +2765,7 @@ export class ProcurementService {
       purchaseNumber: order.purchaseNumber,
       purchaseDate: order.purchaseDate,
       purchaseType: order.purchaseType,
+      purchaseSection: order.purchaseSection,
       supplierId: order.supplierId,
       supplierName: order.supplier?.name ?? "-",
       supplierPhone: order.supplier?.phone ?? "-",
@@ -2890,6 +3001,7 @@ export class ProcurementService {
         purchaseNumber: order.purchaseNumber,
         purchaseDate: order.purchaseDate,
         purchaseType: order.purchaseType,
+        purchaseSection: order.purchaseSection,
         supplierName: order.supplier?.name ?? "-",
         totalAmount: toFixedPrice(toNumber(order.totalAmount)),
         createdByUserName: order.createdByUser?.fullName ?? null,

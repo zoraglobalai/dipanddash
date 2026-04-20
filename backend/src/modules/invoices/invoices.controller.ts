@@ -3,11 +3,28 @@ import { StatusCodes } from "http-status-codes";
 
 import { sendSuccess } from "../../common/api-response";
 import { AppError } from "../../errors/app-error";
+import { INVOICE_STATUSES, type InvoiceStatus } from "./invoices.constants";
 import { InvoicesService } from "./invoices.service";
 
 const parsePositiveInt = (value: unknown, fallback: number) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+};
+
+const parseStatusList = (value: unknown): InvoiceStatus[] | undefined => {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const tokens = value
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  if (!tokens.length) {
+    return undefined;
+  }
+  const allowed = new Set<InvoiceStatus>(INVOICE_STATUSES);
+  const statuses = tokens.filter((token): token is InvoiceStatus => allowed.has(token as InvoiceStatus));
+  return statuses.length ? statuses : undefined;
 };
 
 export class InvoicesController {
@@ -28,10 +45,16 @@ export class InvoicesController {
       {
         search: typeof req.query.search === "string" ? req.query.search : undefined,
         status: typeof req.query.status === "string" ? (req.query.status as never) : undefined,
+        statuses: parseStatusList(req.query.statuses),
         kitchenStatus:
           typeof req.query.kitchenStatus === "string" ? (req.query.kitchenStatus as never) : undefined,
         paymentMode:
           typeof req.query.paymentMode === "string" ? (req.query.paymentMode as never) : undefined,
+        orderType: typeof req.query.orderType === "string" ? (req.query.orderType as never) : undefined,
+        excludeOrderType:
+          typeof req.query.excludeOrderType === "string"
+            ? (req.query.excludeOrderType as never)
+            : undefined,
         staffId: typeof req.query.staffId === "string" ? req.query.staffId : undefined,
         dateFrom: typeof req.query.dateFrom === "string" ? req.query.dateFrom : undefined,
         dateTo: typeof req.query.dateTo === "string" ? req.query.dateTo : undefined,
@@ -48,6 +71,11 @@ export class InvoicesController {
     const data = await this.invoicesService.getInvoiceStats(
       {
         staffId: typeof req.query.staffId === "string" ? req.query.staffId : undefined,
+        orderType: typeof req.query.orderType === "string" ? (req.query.orderType as never) : undefined,
+        excludeOrderType:
+          typeof req.query.excludeOrderType === "string"
+            ? (req.query.excludeOrderType as never)
+            : undefined,
         dateFrom: typeof req.query.dateFrom === "string" ? req.query.dateFrom : undefined,
         dateTo: typeof req.query.dateTo === "string" ? req.query.dateTo : undefined
       },
@@ -78,7 +106,7 @@ export class InvoicesController {
       typeof req.body.reason === "string" ? req.body.reason : undefined,
       this.getContextUser(req)
     );
-    return sendSuccess(res, StatusCodes.OK, "Invoice cancelled successfully", { invoice });
+    return sendSuccess(res, StatusCodes.OK, "Invoice cancelled and removed successfully", { invoice });
   };
 
   refund = async (req: Request, res: Response): Promise<Response> => {
@@ -97,5 +125,10 @@ export class InvoicesController {
       this.getContextUser(req)
     );
     return sendSuccess(res, StatusCodes.OK, "Kitchen status updated successfully", { invoice });
+  };
+
+  delete = async (req: Request, res: Response): Promise<Response> => {
+    const result = await this.invoicesService.deleteInvoice(req.params.id, this.getContextUser(req));
+    return sendSuccess(res, StatusCodes.OK, "Invoice deleted successfully", result);
   };
 }

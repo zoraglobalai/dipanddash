@@ -346,6 +346,7 @@ export class PosCatalogService {
       controls: {
         isBillingEnabled: control?.isBillingEnabled ?? true,
         enforceDailyAllocation: false,
+        enforceIngredientStock: control?.enforceIngredientStock ?? true,
         reason: control?.reason ?? null,
         updatedAt: control?.updatedAt?.toISOString?.() ?? null
       }

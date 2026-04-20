@@ -184,6 +184,7 @@ export type IngredientAllocationStats = {
 export type PosBillingControl = {
   isBillingEnabled: boolean;
   enforceDailyAllocation: boolean;
+  enforceIngredientStock: boolean;
   reason: string | null;
   updatedAt: string;
   updatedByUserId?: string | null;

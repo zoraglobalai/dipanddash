@@ -150,6 +150,7 @@ export type CatalogSnapshot = {
   controls: {
     isBillingEnabled: boolean;
     enforceDailyAllocation: boolean;
+    enforceIngredientStock: boolean;
     reason: string | null;
     updatedAt: string | null;
   };
@@ -486,6 +487,7 @@ export type ClosingStatus = {
   posBillingControl: {
     isBillingEnabled: boolean;
     enforceDailyAllocation: boolean;
+    enforceIngredientStock: boolean;
     reason: string | null;
   };
   draft: {

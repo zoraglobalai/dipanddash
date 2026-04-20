@@ -9,6 +9,7 @@ import { InvoicesController } from "./invoices.controller";
 import {
   cancelInvoiceSchema,
   createInvoiceFromSyncSchema,
+  deleteInvoiceSchema,
   invoiceIdSchema,
   invoiceListSchema,
   invoiceStatsSchema,
@@ -75,6 +76,14 @@ router.post(
   authorizeRoles(UserRole.ADMIN, UserRole.MANAGER, UserRole.ACCOUNTANT),
   validateRequest(updateKitchenStatusSchema),
   asyncHandler(invoicesController.updateKitchenStatus)
+);
+
+router.delete(
+  "/:id",
+  authorizeScopedAdminAnyModuleAccess("orders", "invoices"),
+  authorizeRoles(UserRole.ADMIN, UserRole.MANAGER, UserRole.ACCOUNTANT),
+  validateRequest(deleteInvoiceSchema),
+  asyncHandler(invoicesController.delete)
 );
 
 export const invoicesRoutes = router;

@@ -2,6 +2,8 @@ export type GamingBookingType = "snooker" | "console";
 export type GamingBookingStatus = "upcoming" | "ongoing" | "completed" | "cancelled";
 export type GamingPaymentStatus = "pending" | "paid" | "refunded";
 export type GamingPaymentMode = "cash" | "upi" | "card";
+export type GamingFoodInvoiceStatus = "none" | "pending" | "paid" | "cancelled";
+export type GamingBookingCustomer = { name: string; phone: string };
 
 export type GamingPagination = {
   page: number;
@@ -18,7 +20,7 @@ export type GamingBookingRow = {
   resourceLabel: string;
   resourceCodes?: string[];
   resourceLabels?: string[];
-  customers: Array<{ name: string; phone: string }>;
+  customers: GamingBookingCustomer[];
   customerCount: number;
   primaryCustomerName: string;
   primaryCustomerPhone: string;
@@ -38,7 +40,7 @@ export type GamingBookingRow = {
   paymentMode: GamingPaymentMode | null;
   foodOrderReference: string | null;
   foodInvoiceNumber: string | null;
-  foodInvoiceStatus: "none" | "pending" | "paid" | "cancelled";
+  foodInvoiceStatus: GamingFoodInvoiceStatus;
   foodAndBeverageAmount: number;
   bookingChannel: string | null;
   sourceDeviceId: string | null;
@@ -49,6 +51,34 @@ export type GamingBookingRow = {
   createdAt: string;
   updatedAt: string;
 };
+
+export type GamingCreateBookingPayload = {
+  bookingType: GamingBookingType;
+  resourceCode: string;
+  resourceCodes?: string[];
+  playerCount?: number;
+  checkInAt?: string;
+  checkOutAt?: string;
+  hourlyRate: number;
+  customers: GamingBookingCustomer[];
+  bookingChannel?: string;
+  note?: string;
+  sourceDeviceId?: string;
+  status?: GamingBookingStatus;
+  paymentStatus?: GamingPaymentStatus;
+  paymentMode?: GamingPaymentMode;
+  finalAmount?: number;
+  systemCalculatedAmount?: number;
+  extraMemberCount?: number;
+  extraMemberCharge?: number;
+  amountOverrideReason?: string;
+  foodOrderReference?: string;
+  foodInvoiceNumber?: string;
+  foodInvoiceStatus?: GamingFoodInvoiceStatus;
+  foodAndBeverageAmount?: number;
+};
+
+export type GamingUpdateBookingPayload = Partial<Omit<GamingCreateBookingPayload, "bookingNumber" | "sourceDeviceId">>;
 
 export type GamingStats = {
   totals: {

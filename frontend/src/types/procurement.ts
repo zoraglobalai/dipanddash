@@ -23,6 +23,7 @@ export type ProductUnit =
 
 export type PurchaseLineType = "ingredient" | "product";
 export type PurchaseOrderType = "ingredient" | "product" | "mixed";
+export type PurchaseSection = "dip_and_dash" | "gaming";
 export type StockHealth = "LOW_STOCK" | "HEALTHY";
 export type ProductExpiryStatus = "NO_EXPIRY" | "FRESH" | "EXPIRING_SOON" | "EXPIRED";
 export type ProductTargetSection = "dip_and_dash" | "gaming" | "both";
@@ -181,6 +182,7 @@ export type PurchaseOrderSummary = {
   purchaseNumber: string;
   purchaseDate: string;
   purchaseType: PurchaseOrderType;
+  purchaseSection: PurchaseSection;
   supplierId: string;
   supplierName: string;
   lineCount: number;
@@ -237,7 +239,9 @@ export type ProductDayLedgerRow = {
 };
 
 export type ProductDayLedgerResponse = {
-  date: string;
+  date: string | null;
+  dateFrom?: string | null;
+  dateTo?: string | null;
   rows: ProductDayLedgerRow[];
   pagination: PaginationData;
   stats: {
@@ -256,6 +260,7 @@ export type PurchaseOrderDetail = {
   purchaseNumber: string;
   purchaseDate: string;
   purchaseType: PurchaseOrderType;
+  purchaseSection: PurchaseSection;
   supplierId: string;
   supplierName: string;
   supplierPhone: string;
@@ -292,6 +297,7 @@ export type ProcurementStatsResponse = {
     purchaseNumber: string;
     purchaseDate: string;
     purchaseType: PurchaseOrderType;
+    purchaseSection: PurchaseSection;
     supplierName: string;
     totalAmount: number;
     createdByUserName: string | null;
@@ -342,6 +348,7 @@ export type CreatePurchaseLineInput = {
 export type CreatePurchaseOrderInput = {
   supplierId: string;
   purchaseDate?: string;
+  purchaseSection: PurchaseSection;
   note?: string;
   invoiceImageUrl?: string;
   lines: CreatePurchaseLineInput[];

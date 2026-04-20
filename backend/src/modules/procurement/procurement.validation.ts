@@ -5,7 +5,8 @@ import {
   PRODUCT_TARGET_SECTIONS,
   PRODUCT_UNITS,
   PURCHASE_LINE_TYPES,
-  PURCHASE_ORDER_TYPES
+  PURCHASE_ORDER_TYPES,
+  PURCHASE_SECTIONS
 } from "./procurement.constants";
 
 const datePattern = /^\d{4}-\d{2}-\d{2}$/;
@@ -74,6 +75,9 @@ export const productListSchema = z.object({
 export const productLedgerSchema = z.object({
   query: z.object({
     date: z.string().regex(datePattern, "Date must be in YYYY-MM-DD format").optional(),
+    dateFrom: z.string().regex(datePattern, "Date must be in YYYY-MM-DD format").optional(),
+    dateTo: z.string().regex(datePattern, "Date must be in YYYY-MM-DD format").optional(),
+    productId: z.string().uuid("Invalid product id").optional(),
     search: z.string().trim().optional(),
     targetSection: z.enum(PRODUCT_TARGET_SECTIONS).optional(),
     page: z.coerce.number().int().min(1).default(1),
@@ -170,6 +174,7 @@ export const createPurchaseOrderSchema = z.object({
   body: z.object({
     supplierId: z.string().uuid("Invalid supplier id"),
     purchaseDate: z.string().regex(datePattern, "Date must be in YYYY-MM-DD format").optional(),
+    purchaseSection: z.enum(PURCHASE_SECTIONS).default("dip_and_dash"),
     note: z.string().trim().max(500).optional(),
     invoiceImageUrl: z.string().trim().max(600, "Invoice image URL is too long").optional(),
     lines: z.array(purchaseLineSchema).min(1, "At least one purchase line is required")
@@ -183,6 +188,7 @@ export const updatePurchaseOrderSchema = z.object({
   body: z.object({
     supplierId: z.string().uuid("Invalid supplier id"),
     purchaseDate: z.string().regex(datePattern, "Date must be in YYYY-MM-DD format").optional(),
+    purchaseSection: z.enum(PURCHASE_SECTIONS).default("dip_and_dash"),
     note: z.string().trim().max(500).optional(),
     invoiceImageUrl: z.string().trim().max(600, "Invoice image URL is too long").optional(),
     lines: z.array(purchaseLineSchema).min(1, "At least one purchase line is required")

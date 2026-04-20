@@ -1,9 +1,12 @@
 export type SalesStatsCards = {
   totalSales: number;
+  dipAndDashSales: number;
   netRevenue: number;
   billedSales: number;
   excessAmount: number;
   totalPurchaseAmount: number;
+  dipAndDashPurchaseAmount: number;
+  snookerPurchaseAmount: number;
   totalOrders: number;
   averageOrderValue: number;
   totalDiscount: number;
@@ -11,12 +14,16 @@ export type SalesStatsCards = {
   uniqueCustomers: number;
   previousPeriodSales: number;
   previousPeriodNetRevenue: number;
+  previousPeriodPurchaseAmount: number;
   salesGrowthPercentage: number | null;
   netRevenueGrowthPercentage: number | null;
   cashSales: number;
   cardSales: number;
   upiSales: number;
   mixedSales: number;
+  snookerGamingRevenue: number;
+  snookerGamingProfit: number;
+  productSalesProfit: number;
 };
 
 export type SalesStatsResponse = {

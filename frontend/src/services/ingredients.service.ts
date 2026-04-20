@@ -8,6 +8,7 @@ import type {
   IngredientStockDetails,
   IngredientStockLog,
   IngredientCategoryKind,
+  PosBillingControl,
   IngredientUnit,
   PaginationData,
   StockAuditData
@@ -143,6 +144,19 @@ export const ingredientsService = {
   },
   getStockAudit: async (params: { dateFrom?: string; dateTo?: string; staffId?: string; page?: number; limit?: number }) => {
     const response = await apiClient.get<ApiSuccess<StockAuditResponse>>("/ingredients/stock-audit", { params });
+    return response.data;
+  },
+  getPosBillingControl: async () => {
+    const response = await apiClient.get<ApiSuccess<PosBillingControl>>("/ingredients/pos-billing-control");
+    return response.data;
+  },
+  updatePosBillingControl: async (payload: {
+    isBillingEnabled?: boolean;
+    enforceDailyAllocation?: boolean;
+    enforceIngredientStock?: boolean;
+    reason?: string;
+  }) => {
+    const response = await apiClient.patch<ApiSuccess<PosBillingControl>>("/ingredients/pos-billing-control", payload);
     return response.data;
   },
   reopenClosingReport: async (reportId: string) => {

@@ -15,8 +15,11 @@ export const invoiceListSchema = z.object({
   query: z.object({
     search: z.string().trim().optional(),
     status: z.enum(INVOICE_STATUSES).optional(),
+    statuses: z.string().trim().optional(),
     kitchenStatus: z.enum(KITCHEN_STATUSES).optional(),
     paymentMode: z.enum(PAYMENT_MODES).optional(),
+    orderType: z.enum(INVOICE_ORDER_TYPES).optional(),
+    excludeOrderType: z.enum(INVOICE_ORDER_TYPES).optional(),
     staffId: z.string().uuid().optional(),
     dateFrom: z.string().datetime().optional(),
     dateTo: z.string().datetime().optional(),
@@ -30,6 +33,8 @@ export const invoiceListSchema = z.object({
 export const invoiceStatsSchema = z.object({
   query: z.object({
     staffId: z.string().uuid().optional(),
+    orderType: z.enum(INVOICE_ORDER_TYPES).optional(),
+    excludeOrderType: z.enum(INVOICE_ORDER_TYPES).optional(),
     dateFrom: z.string().datetime().optional(),
     dateTo: z.string().datetime().optional()
   }),
@@ -72,6 +77,14 @@ export const updateKitchenStatusSchema = z.object({
   body: z.object({
     kitchenStatus: z.enum(KITCHEN_STATUSES)
   }),
+  query: z.object({}).optional()
+});
+
+export const deleteInvoiceSchema = z.object({
+  params: z.object({
+    id: z.string().uuid("Invalid invoice id")
+  }),
+  body: z.object({}).optional(),
   query: z.object({}).optional()
 });
 
