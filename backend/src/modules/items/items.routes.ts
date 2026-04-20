@@ -15,19 +15,24 @@ import {
   createComboSchema,
   createItemCategorySchema,
   createItemSchema,
+  createSauceSchema,
   deleteAddOnSchema,
   deleteComboSchema,
   deleteItemCategorySchema,
   deleteItemSchema,
+  getSauceSchema,
   getAddOnSchema,
   getComboSchema,
   getItemSchema,
   itemCategoryListSchema,
   itemListSchema,
+  makeSauceBatchSchema,
+  sauceListSchema,
   updateAddOnSchema,
   updateComboSchema,
   updateItemCategorySchema,
-  updateItemSchema
+  updateItemSchema,
+  updateSauceSchema
 } from "./items.validation";
 
 const router = Router();
@@ -39,6 +44,7 @@ router.get("/meta/ingredients", asyncHandler(itemsController.getMetaIngredients)
 router.get("/meta/categories", asyncHandler(itemsController.getMetaCategories));
 router.get("/meta/units", asyncHandler(itemsController.getMetaUnits));
 router.get("/meta/items", asyncHandler(itemsController.getMetaItems));
+router.get("/meta/sauces", asyncHandler(itemsController.getMetaSauces));
 router.post("/upload-image", itemImageUpload.single("image"), asyncHandler(itemsController.uploadImage));
 router.get("/bulk/template", asyncHandler(itemsController.downloadItemBulkTemplate));
 router.post("/bulk/import", itemBulkUpload.single("file"), asyncHandler(itemsController.bulkImportItems));
@@ -61,6 +67,17 @@ router.get("/add-ons/:id", validateRequest(getAddOnSchema), asyncHandler(itemsCo
 router.post("/add-ons", validateRequest(createAddOnSchema), asyncHandler(itemsController.createAddOn));
 router.patch("/add-ons/:id", validateRequest(updateAddOnSchema), asyncHandler(itemsController.updateAddOn));
 router.delete("/add-ons/:id", validateRequest(deleteAddOnSchema), asyncHandler(itemsController.deleteAddOn));
+
+router.get("/sauces", validateRequest(sauceListSchema), asyncHandler(itemsController.listSauces));
+router.post("/sauces", validateRequest(createSauceSchema), asyncHandler(itemsController.createSauce));
+router.post(
+  "/sauces/:id/make-batch",
+  validateRequest(makeSauceBatchSchema),
+  asyncHandler(itemsController.makeSauceBatch)
+);
+router.get("/sauces/:id", validateRequest(getSauceSchema), asyncHandler(itemsController.getSauce));
+router.patch("/sauces/:id", validateRequest(updateSauceSchema), asyncHandler(itemsController.updateSauce));
+router.delete("/sauces/:id", validateRequest(getSauceSchema), asyncHandler(itemsController.deleteSauce));
 
 router.get("/combos", validateRequest(comboListSchema), asyncHandler(itemsController.listCombos));
 router.get("/combos/:id", validateRequest(getComboSchema), asyncHandler(itemsController.getCombo));

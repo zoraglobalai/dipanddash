@@ -11,9 +11,13 @@ import type {
   ItemDetail,
   ItemListItem,
   ItemMetaIngredient,
+  ItemMetaSauce,
   ItemPagination,
   ItemRecipeRow,
-  ItemUnitMeta
+  ItemUnitMeta,
+  SauceBatchResult,
+  SauceDetail,
+  SauceListItem
 } from "@/types/item";
 import type { IngredientUnit } from "@/types/ingredient";
 
@@ -34,6 +38,11 @@ type AddOnListResponse = {
 
 type ComboListResponse = {
   combos: ComboListItem[];
+  pagination: ItemPagination;
+};
+
+type SauceListResponse = {
+  sauces: SauceListItem[];
   pagination: ItemPagination;
 };
 
@@ -69,6 +78,10 @@ export const itemsService = {
   },
   getMetaItems: async () => {
     const response = await apiClient.get<ApiSuccess<{ items: ItemListItem[] }>>("/items/meta/items");
+    return response.data;
+  },
+  getMetaSauces: async () => {
+    const response = await apiClient.get<ApiSuccess<{ sauces: ItemMetaSauce[] }>>("/items/meta/sauces");
     return response.data;
   },
   downloadBulkTemplate: async () => {
@@ -127,7 +140,8 @@ export const itemsService = {
     gstPercentage: number;
     imageUrl?: string;
     note?: string;
-    ingredients: ItemRecipeRow[];
+    ingredients?: ItemRecipeRow[];
+    sauces?: Array<{ sauceId: string; quantity: number; unit: IngredientUnit }>;
   }) => {
     const response = await apiClient.post<ApiSuccess<{ item: ItemDetail }>>("/items", payload);
     return response.data;
@@ -143,6 +157,7 @@ export const itemsService = {
       note?: string;
       isActive?: boolean;
       ingredients?: ItemRecipeRow[];
+      sauces?: Array<{ sauceId: string; quantity: number; unit: IngredientUnit }>;
     }
   ) => {
     const response = await apiClient.patch<ApiSuccess<{ item: ItemDetail }>>(`/items/${id}`, payload);
@@ -188,6 +203,49 @@ export const itemsService = {
   },
   deleteAddOn: async (id: string) => {
     const response = await apiClient.delete<ApiSuccess<{ addOn: AddOnDetail }>>(`/items/add-ons/${id}`);
+    return response.data;
+  },
+  getSauces: async (params?: { search?: string; includeInactive?: boolean; page?: number; limit?: number }) => {
+    const response = await apiClient.get<ApiSuccess<SauceListResponse>>("/items/sauces", { params });
+    return response.data;
+  },
+  getSauce: async (id: string) => {
+    const response = await apiClient.get<ApiSuccess<{ sauce: SauceDetail }>>(`/items/sauces/${id}`);
+    return response.data;
+  },
+  createSauce: async (payload: {
+    name: string;
+    outputUnit: IngredientUnit;
+    baseBatchQuantity: number;
+    note?: string;
+    ingredients: ItemRecipeRow[];
+  }) => {
+    const response = await apiClient.post<ApiSuccess<{ sauce: SauceDetail }>>("/items/sauces", payload);
+    return response.data;
+  },
+  updateSauce: async (
+    id: string,
+    payload: {
+      name?: string;
+      baseBatchQuantity?: number;
+      note?: string;
+      isActive?: boolean;
+      ingredients?: ItemRecipeRow[];
+    }
+  ) => {
+    const response = await apiClient.patch<ApiSuccess<{ sauce: SauceDetail }>>(`/items/sauces/${id}`, payload);
+    return response.data;
+  },
+  deleteSauce: async (id: string) => {
+    const response = await apiClient.delete<
+      ApiSuccess<{ sauce: Pick<SauceListItem, "id" | "name" | "outputIngredientId"> }>
+    >(`/items/sauces/${id}`);
+    return response.data;
+  },
+  makeSauceBatch: async (id: string, payload: { producedQuantity: number; note?: string }) => {
+    const response = await apiClient.post<
+      ApiSuccess<{ sauce: SauceListItem; batch: SauceBatchResult }>
+    >(`/items/sauces/${id}/make-batch`, payload);
     return response.data;
   },
   getCombos: async (params?: { search?: string; includeInactive?: boolean; page?: number; limit?: number }) => {

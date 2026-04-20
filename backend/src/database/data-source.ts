@@ -16,10 +16,14 @@ import { StaffClosingReport } from "../modules/ingredients/staff-closing-report.
 import { ItemCategory } from "../modules/items/item-category.entity";
 import { Item } from "../modules/items/item.entity";
 import { ItemIngredient } from "../modules/items/item-ingredient.entity";
+import { ItemSauce } from "../modules/items/item-sauce.entity";
 import { AddOn } from "../modules/items/add-on.entity";
 import { AddOnIngredient } from "../modules/items/add-on-ingredient.entity";
 import { Combo } from "../modules/items/combo.entity";
 import { ComboItem } from "../modules/items/combo-item.entity";
+import { SauceRecipe } from "../modules/items/sauce-recipe.entity";
+import { SauceRecipeIngredient } from "../modules/items/sauce-recipe-ingredient.entity";
+import { SauceBatch } from "../modules/items/sauce-batch.entity";
 import { Coupon } from "../modules/offers/coupon.entity";
 import { CouponUsage } from "../modules/offers/coupon-usage.entity";
 import { AuthSession } from "../modules/auth/auth-session.entity";
@@ -33,6 +37,7 @@ import { SyncReceipt } from "../modules/pos-sync/sync-receipt.entity";
 import { GamingBooking } from "../modules/gaming/gaming-booking.entity";
 import { Supplier } from "../modules/procurement/supplier.entity";
 import { Product } from "../modules/procurement/product.entity";
+import { ProductDayLedgerAdjustment } from "../modules/procurement/product-day-ledger-adjustment.entity";
 import { PurchaseOrder } from "../modules/procurement/purchase-order.entity";
 import { PurchaseOrderLine } from "../modules/procurement/purchase-order-line.entity";
 import { CashAudit } from "../modules/cash-audit/cash-audit.entity";
@@ -56,10 +61,14 @@ const entities = [
   ItemCategory,
   Item,
   ItemIngredient,
+  ItemSauce,
   AddOn,
   AddOnIngredient,
   Combo,
   ComboItem,
+  SauceRecipe,
+  SauceRecipeIngredient,
+  SauceBatch,
   Coupon,
   CouponUsage,
   AuthSession,
@@ -73,6 +82,7 @@ const entities = [
   GamingBooking,
   Supplier,
   Product,
+  ProductDayLedgerAdjustment,
   PurchaseOrder,
   PurchaseOrderLine,
   CashAudit,

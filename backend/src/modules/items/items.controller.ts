@@ -155,6 +155,45 @@ export class ItemsController {
     return sendSuccess(res, StatusCodes.OK, "Add-on deleted successfully", { addOn });
   };
 
+  listSauces = async (req: Request, res: Response): Promise<Response> => {
+    const data = await this.itemsService.listSauces({
+      search: typeof req.query.search === "string" ? req.query.search : undefined,
+      includeInactive: parseBoolean(req.query.includeInactive, false),
+      page: parsePositiveInt(req.query.page, 1),
+      limit: parsePositiveInt(req.query.limit, 10)
+    });
+    return sendSuccess(res, StatusCodes.OK, "Sauces fetched successfully", data);
+  };
+
+  getSauce = async (req: Request, res: Response): Promise<Response> => {
+    const sauce = await this.itemsService.getSauce(req.params.id);
+    return sendSuccess(res, StatusCodes.OK, "Sauce fetched successfully", { sauce });
+  };
+
+  createSauce = async (req: Request, res: Response): Promise<Response> => {
+    const sauce = await this.itemsService.createSauce(req.body);
+    return sendSuccess(res, StatusCodes.CREATED, "Sauce created successfully", { sauce });
+  };
+
+  updateSauce = async (req: Request, res: Response): Promise<Response> => {
+    const sauce = await this.itemsService.updateSauce(req.params.id, req.body);
+    return sendSuccess(res, StatusCodes.OK, "Sauce updated successfully", { sauce });
+  };
+
+  deleteSauce = async (req: Request, res: Response): Promise<Response> => {
+    const sauce = await this.itemsService.deleteSauce(req.params.id);
+    return sendSuccess(res, StatusCodes.OK, "Sauce deleted successfully", { sauce });
+  };
+
+  makeSauceBatch = async (req: Request, res: Response): Promise<Response> => {
+    const data = await this.itemsService.makeSauceBatch(req.params.id, {
+      producedQuantity: req.body.producedQuantity,
+      note: req.body.note,
+      createdByUserId: req.user?.id ?? null
+    });
+    return sendSuccess(res, StatusCodes.CREATED, "Sauce batch recorded successfully", data);
+  };
+
   listCombos = async (req: Request, res: Response): Promise<Response> => {
     const data = await this.itemsService.listCombos({
       search: typeof req.query.search === "string" ? req.query.search : undefined,
@@ -203,5 +242,10 @@ export class ItemsController {
   getMetaItems = async (_req: Request, res: Response): Promise<Response> => {
     const items = await this.itemsService.getMetaItems();
     return sendSuccess(res, StatusCodes.OK, "Item metadata fetched successfully", { items });
+  };
+
+  getMetaSauces = async (_req: Request, res: Response): Promise<Response> => {
+    const sauces = await this.itemsService.getMetaSauces();
+    return sendSuccess(res, StatusCodes.OK, "Sauce metadata fetched successfully", { sauces });
   };
 }

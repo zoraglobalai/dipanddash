@@ -35,6 +35,8 @@ import { AddOnFormModal } from "@/features/items/components/AddOnFormModal";
 import { ComboFormModal } from "@/features/items/components/ComboFormModal";
 import { ItemCategoryFormModal } from "@/features/items/components/ItemCategoryFormModal";
 import { ItemFormModal } from "@/features/items/components/ItemFormModal";
+import { SauceBatchModal } from "@/features/items/components/SauceBatchModal";
+import { SauceFormModal } from "@/features/items/components/SauceFormModal";
 import { formatCurrency } from "@/features/items/units";
 import { useAppToast } from "@/hooks/useAppToast";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
@@ -48,8 +50,11 @@ import type {
   ItemDetail,
   ItemListItem,
   ItemMetaIngredient,
+  ItemMetaSauce,
   ItemPagination,
-  ItemUnitMeta
+  ItemUnitMeta,
+  SauceDetail,
+  SauceListItem
 } from "@/types/item";
 import { UserRole } from "@/types/role";
 import { extractErrorMessage } from "@/utils/api-error";
@@ -128,6 +133,7 @@ export const ItemEntryPage = () => {
 
   const [metaCategories, setMetaCategories] = useState<ItemCategory[]>([]);
   const [metaIngredients, setMetaIngredients] = useState<ItemMetaIngredient[]>([]);
+  const [metaSauces, setMetaSauces] = useState<ItemMetaSauce[]>([]);
   const [metaUnits, setMetaUnits] = useState<ItemUnitMeta[]>([]);
   const [comboItemOptions, setComboItemOptions] = useState<ItemListItem[]>([]);
 
@@ -173,6 +179,22 @@ export const ItemEntryPage = () => {
   const addOnModal = useDisclosure();
   const deleteAddOnDialog = useDisclosure();
 
+  const [sauceRows, setSauceRows] = useState<SauceListItem[]>([]);
+  const [saucePagination, setSaucePagination] = useState<ItemPagination>(defaultPagination);
+  const [sauceLoading, setSauceLoading] = useState(true);
+  const [sauceSearch, setSauceSearch] = useState("");
+  const debouncedSauceSearch = useDebouncedValue(sauceSearch, 400);
+  const [saucePage, setSaucePage] = useState(1);
+  const [sauceLimit, setSauceLimit] = useState(5);
+  const [sauceMutationLoading, setSauceMutationLoading] = useState(false);
+  const [sauceBatchLoading, setSauceBatchLoading] = useState(false);
+  const [selectedSauce, setSelectedSauce] = useState<SauceDetail | null>(null);
+  const [selectedSauceRow, setSelectedSauceRow] = useState<SauceListItem | null>(null);
+  const [selectedSauceForBatch, setSelectedSauceForBatch] = useState<SauceListItem | SauceDetail | null>(null);
+  const sauceModal = useDisclosure();
+  const deleteSauceDialog = useDisclosure();
+  const sauceBatchModal = useDisclosure();
+
   const [comboRows, setComboRows] = useState<ComboListItem[]>([]);
   const [comboPagination, setComboPagination] = useState<ItemPagination>(defaultPagination);
   const [comboLoading, setComboLoading] = useState(true);
@@ -199,12 +221,14 @@ export const ItemEntryPage = () => {
 
   const fetchMeta = useCallback(async () => {
     try {
-      const [ingredientsResponse, categoriesResponse, unitsResponse] = await Promise.all([
+      const [ingredientsResponse, saucesResponse, categoriesResponse, unitsResponse] = await Promise.all([
         itemsService.getMetaIngredients(),
+        itemsService.getMetaSauces(),
         itemsService.getMetaCategories(),
         itemsService.getMetaUnits()
       ]);
       setMetaIngredients(ingredientsResponse.data.ingredients);
+      setMetaSauces(saucesResponse.data.sauces);
       setMetaCategories(categoriesResponse.data.categories);
       setMetaUnits(unitsResponse.data.units);
     } catch (error) {
@@ -276,6 +300,24 @@ export const ItemEntryPage = () => {
     }
   }, [addOnLimit, addOnPage, debouncedAddOnSearch, toast]);
 
+  const fetchSauces = useCallback(async () => {
+    setSauceLoading(true);
+    try {
+      const response = await itemsService.getSauces({
+        includeInactive: true,
+        search: debouncedSauceSearch || undefined,
+        page: saucePage,
+        limit: sauceLimit
+      });
+      setSauceRows(response.data.sauces);
+      setSaucePagination(response.data.pagination);
+    } catch (error) {
+      toast.error(extractErrorMessage(error, "Unable to fetch sauces."));
+    } finally {
+      setSauceLoading(false);
+    }
+  }, [debouncedSauceSearch, sauceLimit, saucePage, toast]);
+
   const fetchCombos = useCallback(async () => {
     setComboLoading(true);
     try {
@@ -312,6 +354,10 @@ export const ItemEntryPage = () => {
   }, [fetchAddOns]);
 
   useEffect(() => {
+    void fetchSauces();
+  }, [fetchSauces]);
+
+  useEffect(() => {
     void fetchCombos();
   }, [fetchCombos]);
 
@@ -328,12 +374,24 @@ export const ItemEntryPage = () => {
   }, [debouncedAddOnSearch]);
 
   useEffect(() => {
+    setSaucePage(1);
+  }, [debouncedSauceSearch]);
+
+  useEffect(() => {
     setComboPage(1);
   }, [debouncedComboSearch]);
 
   const refreshAll = useCallback(async () => {
-    await Promise.all([fetchMeta(), fetchCategories(), fetchItems(), fetchAddOns(), fetchCombos(), fetchComboItemOptions()]);
-  }, [fetchAddOns, fetchCategories, fetchComboItemOptions, fetchCombos, fetchItems, fetchMeta]);
+    await Promise.all([
+      fetchMeta(),
+      fetchCategories(),
+      fetchItems(),
+      fetchAddOns(),
+      fetchSauces(),
+      fetchCombos(),
+      fetchComboItemOptions()
+    ]);
+  }, [fetchAddOns, fetchCategories, fetchComboItemOptions, fetchCombos, fetchItems, fetchMeta, fetchSauces]);
 
   const openItemBulkUploadPicker = useCallback(() => {
     itemBulkUploadInputRef.current?.click();
@@ -465,6 +523,7 @@ export const ItemEntryPage = () => {
       note?: string;
       isActive?: boolean;
       ingredients: { ingredientId: string; quantity: number; unit: ItemMetaIngredient["unit"] }[];
+      sauces: { sauceId: string; quantity: number; unit: ItemMetaIngredient["unit"] }[];
     }) => {
       setItemMutationLoading(true);
       try {
@@ -600,6 +659,114 @@ export const ItemEntryPage = () => {
       });
     },
     [fetchAddOns, runRowAction, toast]
+  );
+
+  const openEditSauce = useCallback(
+    async (row: SauceListItem) => {
+      setSauceMutationLoading(true);
+      try {
+        const response = await itemsService.getSauce(row.id);
+        setSelectedSauce(response.data.sauce);
+        sauceModal.onOpen();
+      } catch (error) {
+        toast.error(extractErrorMessage(error, "Unable to load sauce details."));
+      } finally {
+        setSauceMutationLoading(false);
+      }
+    },
+    [sauceModal, toast]
+  );
+
+  const handleSauceSubmit = useCallback(
+    async (values: {
+      name: string;
+      outputUnit: ItemMetaIngredient["unit"];
+      baseBatchQuantity: number;
+      note?: string;
+      isActive?: boolean;
+      ingredients: { ingredientId: string; quantity: number; unit: ItemMetaIngredient["unit"] }[];
+    }) => {
+      setSauceMutationLoading(true);
+      try {
+        if (selectedSauce) {
+          const response = await itemsService.updateSauce(selectedSauce.id, {
+            name: values.name,
+            baseBatchQuantity: values.baseBatchQuantity,
+            note: values.note,
+            isActive: values.isActive,
+            ingredients: values.ingredients
+          });
+          toast.success(response.message);
+        } else {
+          const response = await itemsService.createSauce(values);
+          toast.success(response.message);
+        }
+
+        sauceModal.onClose();
+        setSelectedSauce(null);
+        await Promise.all([fetchSauces(), fetchMeta()]);
+      } catch (error) {
+        toast.error(extractErrorMessage(error, "Unable to save sauce recipe."));
+      } finally {
+        setSauceMutationLoading(false);
+      }
+    },
+    [fetchMeta, fetchSauces, sauceModal, selectedSauce, toast]
+  );
+
+  const handleDeleteSauce = useCallback(async () => {
+    if (!selectedSauceRow) {
+      return;
+    }
+
+    setSauceMutationLoading(true);
+    try {
+      const response = await itemsService.deleteSauce(selectedSauceRow.id);
+      toast.success(response.message);
+      deleteSauceDialog.onClose();
+      await Promise.all([fetchSauces(), fetchMeta()]);
+    } catch (error) {
+      toast.error(extractErrorMessage(error, "Unable to delete sauce."));
+    } finally {
+      setSauceMutationLoading(false);
+    }
+  }, [deleteSauceDialog, fetchMeta, fetchSauces, selectedSauceRow, toast]);
+
+  const handleToggleSauceStatus = useCallback(
+    async (row: SauceListItem, nextStatus: boolean) => {
+      await runRowAction(`sauce-status-${row.id}`, async () => {
+        try {
+          const response = await itemsService.updateSauce(row.id, { isActive: nextStatus });
+          toast.success(response.message);
+          await Promise.all([fetchSauces(), fetchMeta()]);
+        } catch (error) {
+          toast.error(extractErrorMessage(error, "Unable to update sauce status."));
+        }
+      });
+    },
+    [fetchMeta, fetchSauces, runRowAction, toast]
+  );
+
+  const handleSauceBatchSubmit = useCallback(
+    async (values: { producedQuantity: number; note?: string }) => {
+      if (!selectedSauceForBatch) {
+        return;
+      }
+
+      setSauceBatchLoading(true);
+      try {
+        const response = await itemsService.makeSauceBatch(selectedSauceForBatch.id, values);
+        toast.success(response.message);
+        sauceBatchModal.onClose();
+        setSelectedSauceForBatch(null);
+        await Promise.all([fetchSauces(), fetchMeta()]);
+      } catch (error) {
+        toast.error(extractErrorMessage(error, "Unable to record sauce batch."));
+      } finally {
+        setSauceBatchLoading(false);
+      }
+    },
+    [fetchMeta, fetchSauces, sauceBatchModal, selectedSauceForBatch, toast]
   );
 
   const openEditCombo = useCallback(
@@ -928,6 +1095,108 @@ export const ItemEntryPage = () => {
     [deleteAddOnDialog, handleToggleAddOnStatus, openEditAddOn, rowActionLoading]
   );
 
+  const sauceColumns = useMemo(
+    () =>
+      [
+        {
+          key: "name",
+          header: "Sauce",
+          render: (row: SauceListItem) => (
+            <VStack align="start" spacing={0}>
+              <Text fontWeight={700}>{row.name}</Text>
+              <Text fontSize="sm" color="#725D53">
+                {row.ingredientCount} ingredients
+              </Text>
+            </VStack>
+          )
+        },
+        {
+          key: "output",
+          header: "Output",
+          render: (row: SauceListItem) => (
+            <Text fontWeight={600}>
+              {row.baseBatchQuantity} {row.outputUnit.toUpperCase()}
+            </Text>
+          )
+        },
+        {
+          key: "cost",
+          header: "Est. Cost",
+          render: (row: SauceListItem) => (
+            <VStack align="start" spacing={0}>
+              <Text fontWeight={600}>{formatCurrency(row.estimatedBatchCost)}</Text>
+              <Text fontSize="sm" color="#725D53">
+                {formatCurrency(row.estimatedUnitCost)} / {row.outputUnit.toUpperCase()}
+              </Text>
+            </VStack>
+          )
+        },
+        {
+          key: "stock",
+          header: "Current Stock",
+          render: (row: SauceListItem) => (
+            <Text fontWeight={700}>
+              {row.totalStock} {row.outputUnit.toUpperCase()}
+            </Text>
+          )
+        },
+        {
+          key: "status",
+          header: "Status",
+          render: (row: SauceListItem) => <ActiveBadge isActive={row.isActive} />
+        },
+        {
+          key: "availability",
+          header: "Enable",
+          render: (row: SauceListItem) => (
+            <Switch
+              colorScheme="brand"
+              isChecked={row.isActive}
+              isDisabled={Boolean(rowActionLoading[`sauce-status-${row.id}`])}
+              onChange={(event) => void handleToggleSauceStatus(row, event.target.checked)}
+            />
+          )
+        },
+        {
+          key: "actions",
+          header: "Actions",
+          render: (row: SauceListItem) => (
+            <HStack spacing={2} flexWrap="nowrap">
+              <AppButton
+                size="xs"
+                variant="outline"
+                onClick={() => {
+                  setSelectedSauceForBatch(row);
+                  sauceBatchModal.onOpen();
+                }}
+              >
+                Batch
+              </AppButton>
+              <ActionIconButton
+                aria-label={`Edit ${row.name}`}
+                icon={<Edit2 size={16} />}
+                size="sm"
+                variant="outline"
+                onClick={() => void openEditSauce(row)}
+              />
+              <ActionIconButton
+                aria-label={`Delete ${row.name}`}
+                icon={<Trash2 size={16} />}
+                size="sm"
+                variant="outline"
+                colorScheme="red"
+                onClick={() => {
+                  setSelectedSauceRow(row);
+                  deleteSauceDialog.onOpen();
+                }}
+              />
+            </HStack>
+          )
+        }
+      ] as Array<{ key: string; header: string; render?: (row: SauceListItem) => ReactNode }>,
+    [deleteSauceDialog, handleToggleSauceStatus, openEditSauce, rowActionLoading, sauceBatchModal]
+  );
+
   const comboColumns = useMemo(
     () =>
       [
@@ -1033,7 +1302,7 @@ export const ItemEntryPage = () => {
     <VStack spacing={6} align="stretch">
       <PageHeader
         title="Item Entry"
-        subtitle="Manage item categories, items, add-ons and combos with recipe mapping and estimated cost insights."
+        subtitle="Manage categories, items, add-ons, sauces and combos with recipe mapping and estimated cost insights."
       />
 
       <Tabs variant="soft-rounded" colorScheme="brand" isLazy>
@@ -1041,6 +1310,7 @@ export const ItemEntryPage = () => {
           <Tab>Categories</Tab>
           <Tab>Items</Tab>
           <Tab>Add-ons</Tab>
+          <Tab>Sauces</Tab>
           <Tab>Combos</Tab>
         </TabList>
 
@@ -1267,6 +1537,79 @@ export const ItemEntryPage = () => {
               <VStack spacing={4} align="stretch">
                 <SimpleGrid columns={{ base: 1, md: 4 }} spacing={4}>
                   <AppInput
+                    label="Search Sauce"
+                    placeholder="Search by sauce name"
+                    value={sauceSearch}
+                    onChange={(event) =>
+                      setSauceSearch(
+                        (event.target as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement).value
+                      )
+                    }
+                  />
+                  <FormControl>
+                    <FormLabel>Records per page</FormLabel>
+                    <Select
+                      value={String(sauceLimit)}
+                      onChange={(event) => {
+                        const nextLimit =
+                          Number(
+                            (event.target as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement).value
+                          ) || 5;
+                        setSauceLimit(nextLimit);
+                        setSaucePage(1);
+                      }}
+                    >
+                      <option value="5">5</option>
+                      <option value="10">10</option>
+                      <option value="20">20</option>
+                    </Select>
+                  </FormControl>
+                  <Box />
+                  <Box alignSelf="end">
+                    <AppButton
+                      leftIcon={<Plus size={16} />}
+                      isDisabled={!metaIngredients.length}
+                      onClick={() => {
+                        setSelectedSauce(null);
+                        sauceModal.onOpen();
+                      }}
+                    >
+                      Add Sauce
+                    </AppButton>
+                  </Box>
+                </SimpleGrid>
+
+                {sauceLoading ? (
+                  <SkeletonTable />
+                ) : (
+                  <DataTable
+                    columns={sauceColumns}
+                    rows={sauceRows}
+                    emptyState={
+                      <EmptyState
+                        title="No sauces found"
+                        description="Create sauce recipes and record batches to auto-track ingredient consumption."
+                      />
+                    }
+                  />
+                )}
+
+                <PaginationControls
+                  page={saucePagination.page}
+                  totalPages={saucePagination.totalPages}
+                  total={saucePagination.total}
+                  showing={sauceRows.length}
+                  onPageChange={setSaucePage}
+                />
+              </VStack>
+            </AppCard>
+          </TabPanel>
+
+          <TabPanel px={0}>
+            <AppCard>
+              <VStack spacing={4} align="stretch">
+                <SimpleGrid columns={{ base: 1, md: 4 }} spacing={4}>
+                  <AppInput
                     label="Search Combo"
                     placeholder="Search by combo name"
                     value={comboSearch}
@@ -1345,6 +1688,7 @@ export const ItemEntryPage = () => {
         loading={itemMutationLoading}
         categories={metaCategories}
         ingredients={metaIngredients}
+        sauces={metaSauces}
         unitMeta={metaUnits}
         initialData={selectedItem}
         onSubmit={handleItemSubmit}
@@ -1361,6 +1705,30 @@ export const ItemEntryPage = () => {
         unitMeta={metaUnits}
         initialData={selectedAddOn}
         onSubmit={handleAddOnSubmit}
+      />
+
+      <SauceFormModal
+        isOpen={sauceModal.isOpen}
+        onClose={() => {
+          sauceModal.onClose();
+          setSelectedSauce(null);
+        }}
+        loading={sauceMutationLoading}
+        ingredients={metaIngredients}
+        unitMeta={metaUnits}
+        initialData={selectedSauce}
+        onSubmit={handleSauceSubmit}
+      />
+
+      <SauceBatchModal
+        isOpen={sauceBatchModal.isOpen}
+        onClose={() => {
+          sauceBatchModal.onClose();
+          setSelectedSauceForBatch(null);
+        }}
+        loading={sauceBatchLoading}
+        sauce={selectedSauceForBatch}
+        onSubmit={handleSauceBatchSubmit}
       />
 
       <ComboFormModal
@@ -1404,6 +1772,15 @@ export const ItemEntryPage = () => {
         description={`Are you sure you want to permanently delete ${selectedAddOnRow?.name ?? "this add-on"}?`}
         onConfirm={() => void handleDeleteAddOn()}
         isLoading={addOnMutationLoading}
+      />
+
+      <ConfirmDialog
+        isOpen={deleteSauceDialog.isOpen}
+        onClose={deleteSauceDialog.onClose}
+        title="Delete Sauce Permanently"
+        description={`Are you sure you want to permanently delete ${selectedSauceRow?.name ?? "this sauce"}?`}
+        onConfirm={() => void handleDeleteSauce()}
+        isLoading={sauceMutationLoading}
       />
 
       <ConfirmDialog

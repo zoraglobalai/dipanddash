@@ -85,8 +85,43 @@ export const productLedgerSchema = z.object({
   })
 });
 
+const productLedgerRecordParamsSchema = z.object({
+  productId: z.string().uuid("Invalid product id"),
+  date: z.string().regex(datePattern, "Date must be in YYYY-MM-DD format")
+});
+
+export const upsertProductLedgerRecordSchema = z.object({
+  params: productLedgerRecordParamsSchema,
+  body: z
+    .object({
+      openingStock: z.coerce.number(),
+      purchased: z.coerce.number().min(0, "Purchased cannot be negative"),
+      consumption: z.coerce.number().min(0, "Consumption cannot be negative"),
+      dipAndDashConsumption: z.coerce.number().min(0, "Dip consumption cannot be negative"),
+      snookerConsumption: z.coerce.number().min(0, "Snooker consumption cannot be negative"),
+      note: z.string().trim().max(255).optional()
+    })
+    .refine(
+      (value) =>
+        Math.abs(
+          value.consumption - (value.dipAndDashConsumption + value.snookerConsumption)
+        ) <= 0.001,
+      "Consumption must equal Dip Used + Snooker Used"
+    )
+});
+
+export const deleteProductLedgerRecordSchema = z.object({
+  params: productLedgerRecordParamsSchema
+});
+
 export const createProductSchema = z.object({
   body: productBodySchema
+});
+
+export const getProductSchema = z.object({
+  params: z.object({
+    id: z.string().uuid("Invalid product id")
+  })
 });
 
 export const updateProductSchema = z.object({
@@ -208,6 +243,12 @@ export const purchaseOrderListSchema = z.object({
 });
 
 export const purchaseOrderByIdSchema = z.object({
+  params: z.object({
+    id: z.string().uuid("Invalid purchase order id")
+  })
+});
+
+export const deletePurchaseOrderSchema = z.object({
   params: z.object({
     id: z.string().uuid("Invalid purchase order id")
   })

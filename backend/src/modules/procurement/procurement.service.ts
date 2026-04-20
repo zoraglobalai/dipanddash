@@ -10,6 +10,7 @@ import { IngredientStockLog } from "../ingredients/ingredient-stock-log.entity";
 import { IngredientStock } from "../ingredients/ingredient-stock.entity";
 import { InvoiceLine } from "../invoices/invoice-line.entity";
 import { Product } from "./product.entity";
+import { ProductDayLedgerAdjustment } from "./product-day-ledger-adjustment.entity";
 import {
   PRODUCT_TARGET_SECTIONS,
   PRODUCT_UNITS,
@@ -57,6 +58,15 @@ type ProductDayLedgerFilters = PaginationFilters & {
   productId?: string;
   search?: string;
   targetSection?: ProductTargetSection;
+};
+
+type UpsertProductDayLedgerPayload = {
+  openingStock: number;
+  purchased: number;
+  consumption: number;
+  dipAndDashConsumption: number;
+  snookerConsumption: number;
+  note?: string;
 };
 
 type PurchaseOrderListFilters = PaginationFilters & {
@@ -522,6 +532,7 @@ export class ProcurementService {
   private readonly allocationRepository = AppDataSource.getRepository(DailyAllocation);
   private readonly purchaseOrderRepository = AppDataSource.getRepository(PurchaseOrder);
   private readonly purchaseOrderLineRepository = AppDataSource.getRepository(PurchaseOrderLine);
+  private readonly productDayLedgerAdjustmentRepository = AppDataSource.getRepository(ProductDayLedgerAdjustment);
   private readonly invoiceLineRepository = AppDataSource.getRepository(InvoiceLine);
 
   private async getSupplierOrFail(id: string) {
@@ -1779,6 +1790,201 @@ export class ProcurementService {
     };
   }
 
+  async getProduct(id: string) {
+    const product = await this.getProductOrFail(id);
+
+    const [purchaseMetricsRow, expiryMetricsRow, salesMetricsRow] = await Promise.all([
+      this.purchaseOrderLineRepository
+        .createQueryBuilder("line")
+        .leftJoin("line.purchaseOrder", "purchaseOrder")
+        .select("COUNT(DISTINCT line.purchaseOrderId)", "ordersCount")
+        .addSelect("COALESCE(SUM(line.stockAdded), 0)", "qty")
+        .addSelect("COALESCE(SUM(line.lineTotal), 0)", "amount")
+        .addSelect("MAX(purchaseOrder.purchaseDate)", "recentPurchaseDate")
+        .where("line.lineType = :lineType", { lineType: "product" })
+        .andWhere("line.productId = :productId", { productId: id })
+        .getRawOne<{ ordersCount: string; qty: string; amount: string; recentPurchaseDate: string | null }>(),
+      this.purchaseOrderLineRepository
+        .createQueryBuilder("line")
+        .select("MIN(CASE WHEN line.expiryDate >= CURRENT_DATE THEN line.expiryDate END)", "nextExpiryDate")
+        .addSelect("MAX(line.expiryDate)", "latestExpiryDate")
+        .where("line.lineType = :lineType", { lineType: "product" })
+        .andWhere("line.productId = :productId", { productId: id })
+        .andWhere("line.expiryDate IS NOT NULL")
+        .getRawOne<{ nextExpiryDate: string | null; latestExpiryDate: string | null }>(),
+      this.invoiceLineRepository
+        .createQueryBuilder("line")
+        .leftJoin("line.invoice", "invoice")
+        .select("COALESCE(SUM(line.quantity), 0)", "soldQty")
+        .addSelect("COALESCE(SUM(line.lineTotal), 0)", "soldAmount")
+        .where("line.lineType = :lineType", { lineType: "product" })
+        .andWhere("line.\"referenceId\"::text = :productId", { productId: id })
+        .andWhere("invoice.status = :status", { status: "paid" })
+        .getRawOne<{ soldQty: string; soldAmount: string }>()
+    ]);
+
+    return this.mapProductSummary(product, {
+      purchasedQuantity: toNumber(purchaseMetricsRow?.qty ?? 0),
+      purchaseOrdersCount: Number(purchaseMetricsRow?.ordersCount ?? 0),
+      totalPurchasedAmount: toNumber(purchaseMetricsRow?.amount ?? 0),
+      recentPurchaseDate: purchaseMetricsRow?.recentPurchaseDate ?? null,
+      soldQuantity: toNumber(salesMetricsRow?.soldQty ?? 0),
+      soldAmount: toNumber(salesMetricsRow?.soldAmount ?? 0),
+      nextExpiryDate: expiryMetricsRow?.nextExpiryDate ?? null,
+      latestExpiryDate: expiryMetricsRow?.latestExpiryDate ?? null
+    });
+  }
+
+  private async getProductLedgerOpeningBeforeDate(productId: string, date: string) {
+    const [purchaseBeforeRow, salesBeforeRow, adjustmentBeforeRow] = await Promise.all([
+      this.purchaseOrderLineRepository
+        .createQueryBuilder("line")
+        .leftJoin("line.purchaseOrder", "purchaseOrder")
+        .select("COALESCE(SUM(line.stockAdded), 0)", "quantity")
+        .where("line.lineType = :lineType", { lineType: "product" })
+        .andWhere("line.productId = :productId", { productId })
+        .andWhere("purchaseOrder.purchaseDate < :date", { date })
+        .getRawOne<{ quantity: string }>(),
+      this.invoiceLineRepository
+        .createQueryBuilder("line")
+        .leftJoin("line.invoice", "invoice")
+        .select("COALESCE(SUM(line.quantity), 0)", "quantity")
+        .where("line.lineType = :lineType", { lineType: "product" })
+        .andWhere("line.\"referenceId\"::text = :productId", { productId })
+        .andWhere("invoice.status = :status", { status: "paid" })
+        .andWhere("timezone('Asia/Kolkata', invoice.\"createdAt\")::date < :date", { date })
+        .getRawOne<{ quantity: string }>(),
+      this.productDayLedgerAdjustmentRepository
+        .createQueryBuilder("adjustment")
+        .select(
+          `COALESCE(SUM(adjustment."openingDelta" + adjustment."purchasedDelta" - adjustment."consumptionDelta"), 0)`,
+          "quantity"
+        )
+        .where("adjustment.productId = :productId", { productId })
+        .andWhere("adjustment.date < :date", { date })
+        .getRawOne<{ quantity: string }>()
+    ]);
+
+    return toFixedQuantity(
+      toNumber(purchaseBeforeRow?.quantity) -
+        toNumber(salesBeforeRow?.quantity) +
+        toNumber(adjustmentBeforeRow?.quantity)
+    );
+  }
+
+  private async getProductLedgerRowSnapshot(productId: string, date: string) {
+    const snapshot = await this.getProductDayLedger({
+      productId,
+      dateFrom: date,
+      dateTo: date,
+      page: 1,
+      limit: 200
+    });
+    return snapshot.rows.find((row) => row.productId === productId && row.date === date) ?? null;
+  }
+
+  async upsertProductDayLedgerAdjustment(productId: string, date: string, payload: UpsertProductDayLedgerPayload) {
+    resolveDayRangeInUtc(date);
+    await this.getProductOrFail(productId);
+
+    const targetOpeningStock = toFixedQuantity(toNumber(payload.openingStock));
+    const targetPurchased = toFixedQuantity(toNumber(payload.purchased));
+    const targetConsumption = toFixedQuantity(toNumber(payload.consumption));
+    const targetDipAndDashConsumption = toFixedQuantity(toNumber(payload.dipAndDashConsumption));
+    const targetSnookerConsumption = toFixedQuantity(toNumber(payload.snookerConsumption));
+    const note = payload.note?.trim() ? payload.note.trim() : null;
+
+    if (targetPurchased < 0 || targetConsumption < 0 || targetDipAndDashConsumption < 0 || targetSnookerConsumption < 0) {
+      throw new AppError(422, "Purchased and consumption values cannot be negative.");
+    }
+    if (Math.abs(targetConsumption - (targetDipAndDashConsumption + targetSnookerConsumption)) > 0.001) {
+      throw new AppError(422, "Consumption must equal Dip Used + Snooker Used.");
+    }
+
+    const [existingAdjustment, currentRow, openingBefore] = await Promise.all([
+      this.productDayLedgerAdjustmentRepository.findOne({
+        where: { productId, date }
+      }),
+      this.getProductLedgerRowSnapshot(productId, date),
+      this.getProductLedgerOpeningBeforeDate(productId, date)
+    ]);
+
+    const currentOpeningStock = toFixedQuantity(currentRow?.openingStock ?? openingBefore);
+    const currentPurchased = toFixedQuantity(currentRow?.purchased ?? 0);
+    const currentConsumption = toFixedQuantity(currentRow?.consumption ?? 0);
+    const currentDipAndDashConsumption = toFixedQuantity(currentRow?.dipAndDashConsumption ?? 0);
+    const currentSnookerConsumption = toFixedQuantity(currentRow?.snookerConsumption ?? 0);
+
+    const baseOpeningDelta = toFixedQuantity(toNumber(existingAdjustment?.openingDelta));
+    const basePurchasedDelta = toFixedQuantity(toNumber(existingAdjustment?.purchasedDelta));
+    const baseConsumptionDelta = toFixedQuantity(toNumber(existingAdjustment?.consumptionDelta));
+    const baseDipDelta = toFixedQuantity(toNumber(existingAdjustment?.dipAndDashConsumptionDelta));
+    const baseSnookerDelta = toFixedQuantity(toNumber(existingAdjustment?.snookerConsumptionDelta));
+
+    const nextOpeningDelta = toFixedQuantity(baseOpeningDelta + (targetOpeningStock - currentOpeningStock));
+    const nextPurchasedDelta = toFixedQuantity(basePurchasedDelta + (targetPurchased - currentPurchased));
+    const nextConsumptionDelta = toFixedQuantity(baseConsumptionDelta + (targetConsumption - currentConsumption));
+    const nextDipDelta = toFixedQuantity(baseDipDelta + (targetDipAndDashConsumption - currentDipAndDashConsumption));
+    const nextSnookerDelta = toFixedQuantity(baseSnookerDelta + (targetSnookerConsumption - currentSnookerConsumption));
+
+    const hasMeaningfulDelta =
+      Math.abs(nextOpeningDelta) > 0.0005 ||
+      Math.abs(nextPurchasedDelta) > 0.0005 ||
+      Math.abs(nextConsumptionDelta) > 0.0005 ||
+      Math.abs(nextDipDelta) > 0.0005 ||
+      Math.abs(nextSnookerDelta) > 0.0005;
+
+    if (!hasMeaningfulDelta && !note) {
+      if (existingAdjustment) {
+        await this.productDayLedgerAdjustmentRepository.delete(existingAdjustment.id);
+      }
+    } else {
+      const entity =
+        existingAdjustment ??
+        this.productDayLedgerAdjustmentRepository.create({
+          productId,
+          date
+        });
+
+      entity.openingDelta = nextOpeningDelta;
+      entity.purchasedDelta = nextPurchasedDelta;
+      entity.consumptionDelta = nextConsumptionDelta;
+      entity.dipAndDashConsumptionDelta = nextDipDelta;
+      entity.snookerConsumptionDelta = nextSnookerDelta;
+      entity.note = note;
+      await this.productDayLedgerAdjustmentRepository.save(entity);
+    }
+
+    const refreshedRow = await this.getProductLedgerRowSnapshot(productId, date);
+    if (!refreshedRow) {
+      throw new AppError(500, "Unable to load refreshed product ledger row.");
+    }
+    return refreshedRow;
+  }
+
+  async deleteProductDayLedgerAdjustment(productId: string, date: string) {
+    resolveDayRangeInUtc(date);
+    await this.getProductOrFail(productId);
+
+    const existing = await this.productDayLedgerAdjustmentRepository.findOne({
+      where: { productId, date }
+    });
+    if (!existing) {
+      return {
+        productId,
+        date,
+        deleted: false
+      };
+    }
+
+    await this.productDayLedgerAdjustmentRepository.delete(existing.id);
+    return {
+      productId,
+      date,
+      deleted: true
+    };
+  }
+
   async getProductDayLedger(filters: ProductDayLedgerFilters) {
     const page = Math.max(1, filters.page || 1);
     const limit = Math.min(200, Math.max(1, filters.limit || 12));
@@ -1839,7 +2045,14 @@ export class ProcurementService {
       };
     }
 
-    const [purchaseMovementRows, salesMovementRows, purchaseBeforeRows, salesBeforeRows] = await Promise.all([
+    const [
+      purchaseMovementRows,
+      salesMovementRows,
+      purchaseBeforeRows,
+      salesBeforeRows,
+      adjustmentRows,
+      adjustmentBeforeRows
+    ] = await Promise.all([
       this.purchaseOrderLineRepository
         .createQueryBuilder("line")
         .leftJoin("line.purchaseOrder", "purchaseOrder")
@@ -1906,6 +2119,42 @@ export class ProcurementService {
             .andWhere("timezone('Asia/Kolkata', invoice.\"createdAt\")::date < :dateFrom", { dateFrom })
             .groupBy("line.\"referenceId\"")
             .getRawMany<{ productId: string; quantity: string }>()
+        : Promise.resolve([] as Array<{ productId: string; quantity: string }>),
+      this.productDayLedgerAdjustmentRepository
+        .createQueryBuilder("adjustment")
+        .select("adjustment.productId", "productId")
+        .addSelect("to_char(adjustment.date, 'YYYY-MM-DD')", "date")
+        .addSelect("adjustment.\"openingDelta\"", "openingDelta")
+        .addSelect("adjustment.\"purchasedDelta\"", "purchasedDelta")
+        .addSelect("adjustment.\"consumptionDelta\"", "consumptionDelta")
+        .addSelect("adjustment.\"dipAndDashConsumptionDelta\"", "dipAndDashConsumptionDelta")
+        .addSelect("adjustment.\"snookerConsumptionDelta\"", "snookerConsumptionDelta")
+        .addSelect("adjustment.note", "note")
+        .where("adjustment.productId IN (:...productIds)", { productIds })
+        .andWhere(dateFrom ? "adjustment.date >= :dateFrom" : "1=1", { dateFrom })
+        .andWhere(dateTo ? "adjustment.date <= :dateTo" : "1=1", { dateTo })
+        .getRawMany<{
+          productId: string;
+          date: string;
+          openingDelta: string;
+          purchasedDelta: string;
+          consumptionDelta: string;
+          dipAndDashConsumptionDelta: string;
+          snookerConsumptionDelta: string;
+          note: string | null;
+        }>(),
+      dateFrom
+        ? this.productDayLedgerAdjustmentRepository
+            .createQueryBuilder("adjustment")
+            .select("adjustment.productId", "productId")
+            .addSelect(
+              `COALESCE(SUM(adjustment."openingDelta" + adjustment."purchasedDelta" - adjustment."consumptionDelta"), 0)`,
+              "quantity"
+            )
+            .where("adjustment.productId IN (:...productIds)", { productIds })
+            .andWhere("adjustment.date < :dateFrom", { dateFrom })
+            .groupBy("adjustment.productId")
+            .getRawMany<{ productId: string; quantity: string }>()
         : Promise.resolve([] as Array<{ productId: string; quantity: string }>)
     ]);
 
@@ -1950,12 +2199,55 @@ export class ProcurementService {
       movement.snookerConsumption = toFixedQuantity(toNumber(row.snookerConsumption));
     });
 
+    const adjustmentMap = new Map<
+      string,
+      {
+        openingDelta: number;
+        purchasedDelta: number;
+        consumptionDelta: number;
+        dipAndDashConsumptionDelta: number;
+        snookerConsumptionDelta: number;
+        note: string | null;
+      }
+    >();
+    adjustmentRows.forEach((row) => {
+      const date = toYmd(row.date);
+      const key = `${date}::${row.productId}`;
+      const existing = adjustmentMap.get(key) ?? {
+        openingDelta: 0,
+        purchasedDelta: 0,
+        consumptionDelta: 0,
+        dipAndDashConsumptionDelta: 0,
+        snookerConsumptionDelta: 0,
+        note: null as string | null
+      };
+      existing.openingDelta = toFixedQuantity(existing.openingDelta + toNumber(row.openingDelta));
+      existing.purchasedDelta = toFixedQuantity(existing.purchasedDelta + toNumber(row.purchasedDelta));
+      existing.consumptionDelta = toFixedQuantity(existing.consumptionDelta + toNumber(row.consumptionDelta));
+      existing.dipAndDashConsumptionDelta = toFixedQuantity(
+        existing.dipAndDashConsumptionDelta + toNumber(row.dipAndDashConsumptionDelta)
+      );
+      existing.snookerConsumptionDelta = toFixedQuantity(
+        existing.snookerConsumptionDelta + toNumber(row.snookerConsumptionDelta)
+      );
+      existing.note = row.note ?? existing.note;
+      adjustmentMap.set(key, existing);
+      getMovement(date, row.productId);
+    });
+
     const purchaseBeforeMap = new Map(purchaseBeforeRows.map((row) => [row.productId, toFixedQuantity(toNumber(row.quantity))]));
     const salesBeforeMap = new Map(salesBeforeRows.map((row) => [row.productId, toFixedQuantity(toNumber(row.quantity))]));
+    const adjustmentBeforeMap = new Map(
+      adjustmentBeforeRows.map((row) => [row.productId, toFixedQuantity(toNumber(row.quantity))])
+    );
     const runningStockByProduct = new Map(
       products.map((product) => [
         product.id,
-        toFixedQuantity((purchaseBeforeMap.get(product.id) ?? 0) - (salesBeforeMap.get(product.id) ?? 0))
+        toFixedQuantity(
+          (purchaseBeforeMap.get(product.id) ?? 0) -
+            (salesBeforeMap.get(product.id) ?? 0) +
+            (adjustmentBeforeMap.get(product.id) ?? 0)
+        )
       ])
     );
 
@@ -1974,13 +2266,27 @@ export class ProcurementService {
         if (!product) {
           return null;
         }
-        const openingStock = toFixedQuantity(runningStockByProduct.get(product.id) ?? 0);
-        const purchased = toFixedQuantity(movement.purchased);
-        const consumption = toFixedQuantity(movement.consumption);
-        const dipAndDashConsumption = toFixedQuantity(movement.dipAndDashConsumption);
-        const snookerConsumption = toFixedQuantity(movement.snookerConsumption);
+        const adjustment = adjustmentMap.get(`${movement.date}::${product.id}`);
+        const openingStock = toFixedQuantity(
+          (runningStockByProduct.get(product.id) ?? 0) + toNumber(adjustment?.openingDelta)
+        );
+        const purchased = toFixedQuantity(movement.purchased + toNumber(adjustment?.purchasedDelta));
+        const consumption = toFixedQuantity(movement.consumption + toNumber(adjustment?.consumptionDelta));
+        const dipAndDashConsumption = toFixedQuantity(
+          movement.dipAndDashConsumption + toNumber(adjustment?.dipAndDashConsumptionDelta)
+        );
+        const snookerConsumption = toFixedQuantity(
+          movement.snookerConsumption + toNumber(adjustment?.snookerConsumptionDelta)
+        );
         const closingStock = toFixedQuantity(openingStock + purchased - consumption);
         runningStockByProduct.set(product.id, closingStock);
+        const isAdjusted =
+          Boolean(adjustment?.note) ||
+          Math.abs(toNumber(adjustment?.openingDelta)) > 0.0005 ||
+          Math.abs(toNumber(adjustment?.purchasedDelta)) > 0.0005 ||
+          Math.abs(toNumber(adjustment?.consumptionDelta)) > 0.0005 ||
+          Math.abs(toNumber(adjustment?.dipAndDashConsumptionDelta)) > 0.0005 ||
+          Math.abs(toNumber(adjustment?.snookerConsumptionDelta)) > 0.0005;
         return {
           id: `${movement.date}-${product.id}`,
           date: movement.date,
@@ -1997,7 +2303,9 @@ export class ProcurementService {
           closingStock,
           dipAndDashAssignedStock: toFixedQuantity(toNumber(product.dipAndDashStock)),
           gamingAssignedStock: toFixedQuantity(toNumber(product.gamingStock)),
-          stockHealth: closingStock <= toNumber(product.minStock) ? "LOW_STOCK" : "HEALTHY"
+          stockHealth: closingStock <= toNumber(product.minStock) ? "LOW_STOCK" : "HEALTHY",
+          isAdjusted,
+          adjustmentNote: adjustment?.note ?? null
         };
       })
       .filter((row): row is NonNullable<typeof row> => Boolean(row))
@@ -2194,13 +2502,16 @@ export class ProcurementService {
 
   async deleteProduct(id: string) {
     const product = await this.getProductOrFail(id);
-    const linkedPurchases = await this.purchaseOrderLineRepository.count({ where: { productId: id } });
+    await AppDataSource.transaction(async (manager) => {
+      await manager
+        .createQueryBuilder()
+        .update(PurchaseOrderLine)
+        .set({ productId: null })
+        .where("productId = :productId", { productId: id })
+        .execute();
 
-    if (linkedPurchases > 0) {
-      throw new AppError(409, "Cannot delete product because purchase history exists for this product.");
-    }
-
-    await this.productRepository.remove(product);
+      await manager.delete(Product, { id });
+    });
     return this.mapProductSummary(product);
   }
 
@@ -2409,7 +2720,12 @@ export class ProcurementService {
     };
   }
 
-  private async rollbackPurchaseOrderLines(manager: EntityManager, lines: PurchaseOrderLine[], purchaseNumber: string) {
+  private async rollbackPurchaseOrderLines(
+    manager: EntityManager,
+    lines: PurchaseOrderLine[],
+    purchaseNumber: string,
+    action: "edit" | "delete"
+  ) {
     for (const line of lines) {
       const rollbackQuantity = toFixedQuantity(toNumber(line.stockAdded));
 
@@ -2428,7 +2744,7 @@ export class ProcurementService {
         if (stockAfter < 0) {
           throw new AppError(
             409,
-            `Cannot edit purchase order ${purchaseNumber} because stock for ${line.itemNameSnapshot} is already consumed.`
+            `Cannot ${action} purchase order ${purchaseNumber} because stock for ${line.itemNameSnapshot} is already consumed.`
           );
         }
 
@@ -2440,7 +2756,7 @@ export class ProcurementService {
           ingredientId: ingredient.id,
           type: IngredientStockLogType.ADJUST,
           quantity: toFixedQuantity(-rollbackQuantity),
-          note: `Rollback from purchase edit ${purchaseNumber}`
+          note: `Rollback from purchase ${action} ${purchaseNumber}`
         });
         await manager.save(IngredientStockLog, rollbackLog);
 
@@ -2466,7 +2782,7 @@ export class ProcurementService {
         if (stockAfter < 0) {
           throw new AppError(
             409,
-            `Cannot edit purchase order ${purchaseNumber} because stock for ${line.itemNameSnapshot} is already consumed.`
+            `Cannot ${action} purchase order ${purchaseNumber} because stock for ${line.itemNameSnapshot} is already consumed.`
           );
         }
 
@@ -2487,7 +2803,7 @@ export class ProcurementService {
         if (nextDip < -0.001 || nextGaming < -0.001) {
           throw new AppError(
             409,
-            `Cannot edit purchase order ${purchaseNumber} because section stock for ${line.itemNameSnapshot} is already consumed.`
+            `Cannot ${action} purchase order ${purchaseNumber} because section stock for ${line.itemNameSnapshot} is already consumed.`
           );
         }
 
@@ -2577,7 +2893,7 @@ export class ProcurementService {
         throw new AppError(404, "Supplier not found or inactive");
       }
 
-      await this.rollbackPurchaseOrderLines(queryRunner.manager, existingOrder.lines, existingOrder.purchaseNumber);
+      await this.rollbackPurchaseOrderLines(queryRunner.manager, existingOrder.lines, existingOrder.purchaseNumber, "edit");
 
       await queryRunner.manager.delete(PurchaseOrderLine, { purchaseOrderId: existingOrder.id });
 
@@ -2605,6 +2921,38 @@ export class ProcurementService {
 
       await queryRunner.commitTransaction();
       return this.getPurchaseOrderById(savedOrder.id);
+    } catch (error) {
+      await queryRunner.rollbackTransaction();
+      throw error;
+    } finally {
+      await queryRunner.release();
+    }
+  }
+
+  async deletePurchaseOrder(id: string) {
+    const queryRunner = AppDataSource.createQueryRunner();
+    await queryRunner.connect();
+    await queryRunner.startTransaction();
+
+    try {
+      const existingOrder = await queryRunner.manager.findOne(PurchaseOrder, {
+        where: { id },
+        relations: { lines: true }
+      });
+
+      if (!existingOrder) {
+        throw new AppError(404, "Purchase order not found");
+      }
+
+      await this.rollbackPurchaseOrderLines(queryRunner.manager, existingOrder.lines, existingOrder.purchaseNumber, "delete");
+      await queryRunner.manager.delete(PurchaseOrderLine, { purchaseOrderId: existingOrder.id });
+      await queryRunner.manager.delete(PurchaseOrder, { id: existingOrder.id });
+
+      await queryRunner.commitTransaction();
+      return {
+        id: existingOrder.id,
+        purchaseNumber: existingOrder.purchaseNumber
+      };
     } catch (error) {
       await queryRunner.rollbackTransaction();
       throw error;

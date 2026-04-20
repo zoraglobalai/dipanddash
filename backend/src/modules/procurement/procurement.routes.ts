@@ -10,9 +10,12 @@ import { purchaseInvoiceImageUpload } from "./procurement-upload.middleware";
 import {
   createProductSchema,
   createPurchaseOrderSchema,
+  deletePurchaseOrderSchema,
   createSupplierSchema,
+  deleteProductLedgerRecordSchema,
   deleteProductSchema,
   deleteSupplierSchema,
+  getProductSchema,
   productLedgerSchema,
   productListSchema,
   procurementMetaSchema,
@@ -21,6 +24,7 @@ import {
   purchaseOrderByIdSchema,
   purchaseOrderListSchema,
   supplierListSchema,
+  upsertProductLedgerRecordSchema,
   updatePurchaseOrderSchema,
   updateProductSchema,
   updateSupplierSchema
@@ -91,6 +95,18 @@ router.get(
   validateRequest(productLedgerSchema),
   asyncHandler(procurementController.listProductLedger)
 );
+router.patch(
+  "/products/ledger/:productId/:date",
+  authorizeAssetsOrPurchaseModule,
+  validateRequest(upsertProductLedgerRecordSchema),
+  asyncHandler(procurementController.updateProductLedgerRecord)
+);
+router.delete(
+  "/products/ledger/:productId/:date",
+  authorizeAssetsOrPurchaseModule,
+  validateRequest(deleteProductLedgerRecordSchema),
+  asyncHandler(procurementController.deleteProductLedgerRecord)
+);
 router.get(
   "/products/bulk/template",
   authorizeAssetsOrPurchaseModule,
@@ -101,6 +117,12 @@ router.post(
   authorizeAssetsOrPurchaseModule,
   purchaseBulkUpload.single("file"),
   asyncHandler(procurementController.bulkImportProducts)
+);
+router.get(
+  "/products/:id",
+  authorizeAssetsOrPurchaseModule,
+  validateRequest(getProductSchema),
+  asyncHandler(procurementController.getProduct)
 );
 router.post(
   "/products",
@@ -161,6 +183,12 @@ router.patch(
   authorizePurchaseModule,
   validateRequest(updatePurchaseOrderSchema),
   asyncHandler(procurementController.updatePurchaseOrder)
+);
+router.delete(
+  "/purchase-orders/:id",
+  authorizePurchaseModule,
+  validateRequest(deletePurchaseOrderSchema),
+  asyncHandler(procurementController.deletePurchaseOrder)
 );
 
 export const procurementRoutes = router;

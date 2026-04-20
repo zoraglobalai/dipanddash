@@ -16,6 +16,12 @@ const recipeIngredientSchema = z.object({
   unit: unitSchema
 });
 
+const recipeSauceSchema = z.object({
+  sauceId: z.string().uuid("Invalid sauce id"),
+  quantity: z.coerce.number().positive("Quantity must be greater than zero"),
+  unit: unitSchema
+});
+
 const comboItemSchema = z.object({
   itemId: z.string().uuid("Invalid item id"),
   quantity: z.coerce.number().positive("Quantity must be greater than zero")
@@ -67,15 +73,21 @@ export const getItemSchema = z.object({
 });
 
 export const createItemSchema = z.object({
-  body: z.object({
-    name: z.string().trim().min(2, "Item name must be at least 2 characters").max(160),
-    categoryId: z.string().uuid("Invalid item category"),
-    sellingPrice: z.coerce.number().min(0, "Selling price cannot be negative"),
-    gstPercentage: z.coerce.number().min(0, "GST cannot be negative"),
-    imageUrl: z.string().trim().max(1024).optional(),
-    note: z.string().trim().max(500).optional(),
-    ingredients: z.array(recipeIngredientSchema).min(1, "Please add at least one ingredient")
-  })
+  body: z
+    .object({
+      name: z.string().trim().min(2, "Item name must be at least 2 characters").max(160),
+      categoryId: z.string().uuid("Invalid item category"),
+      sellingPrice: z.coerce.number().min(0, "Selling price cannot be negative"),
+      gstPercentage: z.coerce.number().min(0, "GST cannot be negative"),
+      imageUrl: z.string().trim().max(1024).optional(),
+      note: z.string().trim().max(500).optional(),
+      ingredients: z.array(recipeIngredientSchema).default([]),
+      sauces: z.array(recipeSauceSchema).default([])
+    })
+    .refine(
+      (value) => (value.ingredients?.length ?? 0) + (value.sauces?.length ?? 0) > 0,
+      "Please add at least one ingredient or sauce."
+    )
 });
 
 export const updateItemSchema = z.object({
@@ -91,9 +103,24 @@ export const updateItemSchema = z.object({
       imageUrl: z.string().trim().max(1024).optional(),
       note: z.string().trim().max(500).optional(),
       isActive: z.boolean().optional(),
-      ingredients: z.array(recipeIngredientSchema).min(1).optional()
+      ingredients: z.array(recipeIngredientSchema).optional(),
+      sauces: z.array(recipeSauceSchema).optional()
     })
     .refine((value) => Object.keys(value).length > 0, "At least one field must be provided")
+    .superRefine((value, context) => {
+      const hasIngredients = value.ingredients !== undefined;
+      const hasSauces = value.sauces !== undefined;
+      if (!hasIngredients && !hasSauces) {
+        return;
+      }
+
+      if ((value.ingredients?.length ?? 0) + (value.sauces?.length ?? 0) <= 0) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Please add at least one ingredient or sauce."
+        });
+      }
+    })
 });
 
 export const deleteItemSchema = z.object({
@@ -154,6 +181,53 @@ export const comboListSchema = z.object({
   })
 });
 
+export const sauceListSchema = z.object({
+  query: paginationQuerySchema.extend({
+    includeInactive: z.coerce.boolean().optional()
+  })
+});
+
+export const getSauceSchema = z.object({
+  params: z.object({
+    id: z.string().uuid("Invalid sauce id")
+  })
+});
+
+export const createSauceSchema = z.object({
+  body: z.object({
+    name: z.string().trim().min(2, "Sauce name must be at least 2 characters").max(160),
+    outputUnit: unitSchema,
+    baseBatchQuantity: z.coerce.number().positive("Batch quantity must be greater than zero"),
+    note: z.string().trim().max(500).optional(),
+    ingredients: z.array(recipeIngredientSchema).min(1, "Please add at least one ingredient")
+  })
+});
+
+export const updateSauceSchema = z.object({
+  params: z.object({
+    id: z.string().uuid("Invalid sauce id")
+  }),
+  body: z
+    .object({
+      name: z.string().trim().min(2).max(160).optional(),
+      baseBatchQuantity: z.coerce.number().positive().optional(),
+      note: z.string().trim().max(500).optional(),
+      isActive: z.boolean().optional(),
+      ingredients: z.array(recipeIngredientSchema).min(1).optional()
+    })
+    .refine((value) => Object.keys(value).length > 0, "At least one field must be provided")
+});
+
+export const makeSauceBatchSchema = z.object({
+  params: z.object({
+    id: z.string().uuid("Invalid sauce id")
+  }),
+  body: z.object({
+    producedQuantity: z.coerce.number().positive("Produced quantity must be greater than zero"),
+    note: z.string().trim().max(500).optional()
+  })
+});
+
 export const getComboSchema = z.object({
   params: z.object({
     id: z.string().uuid("Invalid combo id")
@@ -193,4 +267,3 @@ export const deleteComboSchema = z.object({
     id: z.string().uuid("Invalid combo id")
   })
 });
-

@@ -378,7 +378,7 @@ export const AdminDashboardPage = () => {
             </AppCard>
 
             <AppCard title="Purchase & Profit Snapshot" subtitle="Section-wise spend and profit visibility">
-              <VStack h="300px" align="stretch" justify="center" spacing={3}>
+              <SimpleGrid columns={{ base: 1, md: 2 }} spacing={3}>
                 <InsightCard
                   label="Dip & Dash Purchase"
                   value={formatCurrency(salesStats.cards.dipAndDashPurchaseAmount)}
@@ -395,7 +395,7 @@ export const AdminDashboardPage = () => {
                   label="Product Sales Profit"
                   value={formatCurrency(salesStats.cards.productSalesProfit)}
                 />
-              </VStack>
+              </SimpleGrid>
             </AppCard>
           </SimpleGrid>
 

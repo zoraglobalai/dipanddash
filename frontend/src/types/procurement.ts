@@ -236,6 +236,8 @@ export type ProductDayLedgerRow = {
   dipAndDashAssignedStock: number;
   gamingAssignedStock: number;
   stockHealth: StockHealth;
+  isAdjusted?: boolean;
+  adjustmentNote?: string | null;
 };
 
 export type ProductDayLedgerResponse = {

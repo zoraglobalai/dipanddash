@@ -124,6 +124,11 @@ export class ProcurementController {
     return sendSuccess(res, StatusCodes.OK, "Products fetched successfully", data);
   };
 
+  getProduct = async (req: Request, res: Response): Promise<Response> => {
+    const product = await this.procurementService.getProduct(req.params.id);
+    return sendSuccess(res, StatusCodes.OK, "Product fetched successfully", { product });
+  };
+
   listProductLedger = async (req: Request, res: Response): Promise<Response> => {
     const data = await this.procurementService.getProductDayLedger({
       date: typeof req.query.date === "string" ? req.query.date : undefined,
@@ -139,6 +144,27 @@ export class ProcurementController {
       limit: parsePositiveInt(req.query.limit, 12)
     });
     return sendSuccess(res, StatusCodes.OK, "Product day ledger fetched successfully", data);
+  };
+
+  updateProductLedgerRecord = async (req: Request, res: Response): Promise<Response> => {
+    const row = await this.procurementService.upsertProductDayLedgerAdjustment(
+      req.params.productId,
+      req.params.date,
+      {
+        openingStock: req.body.openingStock,
+        purchased: req.body.purchased,
+        consumption: req.body.consumption,
+        dipAndDashConsumption: req.body.dipAndDashConsumption,
+        snookerConsumption: req.body.snookerConsumption,
+        note: req.body.note
+      }
+    );
+    return sendSuccess(res, StatusCodes.OK, "Product ledger record updated successfully", { row });
+  };
+
+  deleteProductLedgerRecord = async (req: Request, res: Response): Promise<Response> => {
+    const data = await this.procurementService.deleteProductDayLedgerAdjustment(req.params.productId, req.params.date);
+    return sendSuccess(res, StatusCodes.OK, "Product ledger record reset successfully", data);
   };
 
   createProduct = async (req: Request, res: Response): Promise<Response> => {
@@ -187,6 +213,11 @@ export class ProcurementController {
   updatePurchaseOrder = async (req: Request, res: Response): Promise<Response> => {
     const purchaseOrder = await this.procurementService.updatePurchaseOrder(req.params.id, req.body);
     return sendSuccess(res, StatusCodes.OK, "Purchase order updated successfully", { purchaseOrder });
+  };
+
+  deletePurchaseOrder = async (req: Request, res: Response): Promise<Response> => {
+    const purchaseOrder = await this.procurementService.deletePurchaseOrder(req.params.id);
+    return sendSuccess(res, StatusCodes.OK, "Purchase order deleted successfully", { purchaseOrder });
   };
 
   getMeta = async (req: Request, res: Response): Promise<Response> => {

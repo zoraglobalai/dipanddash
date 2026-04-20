@@ -41,6 +41,15 @@ export type ItemMetaIngredient = {
   totalStock: number;
 };
 
+export type ItemMetaSauce = {
+  id: string;
+  name: string;
+  outputUnit: IngredientUnit;
+  baseBatchQuantity: number;
+  estimatedBatchCost: number;
+  estimatedUnitCost: number;
+};
+
 export type ItemUnitMeta = {
   value: IngredientUnit;
   label: string;
@@ -65,6 +74,16 @@ export type ItemRecipeDetailRow = {
   unit: IngredientUnit;
   normalizedQuantity: number;
   costContribution: number;
+};
+
+export type ItemSauceDetailRow = {
+  id: string;
+  sauceId: string;
+  sauceName: string;
+  quantity: number;
+  unit: IngredientUnit;
+  normalizedQuantity: number;
+  estimatedCostContribution: number;
 };
 
 export type ItemListItem = {
@@ -95,6 +114,7 @@ export type ItemDetail = {
   estimatedIngredientCost: number;
   estimatedMargin: number;
   isActive: boolean;
+  sauces: ItemSauceDetailRow[];
   ingredients: ItemRecipeDetailRow[];
   createdAt: string;
   updatedAt: string;
@@ -127,6 +147,65 @@ export type AddOnDetail = {
   ingredients: ItemRecipeDetailRow[];
   createdAt: string;
   updatedAt: string;
+};
+
+export type SauceListItem = {
+  id: string;
+  name: string;
+  outputIngredientId: string;
+  outputIngredientName: string;
+  outputUnit: IngredientUnit;
+  baseBatchQuantity: number;
+  estimatedBatchCost: number;
+  estimatedUnitCost: number;
+  totalStock: number;
+  note: string | null;
+  ingredientCount: number;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type SauceBatchHistory = {
+  id: string;
+  producedQuantity: number;
+  producedUnit: IngredientUnit;
+  batchFactor: number;
+  consumedCost: number;
+  note: string | null;
+  createdByUserId: string | null;
+  createdAt: string;
+};
+
+export type SauceDetail = {
+  id: string;
+  name: string;
+  outputIngredientId: string;
+  outputIngredientName: string;
+  outputUnit: IngredientUnit;
+  baseBatchQuantity: number;
+  estimatedBatchCost: number;
+  estimatedUnitCost: number;
+  totalStock: number;
+  note: string | null;
+  isActive: boolean;
+  ingredients: ItemRecipeDetailRow[];
+  recentBatches: SauceBatchHistory[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type SauceBatchResult = {
+  id: string;
+  sauceRecipeId: string;
+  outputIngredientId: string;
+  producedQuantity: number;
+  producedUnit: IngredientUnit;
+  batchFactor: number;
+  consumedCost: number;
+  note: string | null;
+  createdByUserId: string | null;
+  createdAt: string;
 };
 
 export type ComboItemRow = {

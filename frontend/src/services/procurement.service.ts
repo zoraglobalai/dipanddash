@@ -64,6 +64,11 @@ export const procurementService = {
     return response.data;
   },
 
+  getProductById: async (id: string) => {
+    const response = await apiClient.get<ApiSuccess<{ product: ProductListItem }>>(`/procurement/products/${id}`);
+    return response.data;
+  },
+
   createProduct: async (payload: {
     name: string;
     category: string;
@@ -145,6 +150,13 @@ export const procurementService = {
     const response = await apiClient.patch<ApiSuccess<{ purchaseOrder: PurchaseOrderDetail }>>(
       `/procurement/purchase-orders/${id}`,
       payload
+    );
+    return response.data;
+  },
+
+  deletePurchaseOrder: async (id: string) => {
+    const response = await apiClient.delete<ApiSuccess<{ purchaseOrder: { id: string; purchaseNumber: string } }>>(
+      `/procurement/purchase-orders/${id}`
     );
     return response.data;
   },
@@ -233,6 +245,32 @@ export const procurementService = {
     const response = await apiClient.get<ApiSuccess<ProductDayLedgerResponse>>("/procurement/products/ledger", {
       params
     });
+    return response.data;
+  },
+
+  updateProductLedgerRecord: async (
+    productId: string,
+    date: string,
+    payload: {
+      openingStock: number;
+      purchased: number;
+      consumption: number;
+      dipAndDashConsumption: number;
+      snookerConsumption: number;
+      note?: string;
+    }
+  ) => {
+    const response = await apiClient.patch<ApiSuccess<{ row: ProductDayLedgerResponse["rows"][number] }>>(
+      `/procurement/products/ledger/${productId}/${date}`,
+      payload
+    );
+    return response.data;
+  },
+
+  deleteProductLedgerRecord: async (productId: string, date: string) => {
+    const response = await apiClient.delete<ApiSuccess<{ productId: string; date: string; deleted: boolean }>>(
+      `/procurement/products/ledger/${productId}/${date}`
+    );
     return response.data;
   },
 

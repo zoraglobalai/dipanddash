@@ -1,5 +1,6 @@
 import {
   Box,
+  Center,
   Checkbox,
   FormControl,
   FormLabel,
@@ -16,6 +17,7 @@ import {
   ModalOverlay,
   Select,
   SimpleGrid,
+  Spinner,
   Tab,
   TabList,
   TabPanel,
@@ -27,7 +29,7 @@ import {
   useDisclosure
 } from "@chakra-ui/react";
 import { Download, Edit2, Eye, Plus, Trash2, Upload } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import { EmptyState } from "@/components/common/EmptyState";
@@ -194,6 +196,8 @@ type PurchaseOrderModalProps = {
   isOpen: boolean;
   onClose: () => void;
   loading: boolean;
+  mode: "create" | "edit";
+  isBootstrapping: boolean;
   meta: ProcurementMetaResponse | null;
   initialData: PurchaseOrderDetail | null;
   onLoadMetaForDate: (date: string) => Promise<void>;
@@ -204,16 +208,18 @@ type PurchaseOrderModalProps = {
   ) => Promise<void>;
 };
 
-const PurchaseOrderModal = ({
+const PurchaseOrderModal = memo(({
   isOpen,
   onClose,
   loading,
+  mode,
+  isBootstrapping,
   meta,
   initialData,
   onLoadMetaForDate,
   onSubmit
 }: PurchaseOrderModalProps) => {
-  const isEditMode = Boolean(initialData);
+  const isEditMode = mode === "edit";
   const { isCloseConfirmOpen, requestClose, cancelCloseRequest, confirmClose } = useModalCloseGuard(onClose);
   const [supplierId, setSupplierId] = useState("");
   const [purchaseDate, setPurchaseDate] = useState(getTodayDate());
@@ -228,7 +234,10 @@ const PurchaseOrderModal = ({
     if (!isOpen) {
       return;
     }
-    if (initialData) {
+    if (isEditMode) {
+      if (!initialData) {
+        return;
+      }
       const nextDate = initialData.purchaseDate || getTodayDate();
       setSupplierId(initialData.supplierId);
       setPurchaseDate(nextDate);
@@ -258,7 +267,9 @@ const PurchaseOrderModal = ({
           };
         })
       );
-      void onLoadMetaForDate(nextDate);
+      if (meta?.date !== nextDate) {
+        void onLoadMetaForDate(nextDate);
+      }
       return;
     }
 
@@ -271,8 +282,10 @@ const PurchaseOrderModal = ({
     setInvoiceImageFile(null);
     setInvoiceImageUrl(undefined);
     setInvoicePreviewUrl("");
-    void onLoadMetaForDate(nextDate);
-  }, [initialData, isOpen, onLoadMetaForDate]);
+    if (meta?.date !== nextDate) {
+      void onLoadMetaForDate(nextDate);
+    }
+  }, [initialData, isEditMode, isOpen, meta?.date, onLoadMetaForDate]);
 
   useEffect(() => {
     return () => {
@@ -293,16 +306,68 @@ const PurchaseOrderModal = ({
     [meta?.suppliers]
   );
 
+  const ingredientById = useMemo(
+    () => new Map((meta?.ingredients ?? []).map((ingredient) => [ingredient.id, ingredient])),
+    [meta?.ingredients]
+  );
+  const productById = useMemo(
+    () => new Map((meta?.products ?? []).map((product) => [product.id, product])),
+    [meta?.products]
+  );
+
+  const categoryOptionsByKind = useMemo(() => {
+    const base = {
+      core: [] as AppSearchableSelectOption[],
+      additional: [] as AppSearchableSelectOption[]
+    };
+
+    (meta?.ingredientCategories ?? []).forEach((category) => {
+      const bucket = category.kind === "additional" ? base.additional : base.core;
+      bucket.push({
+        value: category.id,
+        label: category.name,
+        description: category.description ?? undefined
+      });
+    });
+
+    return base;
+  }, [meta?.ingredientCategories]);
+
+  const ingredientOptionsByKindAndCategory = useMemo(() => {
+    const createBucket = () => ({
+      all: [] as AppSearchableSelectOption[],
+      byCategory: new Map<string, AppSearchableSelectOption[]>()
+    });
+    const buckets = {
+      core: createBucket(),
+      additional: createBucket()
+    };
+
+    (meta?.ingredients ?? []).forEach((ingredient) => {
+      const bucket = ingredient.categoryKind === "additional" ? buckets.additional : buckets.core;
+      const option = {
+        value: ingredient.id,
+        label: ingredient.name,
+        description: `${ingredient.categoryName} | Stock ${ingredient.currentStock} ${ingredient.unit}`,
+        searchText: `${ingredient.name} ${ingredient.categoryName} ${ingredient.unit}`
+      } satisfies AppSearchableSelectOption;
+
+      bucket.all.push(option);
+      const categoryOptions = bucket.byCategory.get(ingredient.categoryId);
+      if (categoryOptions) {
+        categoryOptions.push(option);
+      } else {
+        bucket.byCategory.set(ingredient.categoryId, [option]);
+      }
+    });
+
+    return buckets;
+  }, [meta?.ingredients]);
+
   const getCategoryOptions = useCallback(
     (ingredientKind: "core" | "additional"): AppSearchableSelectOption[] =>
-      (meta?.ingredientCategories ?? [])
-        .filter((category) => category.kind === ingredientKind)
-        .map((category) => ({
-          value: category.id,
-          label: category.name,
-          description: category.description ?? undefined
-        })),
-    [meta?.ingredientCategories]
+      ingredientKind === "additional" ? categoryOptionsByKind.additional : categoryOptionsByKind.core,
+    [categoryOptionsByKind]
   );
 
   const productOptions: AppSearchableSelectOption[] = useMemo(
@@ -317,17 +382,14 @@ const PurchaseOrderModal = ({
   );
 
   const getIngredientOptions = useCallback(
-    (categoryId: string, ingredientKind: "core" | "additional"): AppSearchableSelectOption[] =>
-      (meta?.ingredients ?? [])
-        .filter((ingredient) => ingredient.categoryKind === ingredientKind)
-        .filter((ingredient) => !categoryId || ingredient.categoryId === categoryId)
-        .map((ingredient) => ({
-          value: ingredient.id,
-          label: ingredient.name,
-          description: `${ingredient.categoryName} | Stock ${ingredient.currentStock} ${ingredient.unit}`,
-          searchText: `${ingredient.name} ${ingredient.categoryName} ${ingredient.unit}`
-        })),
-    [meta?.ingredients]
+    (categoryId: string, ingredientKind: "core" | "additional"): AppSearchableSelectOption[] => {
+      const bucket = ingredientKind === "additional" ? ingredientOptionsByKindAndCategory.additional : ingredientOptionsByKindAndCategory.core;
+      if (!categoryId) {
+        return bucket.all;
+      }
+      return bucket.byCategory.get(categoryId) ?? [];
+    },
+    [ingredientOptionsByKindAndCategory]
   );
 
   const totalAmount = useMemo(
@@ -361,7 +423,7 @@ const PurchaseOrderModal = ({
   };
 
   const handleIngredientPick = (line: DraftPurchaseLine, ingredientId: string) => {
-    const ingredient = (meta?.ingredients ?? []).find((entry) => entry.id === ingredientId);
+    const ingredient = ingredientById.get(ingredientId);
     updateLine(line.id, {
       ingredientCategoryId: ingredient?.categoryId ?? line.ingredientCategoryId,
       ingredientKind: ingredient?.categoryKind ?? line.ingredientKind,
@@ -372,7 +434,7 @@ const PurchaseOrderModal = ({
   };
 
   const handleProductPick = (line: DraftPurchaseLine, productId: string) => {
-    const product = (meta?.products ?? []).find((entry) => entry.id === productId);
+    const product = productById.get(productId);
     updateLine(line.id, {
       productId,
       quantityUnit: product?.unit ?? line.quantityUnit,
@@ -463,7 +525,15 @@ const PurchaseOrderModal = ({
           <ModalHeader>{isEditMode ? "Edit Purchase Order" : "Create Purchase Order"}</ModalHeader>
           <ModalCloseButton />
           <ModalBody pr={{ base: 1, md: 2 }} pb={6}>
-            <VStack spacing={4} align="stretch">
+            {isBootstrapping ? (
+              <Center py={16} flexDirection="column" gap={3}>
+                <Spinner size="lg" color="brand.500" />
+                <Text color="#6F594F" fontWeight={600}>
+                  Loading purchase details...
+                </Text>
+              </Center>
+            ) : (
+              <VStack spacing={4} align="stretch">
               <SimpleGrid columns={{ base: 1, md: 2, xl: 4 }} spacing={3}>
                 <AppSearchableSelect
                   label="Supplier"
@@ -497,8 +567,8 @@ const PurchaseOrderModal = ({
               </SimpleGrid>
 
               {lines.map((line, index) => {
-                const selectedIngredient = (meta?.ingredients ?? []).find((item) => item.id === line.ingredientId);
-                const selectedProduct = (meta?.products ?? []).find((item) => item.id === line.productId);
+                const selectedIngredient = ingredientById.get(line.ingredientId);
+                const selectedProduct = productById.get(line.productId);
                 const lineUnitOptions =
                   line.lineType === "ingredient"
                     ? selectedIngredient?.unitOptions ?? []
@@ -775,7 +845,8 @@ const PurchaseOrderModal = ({
                   bg="white"
                 />
               </FormControl>
-            </VStack>
+              </VStack>
+            )}
           </ModalBody>
           <ModalFooter
             gap={3}
@@ -795,6 +866,7 @@ const PurchaseOrderModal = ({
               onClick={() => void handleSave()}
               isLoading={loading}
               isDisabled={
+                isBootstrapping ||
                 !supplierId ||
                 lines.some(
                   (line) =>
@@ -820,7 +892,8 @@ const PurchaseOrderModal = ({
       />
     </>
   );
-};
+});
+PurchaseOrderModal.displayName = "PurchaseOrderModal";
 
 type ProductFormModalProps = {
   isOpen: boolean;
@@ -845,7 +918,7 @@ type ProductFormModalProps = {
   }) => Promise<void>;
 };
 
-const ProductFormModal = ({ isOpen, onClose, loading, initialData, suppliers, units, onSubmit }: ProductFormModalProps) => {
+const ProductFormModal = memo(({ isOpen, onClose, loading, initialData, suppliers, units, onSubmit }: ProductFormModalProps) => {
   const { isCloseConfirmOpen, requestClose, cancelCloseRequest, confirmClose } = useModalCloseGuard(onClose);
   const [form, setForm] = useState({
     name: "",
@@ -930,7 +1003,14 @@ const ProductFormModal = ({ isOpen, onClose, loading, initialData, suppliers, un
 
   return (
     <>
-      <Modal isOpen={isOpen} onClose={requestClose} isCentered size="xl" closeOnOverlayClick={false} closeOnEsc={false}>
+      <Modal
+        isOpen={isOpen}
+        onClose={requestClose}
+        isCentered
+        size="xl"
+        closeOnOverlayClick={false}
+        closeOnEsc={false}
+      >
         <ModalOverlay />
         <ModalContent borderRadius="18px">
           <ModalHeader>{initialData ? "Edit Product" : "Create Product"}</ModalHeader>
@@ -1084,7 +1164,163 @@ const ProductFormModal = ({ isOpen, onClose, loading, initialData, suppliers, un
       />
     </>
   );
+});
+ProductFormModal.displayName = "ProductFormModal";
+
+type ProductLedgerRow = ProductDayLedgerResponse["rows"][number];
+
+type ProductLedgerEditModalProps = {
+  isOpen: boolean;
+  onClose: () => void;
+  loading: boolean;
+  row: ProductLedgerRow | null;
+  onSubmit: (payload: {
+    openingStock: number;
+    purchased: number;
+    consumption: number;
+    dipAndDashConsumption: number;
+    snookerConsumption: number;
+    note?: string;
+  }) => Promise<void>;
 };
+
+const ProductLedgerEditModal = memo(({ isOpen, onClose, loading, row, onSubmit }: ProductLedgerEditModalProps) => {
+  const [openingStock, setOpeningStock] = useState("0");
+  const [purchased, setPurchased] = useState("0");
+  const [consumption, setConsumption] = useState("0");
+  const [dipAndDashConsumption, setDipAndDashConsumption] = useState("0");
+  const [snookerConsumption, setSnookerConsumption] = useState("0");
+  const [note, setNote] = useState("");
+
+  useEffect(() => {
+    if (!isOpen || !row) {
+      return;
+    }
+    setOpeningStock(String(row.openingStock ?? 0));
+    setPurchased(String(row.purchased ?? 0));
+    setConsumption(String(row.consumption ?? 0));
+    setDipAndDashConsumption(String(row.dipAndDashConsumption ?? 0));
+    setSnookerConsumption(String(row.snookerConsumption ?? 0));
+    setNote(row.adjustmentNote ?? "");
+  }, [isOpen, row]);
+
+  const purchasedNumber = Number(purchased || 0);
+  const consumptionNumber = Number(consumption || 0);
+  const dipNumber = Number(dipAndDashConsumption || 0);
+  const snookerNumber = Number(snookerConsumption || 0);
+  const isConsumptionSplitValid = Math.abs(consumptionNumber - (dipNumber + snookerNumber)) <= 0.001;
+
+  const handleSave = async () => {
+    await onSubmit({
+      openingStock: Number(openingStock || 0),
+      purchased: purchasedNumber,
+      consumption: consumptionNumber,
+      dipAndDashConsumption: dipNumber,
+      snookerConsumption: snookerNumber,
+      note: note.trim() || undefined
+    });
+  };
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} isCentered size="xl" closeOnOverlayClick={false}>
+      <ModalOverlay />
+      <ModalContent borderRadius="16px">
+        <ModalHeader>Edit Ledger Record</ModalHeader>
+        <ModalCloseButton />
+        <ModalBody>
+          <VStack spacing={4} align="stretch">
+            <SimpleGrid columns={{ base: 1, md: 2 }} spacing={3}>
+              <AppInput label="Date" value={row?.date ?? ""} isDisabled />
+              <AppInput label="Product" value={row?.productName ?? ""} isDisabled />
+              <AppInput
+                label={`Opening (${row?.unit ?? ""})`}
+                type="number"
+                step="0.001"
+                value={openingStock}
+                onChange={(event) => setOpeningStock((event.target as HTMLInputElement).value)}
+              />
+              <AppInput
+                label={`Purchase (${row?.unit ?? ""})`}
+                type="number"
+                min={0}
+                step="0.001"
+                value={purchased}
+                onChange={(event) => setPurchased((event.target as HTMLInputElement).value)}
+              />
+              <AppInput
+                label={`Consumption (${row?.unit ?? ""})`}
+                type="number"
+                min={0}
+                step="0.001"
+                value={consumption}
+                onChange={(event) => setConsumption((event.target as HTMLInputElement).value)}
+              />
+              <AppInput
+                label={`Dip Used (${row?.unit ?? ""})`}
+                type="number"
+                min={0}
+                step="0.001"
+                value={dipAndDashConsumption}
+                onChange={(event) => setDipAndDashConsumption((event.target as HTMLInputElement).value)}
+              />
+              <AppInput
+                label={`Snooker Used (${row?.unit ?? ""})`}
+                type="number"
+                min={0}
+                step="0.001"
+                value={snookerConsumption}
+                onChange={(event) => setSnookerConsumption((event.target as HTMLInputElement).value)}
+              />
+              <AppInput
+                label={`Closing (${row?.unit ?? ""})`}
+                value={String((Number(openingStock || 0) + purchasedNumber - consumptionNumber).toFixed(3))}
+                isDisabled
+              />
+            </SimpleGrid>
+            <FormControl>
+              <FormLabel>Adjustment Note (optional)</FormLabel>
+              <Textarea
+                value={note}
+                onChange={(event) => setNote((event.target as HTMLTextAreaElement).value)}
+                placeholder="Reason for manual correction"
+              />
+            </FormControl>
+            {!isConsumptionSplitValid ? (
+              <Text fontSize="sm" color="red.600">
+                Consumption must equal Dip Used + Snooker Used.
+              </Text>
+            ) : null}
+          </VStack>
+        </ModalBody>
+        <ModalFooter gap={3}>
+          <AppButton variant="outline" onClick={onClose}>
+            Cancel
+          </AppButton>
+          <AppButton
+            onClick={() => void handleSave()}
+            isLoading={loading}
+            isDisabled={
+              !row ||
+              !isConsumptionSplitValid ||
+              Number.isNaN(Number(openingStock)) ||
+              Number.isNaN(purchasedNumber) ||
+              Number.isNaN(consumptionNumber) ||
+              Number.isNaN(dipNumber) ||
+              Number.isNaN(snookerNumber) ||
+              purchasedNumber < 0 ||
+              consumptionNumber < 0 ||
+              dipNumber < 0 ||
+              snookerNumber < 0
+            }
+          >
+            Save Record
+          </AppButton>
+        </ModalFooter>
+      </ModalContent>
+    </Modal>
+  );
+});
+ProductLedgerEditModal.displayName = "ProductLedgerEditModal";
 
 type PurchasePageSection = "orders" | "products";
 
@@ -1172,16 +1408,26 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
   const [purchaseBulkUploadLoading, setPurchaseBulkUploadLoading] = useState(false);
   const [productBulkTemplateLoading, setProductBulkTemplateLoading] = useState(false);
   const [productBulkUploadLoading, setProductBulkUploadLoading] = useState(false);
+  const [orderFormMode, setOrderFormMode] = useState<"create" | "edit">("create");
+  const [orderFormBootstrapping, setOrderFormBootstrapping] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<PurchaseOrderDetail | null>(null);
   const [editingOrder, setEditingOrder] = useState<PurchaseOrderDetail | null>(null);
+  const [selectedOrderToDelete, setSelectedOrderToDelete] = useState<PurchaseOrderSummary | null>(null);
   const [selectedProduct, setSelectedProduct] = useState<ProductListItem | null>(null);
+  const [selectedProductToDelete, setSelectedProductToDelete] = useState<{ id: string; name: string } | null>(null);
+  const [editingLedgerRow, setEditingLedgerRow] = useState<ProductLedgerRow | null>(null);
+  const [ledgerRowToReset, setLedgerRowToReset] = useState<ProductLedgerRow | null>(null);
   const purchaseBulkInputRef = useRef<HTMLInputElement | null>(null);
   const productBulkInputRef = useRef<HTMLInputElement | null>(null);
+  const orderDetailCacheRef = useRef<Map<string, PurchaseOrderDetail>>(new Map());
 
   const orderModal = useDisclosure();
   const orderDetailModal = useDisclosure();
   const productModal = useDisclosure();
+  const deleteOrderDialog = useDisclosure();
   const deleteProductDialog = useDisclosure();
+  const ledgerEditModal = useDisclosure();
+  const resetLedgerDialog = useDisclosure();
 
   const loadMeta = useCallback(
     async (date?: string) => {
@@ -1385,6 +1631,8 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
   };
 
   const openCreateOrder = () => {
+    setOrderFormMode("create");
+    setOrderFormBootstrapping(false);
     setEditingOrder(null);
     orderModal.onOpen();
   };
@@ -1394,20 +1642,85 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
     productModal.onOpen();
   };
 
-  const openDeleteProduct = (row: ProductListItem) => {
-    setSelectedProduct(row);
+  const openEditProductFromLedger = useCallback(
+    (row: ProductLedgerRow) => {
+      setEditingLedgerRow(row);
+      ledgerEditModal.onOpen();
+    },
+    [ledgerEditModal]
+  );
+
+  const openDeleteProduct = (row: { id: string; name: string }) => {
+    setSelectedProductToDelete({ id: row.id, name: row.name });
     deleteProductDialog.onOpen();
   };
 
-  const openEditOrder = async (row: PurchaseOrderSummary) => {
-    try {
-      const response = await procurementService.getPurchaseOrderById(row.id);
-      setEditingOrder(response.data.purchaseOrder);
+  const openResetLedgerRecord = useCallback(
+    (row: ProductLedgerRow) => {
+      setLedgerRowToReset(row);
+      resetLedgerDialog.onOpen();
+    },
+    [resetLedgerDialog]
+  );
+
+  const openViewOrder = useCallback(
+    async (orderId: string) => {
+      const cached = orderDetailCacheRef.current.get(orderId);
+      if (cached) {
+        setSelectedOrder(cached);
+        orderDetailModal.onOpen();
+        return;
+      }
+
+      try {
+        const response = await procurementService.getPurchaseOrderById(orderId);
+        const detail = response.data.purchaseOrder;
+        orderDetailCacheRef.current.set(orderId, detail);
+        setSelectedOrder(detail);
+        orderDetailModal.onOpen();
+      } catch (error) {
+        toast.error("Unable to load purchase detail", extractErrorMessage(error));
+      }
+    },
+    [orderDetailModal, toast]
+  );
+
+  const openEditOrder = useCallback(
+    async (row: PurchaseOrderSummary) => {
+      setOrderFormMode("edit");
+      setOrderFormBootstrapping(true);
+      const cached = orderDetailCacheRef.current.get(row.id);
+      if (cached) {
+        setEditingOrder(cached);
+        setOrderFormBootstrapping(false);
+        orderModal.onOpen();
+        return;
+      }
+
+      setEditingOrder(null);
       orderModal.onOpen();
-    } catch (error) {
-      toast.error("Unable to load purchase for editing", extractErrorMessage(error));
-    }
-  };
+      try {
+        const response = await procurementService.getPurchaseOrderById(row.id);
+        const detail = response.data.purchaseOrder;
+        orderDetailCacheRef.current.set(row.id, detail);
+        setEditingOrder(detail);
+      } catch (error) {
+        orderModal.onClose();
+        toast.error("Unable to load purchase for editing", extractErrorMessage(error));
+      } finally {
+        setOrderFormBootstrapping(false);
+      }
+    },
+    [orderModal, toast]
+  );
+
+  const openDeleteOrder = useCallback(
+    (row: PurchaseOrderSummary) => {
+      setSelectedOrderToDelete(row);
+      deleteOrderDialog.onOpen();
+    },
+    [deleteOrderDialog]
+  );
 
   const openPurchaseBulkPicker = useCallback(() => {
     purchaseBulkInputRef.current?.click();
@@ -1543,19 +1856,23 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
       }
 
       if (editingOrder) {
-        await procurementService.updatePurchaseOrder(editingOrder.id, {
+        const response = await procurementService.updatePurchaseOrder(editingOrder.id, {
           ...createPayload,
           invoiceImageUrl
         });
+        orderDetailCacheRef.current.set(editingOrder.id, response.data.purchaseOrder);
         toast.success("Purchase order updated successfully");
       } else {
-        await procurementService.createPurchaseOrder({
+        const response = await procurementService.createPurchaseOrder({
           ...createPayload,
           invoiceImageUrl
         });
+        orderDetailCacheRef.current.set(response.data.purchaseOrder.id, response.data.purchaseOrder);
         toast.success("Purchase order created successfully");
       }
       orderModal.onClose();
+      setOrderFormBootstrapping(false);
+      setOrderFormMode("create");
       setEditingOrder(null);
       await Promise.all([loadOrders(), loadProducts(), loadProductLedger(), loadStats(), loadMeta(payload.purchaseDate)]);
     } catch (error) {
@@ -1601,19 +1918,94 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
     }
   };
 
-  const handleDeleteProduct = async () => {
-    if (!selectedProduct) {
+  const handleSaveLedgerRecord = async (payload: {
+    openingStock: number;
+    purchased: number;
+    consumption: number;
+    dipAndDashConsumption: number;
+    snookerConsumption: number;
+    note?: string;
+  }) => {
+    if (!editingLedgerRow) {
       return;
     }
     setMutationLoading(true);
     try {
-      await procurementService.deleteProduct(selectedProduct.id);
+      await procurementService.updateProductLedgerRecord(editingLedgerRow.productId, editingLedgerRow.date, payload);
+      toast.success("Ledger record updated successfully");
+      ledgerEditModal.onClose();
+      setEditingLedgerRow(null);
+      await Promise.all([loadProductLedger(), loadProducts(), loadStats(), loadMeta(meta?.date)]);
+    } catch (error) {
+      toast.error("Unable to update ledger record", extractErrorMessage(error));
+    } finally {
+      setMutationLoading(false);
+    }
+  };
+
+  const handleResetLedgerRecord = async () => {
+    if (!ledgerRowToReset) {
+      return;
+    }
+    setMutationLoading(true);
+    try {
+      await procurementService.deleteProductLedgerRecord(ledgerRowToReset.productId, ledgerRowToReset.date);
+      toast.success("Ledger record reset successfully");
+      resetLedgerDialog.onClose();
+      setLedgerRowToReset(null);
+      await Promise.all([loadProductLedger(), loadProducts(), loadStats(), loadMeta(meta?.date)]);
+    } catch (error) {
+      toast.error("Unable to reset ledger record", extractErrorMessage(error));
+    } finally {
+      setMutationLoading(false);
+    }
+  };
+
+  const handleDeleteProduct = async () => {
+    if (!selectedProductToDelete) {
+      return;
+    }
+    setMutationLoading(true);
+    try {
+      await procurementService.deleteProduct(selectedProductToDelete.id);
       toast.success("Product deleted successfully");
       deleteProductDialog.onClose();
+      setSelectedProductToDelete(null);
       setSelectedProduct(null);
       await Promise.all([loadProducts(), loadProductLedger(), loadStats(), loadMeta(meta?.date)]);
     } catch (error) {
       toast.error("Unable to delete product", extractErrorMessage(error));
+    } finally {
+      setMutationLoading(false);
+    }
+  };
+
+  const handleDeleteOrder = async () => {
+    if (!selectedOrderToDelete) {
+      return;
+    }
+    setMutationLoading(true);
+    try {
+      const deletedOrderId = selectedOrderToDelete.id;
+      const deletedDate = selectedOrderToDelete.purchaseDate;
+      await procurementService.deletePurchaseOrder(deletedOrderId);
+      orderDetailCacheRef.current.delete(deletedOrderId);
+      if (selectedOrder?.id === deletedOrderId) {
+        setSelectedOrder(null);
+        orderDetailModal.onClose();
+      }
+      if (editingOrder?.id === deletedOrderId) {
+        setEditingOrder(null);
+        setOrderFormBootstrapping(false);
+        setOrderFormMode("create");
+        orderModal.onClose();
+      }
+      toast.success("Purchase order deleted successfully");
+      deleteOrderDialog.onClose();
+      setSelectedOrderToDelete(null);
+      await Promise.all([loadOrders(), loadProducts(), loadProductLedger(), loadStats(), loadMeta(deletedDate)]);
+    } catch (error) {
+      toast.error("Unable to delete purchase order", extractErrorMessage(error));
     } finally {
       setMutationLoading(false);
     }
@@ -1628,6 +2020,62 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
     standalone && initialSection === "products"
       ? "Manage packaged products with stock, valuation and ageing visibility."
       : "Manage supplier purchases, ingredient restocking and packaged products.";
+  const orderColumns = useMemo(
+    () => [
+      { key: "purchaseNumber", header: "Purchase No", render: (row: PurchaseOrderSummary) => <Text fontWeight={800}>{row.purchaseNumber}</Text> },
+      { key: "supplierName", header: "Supplier", render: (row: PurchaseOrderSummary) => row.supplierName },
+      { key: "purchaseDate", header: "Date", render: (row: PurchaseOrderSummary) => formatDate(row.purchaseDate) },
+      {
+        key: "purchaseSection",
+        header: "Section",
+        render: (row: PurchaseOrderSummary) => formatPurchaseSectionLabel(row.purchaseSection)
+      },
+      {
+        key: "lineCount",
+        header: "Total Items",
+        render: (row: PurchaseOrderSummary) => (
+          <Box>
+            <Text fontSize="sm" color="#7A6359">
+              Ingredients: {row.ingredientLineCount ?? 0} | Products: {row.productLineCount ?? 0}
+            </Text>
+          </Box>
+        )
+      },
+      { key: "totalAmount", header: "Total", render: (row: PurchaseOrderSummary) => formatCurrency(row.totalAmount) },
+      { key: "createdByUserName", header: "Created By", render: (row: PurchaseOrderSummary) => row.createdByUserName ?? "-" },
+      {
+        key: "action",
+        header: "Action",
+        render: (row: PurchaseOrderSummary) => (
+          <HStack spacing={2}>
+            <ActionIconButton
+              aria-label="View details"
+              tooltip="View details"
+              icon={<Eye size={16} />}
+              variant="outline"
+              onClick={() => void openViewOrder(row.id)}
+            />
+            <ActionIconButton
+              aria-label="Edit purchase order"
+              tooltip="Edit purchase order"
+              icon={<Edit2 size={16} />}
+              variant="outline"
+              onClick={() => void openEditOrder(row)}
+            />
+            <ActionIconButton
+              aria-label="Delete purchase order"
+              tooltip="Delete purchase order"
+              icon={<Trash2 size={16} />}
+              variant="outline"
+              colorScheme="accentRed"
+              onClick={() => openDeleteOrder(row)}
+            />
+          </HStack>
+        )
+      }
+    ],
+    [openDeleteOrder, openEditOrder, openViewOrder]
+  );
 
   useEffect(() => {
     setActiveTabIndex(initialTabIndex);
@@ -1849,59 +2297,7 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
                   <SkeletonTable rows={5} />
                 ) : (
                   <DataTable
-                    columns={[
-                      { key: "purchaseNumber", header: "Purchase No", render: (row: PurchaseOrderSummary) => <Text fontWeight={800}>{row.purchaseNumber}</Text> },
-                      { key: "supplierName", header: "Supplier", render: (row: PurchaseOrderSummary) => row.supplierName },
-                      { key: "purchaseDate", header: "Date", render: (row: PurchaseOrderSummary) => formatDate(row.purchaseDate) },
-                      {
-                        key: "purchaseSection",
-                        header: "Section",
-                        render: (row: PurchaseOrderSummary) => formatPurchaseSectionLabel(row.purchaseSection)
-                      },
-                      {
-                        key: "lineCount",
-                        header: "Total Items",
-                        render: (row: PurchaseOrderSummary) => (
-                          <Box>
-                            <Text fontSize="sm" color="#7A6359">
-                              Ingredients: {row.ingredientLineCount ?? 0} | Products: {row.productLineCount ?? 0}
-                            </Text>
-                          </Box>
-                        )
-                      },
-                      { key: "totalAmount", header: "Total", render: (row: PurchaseOrderSummary) => formatCurrency(row.totalAmount) },
-                      { key: "createdByUserName", header: "Created By", render: (row: PurchaseOrderSummary) => row.createdByUserName ?? "-" },
-                      {
-                        key: "action",
-                        header: "Action",
-                        render: (row: PurchaseOrderSummary) => (
-                          <HStack spacing={2}>
-                            <ActionIconButton
-                              aria-label="View details"
-                              tooltip="View details"
-                              icon={<Eye size={16} />}
-                              variant="outline"
-                              onClick={() =>
-                                void procurementService
-                                  .getPurchaseOrderById(row.id)
-                                  .then((response) => {
-                                    setSelectedOrder(response.data.purchaseOrder);
-                                    orderDetailModal.onOpen();
-                                  })
-                                  .catch((error) => toast.error("Unable to load purchase detail", extractErrorMessage(error)))
-                              }
-                            />
-                            <ActionIconButton
-                              aria-label="Edit purchase order"
-                              tooltip="Edit purchase order"
-                              icon={<Edit2 size={16} />}
-                              variant="outline"
-                              onClick={() => void openEditOrder(row)}
-                            />
-                          </HStack>
-                        )
-                      }
-                    ]}
+                    columns={orderColumns}
                     rows={orderRows}
                     emptyState={<EmptyState title="No purchase orders found" description="Create a new purchase order to restock ingredients and products." />}
                   />
@@ -2027,6 +2423,16 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
                               <Text fontSize="sm" color="#7A6359">
                                 {row.category} | {row.unit.toUpperCase()}
                               </Text>
+                              {row.isAdjusted ? (
+                                <Text fontSize="xs" color="#9A3412" fontWeight={700}>
+                                  Manually adjusted
+                                </Text>
+                              ) : null}
+                              {row.adjustmentNote ? (
+                                <Text fontSize="xs" color="#7A6359">
+                                  {row.adjustmentNote}
+                                </Text>
+                              ) : null}
                             </Box>
                           )
                         },
@@ -2083,6 +2489,29 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
                             >
                               {row.stockHealth === "LOW_STOCK" ? "Low Stock" : "Healthy"}
                             </Box>
+                          )
+                        },
+                        {
+                          key: "actions",
+                          header: "Actions",
+                          render: (row: ProductDayLedgerResponse["rows"][number]) => (
+                            <HStack spacing={2}>
+                              <ActionIconButton
+                                aria-label="Edit ledger record"
+                                tooltip="Edit ledger record"
+                                icon={<Edit2 size={16} />}
+                                variant="outline"
+                                onClick={() => openEditProductFromLedger(row)}
+                              />
+                              <ActionIconButton
+                                aria-label="Reset ledger record"
+                                tooltip="Reset ledger record"
+                                icon={<Trash2 size={16} />}
+                                variant="outline"
+                                colorScheme="accentRed"
+                                onClick={() => openResetLedgerRecord(row)}
+                              />
+                            </HStack>
                           )
                         }
                       ]}
@@ -2359,40 +2788,70 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
         </TabPanels>
       </Tabs>
 
-      <PurchaseOrderModal
-        isOpen={orderModal.isOpen}
-        onClose={() => {
-          orderModal.onClose();
-          setEditingOrder(null);
-        }}
-        loading={mutationLoading}
-        meta={meta}
-        initialData={editingOrder}
-        onLoadMetaForDate={loadMeta}
-        onSubmit={handleSaveOrder}
-      />
+      {orderModal.isOpen ? (
+        <PurchaseOrderModal
+          isOpen={orderModal.isOpen}
+          onClose={() => {
+            orderModal.onClose();
+            setOrderFormMode("create");
+            setOrderFormBootstrapping(false);
+            setEditingOrder(null);
+          }}
+          loading={mutationLoading}
+          mode={orderFormMode}
+          isBootstrapping={orderFormBootstrapping}
+          meta={meta}
+          initialData={editingOrder}
+          onLoadMetaForDate={loadMeta}
+          onSubmit={handleSaveOrder}
+        />
+      ) : null}
 
-      <ProductFormModal
-        isOpen={productModal.isOpen}
-        onClose={() => {
-          productModal.onClose();
-          setSelectedProduct(null);
-        }}
-        loading={mutationLoading}
-        initialData={selectedProduct}
-        suppliers={suppliers}
-        units={units}
-        onSubmit={handleSaveProduct}
-      />
+      {productModal.isOpen ? (
+        <ProductFormModal
+          isOpen={productModal.isOpen}
+          onClose={() => {
+            productModal.onClose();
+            setSelectedProduct(null);
+          }}
+          loading={mutationLoading}
+          initialData={selectedProduct}
+          suppliers={suppliers}
+          units={units}
+          onSubmit={handleSaveProduct}
+        />
+      ) : null}
 
-      <Modal isOpen={orderDetailModal.isOpen} onClose={orderDetailModal.onClose} size="4xl" closeOnOverlayClick={false}>
-        <ModalOverlay />
-        <ModalContent borderRadius="16px">
-          <ModalHeader>Purchase Order Details</ModalHeader>
-          <ModalCloseButton />
-          <ModalBody>
-            {selectedOrder ? (
-              <VStack spacing={4} align="stretch">
+      {ledgerEditModal.isOpen ? (
+        <ProductLedgerEditModal
+          isOpen={ledgerEditModal.isOpen}
+          onClose={() => {
+            ledgerEditModal.onClose();
+            setEditingLedgerRow(null);
+          }}
+          loading={mutationLoading}
+          row={editingLedgerRow}
+          onSubmit={handleSaveLedgerRecord}
+        />
+      ) : null}
+
+      {orderDetailModal.isOpen ? (
+        <Modal
+          isOpen={orderDetailModal.isOpen}
+          onClose={() => {
+            orderDetailModal.onClose();
+            setSelectedOrder(null);
+          }}
+          size="4xl"
+          closeOnOverlayClick={false}
+        >
+          <ModalOverlay />
+          <ModalContent borderRadius="16px">
+            <ModalHeader>Purchase Order Details</ModalHeader>
+            <ModalCloseButton />
+            <ModalBody>
+              {selectedOrder ? (
+                <VStack spacing={4} align="stretch">
                 <SimpleGrid columns={{ base: 1, md: 5 }} spacing={3}>
                   <AppCard p={3}><Text fontSize="xs" color="#7B645B">Purchase No</Text><Text fontWeight={900}>{selectedOrder.purchaseNumber}</Text></AppCard>
                   <AppCard p={3}><Text fontSize="xs" color="#7B645B">Supplier</Text><Text fontWeight={900}>{selectedOrder.supplierName}</Text></AppCard>
@@ -2458,20 +2917,65 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
                   ]}
                   rows={selectedOrder.lines as any}
                 />
-              </VStack>
-            ) : null}
-          </ModalBody>
-          <ModalFooter><AppButton variant="outline" onClick={orderDetailModal.onClose}>Close</AppButton></ModalFooter>
-        </ModalContent>
-      </Modal>
+                </VStack>
+              ) : null}
+            </ModalBody>
+            <ModalFooter>
+              <AppButton
+                variant="outline"
+                onClick={() => {
+                  orderDetailModal.onClose();
+                  setSelectedOrder(null);
+                }}
+              >
+                Close
+              </AppButton>
+            </ModalFooter>
+          </ModalContent>
+        </Modal>
+      ) : null}
+
+      <ConfirmDialog
+        isOpen={deleteOrderDialog.isOpen}
+        title="Delete purchase order?"
+        description={
+          selectedOrderToDelete
+            ? `Delete ${selectedOrderToDelete.purchaseNumber}? This will rollback related stock and cost entries.`
+            : "Are you sure you want to delete this purchase order?"
+        }
+        onClose={() => {
+          deleteOrderDialog.onClose();
+          setSelectedOrderToDelete(null);
+        }}
+        onConfirm={() => void handleDeleteOrder()}
+        isLoading={mutationLoading}
+      />
+
+      <ConfirmDialog
+        isOpen={resetLedgerDialog.isOpen}
+        title="Reset ledger record?"
+        description={
+          ledgerRowToReset
+            ? `Reset manual changes for ${ledgerRowToReset.productName} on ${ledgerRowToReset.date}?`
+            : "Are you sure you want to reset this ledger record?"
+        }
+        onClose={() => {
+          resetLedgerDialog.onClose();
+          setLedgerRowToReset(null);
+        }}
+        onConfirm={() => void handleResetLedgerRecord()}
+        isLoading={mutationLoading}
+      />
 
       <ConfirmDialog
         isOpen={deleteProductDialog.isOpen}
         title="Delete product?"
-        description={selectedProduct ? `Are you sure you want to delete ${selectedProduct.name}?` : "Are you sure?"}
+        description={
+          selectedProductToDelete ? `Are you sure you want to delete ${selectedProductToDelete.name}?` : "Are you sure?"
+        }
         onClose={() => {
           deleteProductDialog.onClose();
-          setSelectedProduct(null);
+          setSelectedProductToDelete(null);
         }}
         onConfirm={() => void handleDeleteProduct()}
         isLoading={mutationLoading}

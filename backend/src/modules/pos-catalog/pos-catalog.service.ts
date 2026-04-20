@@ -9,10 +9,13 @@ import { PosBillingControl } from "../ingredients/pos-billing-control.entity";
 import { ItemCategory } from "../items/item-category.entity";
 import { ItemIngredient } from "../items/item-ingredient.entity";
 import { Item } from "../items/item.entity";
+import { ItemSauce } from "../items/item-sauce.entity";
 import { AddOnIngredient } from "../items/add-on-ingredient.entity";
 import { AddOn } from "../items/add-on.entity";
 import { ComboItem } from "../items/combo-item.entity";
 import { Combo } from "../items/combo.entity";
+import { SauceRecipe } from "../items/sauce-recipe.entity";
+import { SauceRecipeIngredient } from "../items/sauce-recipe-ingredient.entity";
 import { UNIT_META } from "../items/items.units";
 import { Coupon } from "../offers/coupon.entity";
 import { Product } from "../procurement/product.entity";
@@ -29,6 +32,9 @@ export class PosCatalogService {
   private readonly itemCategoryRepository = AppDataSource.getRepository(ItemCategory);
   private readonly itemRepository = AppDataSource.getRepository(Item);
   private readonly itemIngredientRepository = AppDataSource.getRepository(ItemIngredient);
+  private readonly itemSauceRepository = AppDataSource.getRepository(ItemSauce);
+  private readonly sauceRecipeRepository = AppDataSource.getRepository(SauceRecipe);
+  private readonly sauceRecipeIngredientRepository = AppDataSource.getRepository(SauceRecipeIngredient);
   private readonly addOnRepository = AppDataSource.getRepository(AddOn);
   private readonly addOnIngredientRepository = AppDataSource.getRepository(AddOnIngredient);
   private readonly comboRepository = AppDataSource.getRepository(Combo);
@@ -41,8 +47,11 @@ export class PosCatalogService {
   private readonly productRepository = AppDataSource.getRepository(Product);
 
   private async getLatestVersion() {
-    const [item, addOn, combo, coupon, ingredient, stock, allocation, control, product] = await Promise.all([
+    const [item, itemSauce, sauce, sauceIngredient, addOn, combo, coupon, ingredient, stock, allocation, control, product] = await Promise.all([
       this.itemRepository.findOne({ where: {}, order: { updatedAt: "DESC" } }),
+      this.itemSauceRepository.findOne({ where: {}, order: { updatedAt: "DESC" } }),
+      this.sauceRecipeRepository.findOne({ where: {}, order: { updatedAt: "DESC" } }),
+      this.sauceRecipeIngredientRepository.findOne({ where: {}, order: { updatedAt: "DESC" } }),
       this.addOnRepository.findOne({ where: {}, order: { updatedAt: "DESC" } }),
       this.comboRepository.findOne({ where: {}, order: { updatedAt: "DESC" } }),
       this.couponRepository.findOne({ where: {}, order: { updatedAt: "DESC" } }),
@@ -55,6 +64,9 @@ export class PosCatalogService {
 
     return latestIso([
       item?.updatedAt,
+      itemSauce?.updatedAt,
+      sauce?.updatedAt,
+      sauceIngredient?.updatedAt,
       addOn?.updatedAt,
       combo?.updatedAt,
       coupon?.updatedAt,
@@ -72,7 +84,24 @@ export class PosCatalogService {
     const sinceDate = input?.sinceVersion ? new Date(input.sinceVersion) : null;
     const whereUpdatedSince = sinceDate && !Number.isNaN(sinceDate.getTime()) ? sinceDate : null;
 
-    const [categories, items, itemIngredients, addOns, addOnIngredients, combos, comboItems, coupons, allocationRows, control, products, activeIngredients, stockRows] =
+    const [
+      categories,
+      items,
+      itemIngredients,
+      itemSauces,
+      sauces,
+      sauceIngredients,
+      addOns,
+      addOnIngredients,
+      combos,
+      comboItems,
+      coupons,
+      allocationRows,
+      control,
+      products,
+      activeIngredients,
+      stockRows
+    ] =
       await Promise.all([
         this.itemCategoryRepository.find({
           where: whereUpdatedSince ? { updatedAt: MoreThanOrEqual(whereUpdatedSince) } : {},
@@ -83,6 +112,15 @@ export class PosCatalogService {
           order: { name: "ASC" }
         }),
         this.itemIngredientRepository.find({
+          relations: { ingredient: true }
+        }),
+        this.itemSauceRepository.find({
+          relations: { sauceRecipe: true }
+        }),
+        this.sauceRecipeRepository.find({
+          where: {}
+        }),
+        this.sauceRecipeIngredientRepository.find({
           relations: { ingredient: true }
         }),
         this.addOnRepository.find({
@@ -132,6 +170,7 @@ export class PosCatalogService {
     const isSnookerStaff = input?.actorRole === UserRole.SNOOKER_STAFF;
     const visibleItems = isSnookerStaff ? [] : items;
     const visibleItemIngredients = isSnookerStaff ? [] : itemIngredients;
+    const visibleItemSauces = isSnookerStaff ? [] : itemSauces;
     const visibleAddOns = isSnookerStaff ? [] : addOns;
     const visibleAddOnIngredients = isSnookerStaff ? [] : addOnIngredients;
     const visibleCombos = isSnookerStaff ? [] : combos;
@@ -210,6 +249,51 @@ export class PosCatalogService {
       })
       .sort((left, right) => left.ingredientName.localeCompare(right.ingredientName));
 
+    const sauceMap = new Map(sauces.map((sauce) => [sauce.id, sauce]));
+    const sauceIngredientsBySauceId = new Map<string, SauceRecipeIngredient[]>();
+    sauceIngredients.forEach((row) => {
+      const existing = sauceIngredientsBySauceId.get(row.sauceRecipeId);
+      if (existing) {
+        existing.push(row);
+      } else {
+        sauceIngredientsBySauceId.set(row.sauceRecipeId, [row]);
+      }
+    });
+
+    const expandedItemRecipes = [...visibleItemIngredients];
+    visibleItemSauces.forEach((itemSauce) => {
+      const sauce = sauceMap.get(itemSauce.sauceRecipeId);
+      if (!sauce || !sauce.isActive) {
+        return;
+      }
+
+      const batchQuantity = Number(sauce.baseBatchQuantity);
+      if (!Number.isFinite(batchQuantity) || batchQuantity <= 0) {
+        return;
+      }
+
+      const batchFactor = Number(itemSauce.normalizedQuantity) / batchQuantity;
+      if (!Number.isFinite(batchFactor) || batchFactor <= 0) {
+        return;
+      }
+
+      const ingredientRows = sauceIngredientsBySauceId.get(sauce.id) ?? [];
+      ingredientRows.forEach((sauceIngredient) => {
+        const synthetic = this.itemIngredientRepository.create({
+          itemId: itemSauce.itemId,
+          ingredientId: sauceIngredient.ingredientId,
+          quantity: Number((Number(sauceIngredient.normalizedQuantity) * batchFactor).toFixed(6)),
+          unit: sauceIngredient.ingredient.unit,
+          normalizedQuantity: Number((Number(sauceIngredient.normalizedQuantity) * batchFactor).toFixed(6)),
+          costContribution: Number((Number(sauceIngredient.costContribution) * batchFactor).toFixed(3))
+        });
+        synthetic.id = `sauce-${itemSauce.id}-${sauceIngredient.id}`;
+        synthetic.ingredient = sauceIngredient.ingredient;
+        synthetic.updatedAt = itemSauce.updatedAt > sauceIngredient.updatedAt ? itemSauce.updatedAt : sauceIngredient.updatedAt;
+        expandedItemRecipes.push(synthetic);
+      });
+    });
+
     return {
       version,
       generatedAt: new Date().toISOString(),
@@ -231,7 +315,7 @@ export class PosCatalogService {
         note: item.note,
         updatedAt: item.updatedAt
       })),
-      itemRecipes: visibleItemIngredients.map((recipe) => ({
+      itemRecipes: expandedItemRecipes.map((recipe) => ({
         id: recipe.id,
         itemId: recipe.itemId,
         ingredientId: recipe.ingredientId,
