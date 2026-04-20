@@ -213,6 +213,7 @@ export type PurchaseOrderLine = {
   dipAndDashStockAdded: number | null;
   gamingStockAdded: number | null;
   unitPrice: number;
+  gstValue: number;
   lineTotal: number;
   unitPriceUpdated: boolean;
   expiryDate: string | null;
@@ -343,6 +344,7 @@ export type CreatePurchaseLineInput = {
   quantity: number;
   quantityUnit?: string;
   unitPrice: number;
+  gstValue?: number;
   expiryDate?: string;
   note?: string;
 };

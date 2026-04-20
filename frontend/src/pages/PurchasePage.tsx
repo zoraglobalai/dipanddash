@@ -174,6 +174,7 @@ type DraftPurchaseLine = {
   quantity: string;
   quantityUnit: string;
   unitPrice: string;
+  gstValue: string;
   expiryDate: string;
   note: string;
 };
@@ -188,6 +189,7 @@ const createEmptyLine = (): DraftPurchaseLine => ({
   quantity: "1",
   quantityUnit: "",
   unitPrice: "0",
+  gstValue: "0",
   expiryDate: "",
   note: ""
 });
@@ -262,6 +264,7 @@ const PurchaseOrderModal = memo(({
             quantity: String(line.enteredQuantity ?? line.stockAdded),
             quantityUnit: line.enteredUnit ?? line.unit,
             unitPrice: String(line.unitPrice),
+            gstValue: String(line.gstValue ?? 0),
             expiryDate: line.expiryDate ?? "",
             note: ""
           };
@@ -397,10 +400,11 @@ const PurchaseOrderModal = memo(({
       lines.reduce((acc, line) => {
         const qty = Number(line.quantity);
         const price = Number(line.unitPrice);
-        if (!Number.isFinite(qty) || !Number.isFinite(price)) {
+        const gstValue = Number(line.gstValue);
+        if (!Number.isFinite(qty) || !Number.isFinite(price) || !Number.isFinite(gstValue)) {
           return acc;
         }
-        return acc + qty * price;
+        return acc + qty * price + Math.max(0, gstValue);
       }, 0),
     [lines]
   );
@@ -465,7 +469,15 @@ const PurchaseOrderModal = memo(({
       .map((line) => {
         const quantity = Number(line.quantity);
         const unitPrice = Number(line.unitPrice);
-        if (!Number.isFinite(quantity) || !Number.isFinite(unitPrice) || quantity <= 0 || unitPrice < 0) {
+        const gstValue = Number(line.gstValue);
+        if (
+          !Number.isFinite(quantity) ||
+          !Number.isFinite(unitPrice) ||
+          !Number.isFinite(gstValue) ||
+          quantity <= 0 ||
+          unitPrice < 0 ||
+          gstValue < 0
+        ) {
           return null;
         }
         if (line.lineType === "ingredient" && !line.ingredientId) {
@@ -481,6 +493,7 @@ const PurchaseOrderModal = memo(({
           quantity,
           quantityUnit: line.quantityUnit || undefined,
           unitPrice,
+          gstValue,
           expiryDate: line.lineType === "product" ? line.expiryDate || undefined : undefined,
           note: line.note.trim() || undefined
         } as CreatePurchaseLineInput;
@@ -575,9 +588,15 @@ const PurchaseOrderModal = memo(({
                     : selectedProduct?.unitOptions ?? [];
                 const quantityNumber = Number(line.quantity);
                 const unitPriceNumber = Number(line.unitPrice);
+                const gstValueNumber = Number(line.gstValue);
                 const lineTotal =
-                  Number.isFinite(quantityNumber) && Number.isFinite(unitPriceNumber) && quantityNumber > 0 && unitPriceNumber >= 0
-                    ? quantityNumber * unitPriceNumber
+                  Number.isFinite(quantityNumber) &&
+                  Number.isFinite(unitPriceNumber) &&
+                  Number.isFinite(gstValueNumber) &&
+                  quantityNumber > 0 &&
+                  unitPriceNumber >= 0 &&
+                  gstValueNumber >= 0
+                    ? quantityNumber * unitPriceNumber + gstValueNumber
                     : 0;
 
                 return (
@@ -603,6 +622,7 @@ const PurchaseOrderModal = memo(({
                             productId: "",
                             quantityUnit: "",
                             unitPrice: "0",
+                            gstValue: "0",
                             expiryDate: ""
                           })
                         }
@@ -679,7 +699,7 @@ const PurchaseOrderModal = memo(({
                       />
                     </SimpleGrid>
 
-                      <SimpleGrid columns={{ base: 1, md: 2, xl: 4 }} spacing={3}>
+                      <SimpleGrid columns={{ base: 1, md: 2, xl: 6 }} spacing={3}>
                         <FormControl>
                           <FormLabel>Unit</FormLabel>
                           <Select
@@ -706,6 +726,14 @@ const PurchaseOrderModal = memo(({
                           step="0.01"
                           value={line.unitPrice}
                           onChange={(event) => updateLine(line.id, { unitPrice: (event.target as HTMLInputElement).value })}
+                        />
+                        <AppInput
+                          label="GST Value"
+                          type="number"
+                          min={0}
+                          step="0.01"
+                          value={line.gstValue}
+                          onChange={(event) => updateLine(line.id, { gstValue: (event.target as HTMLInputElement).value })}
                         />
                         <AppInput
                           label="Expiry Date (product only)"
@@ -873,6 +901,7 @@ const PurchaseOrderModal = memo(({
                     !line.quantity ||
                     !line.quantityUnit ||
                     !line.unitPrice ||
+                    !line.gstValue ||
                     (line.lineType === "ingredient" && !line.ingredientId) ||
                     (line.lineType === "product" && !line.productId)
                 )
@@ -2895,6 +2924,7 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
                       render: (row: any) => `${row.enteredQuantity ?? row.stockAdded} ${row.enteredUnit ?? row.unit}`
                     },
                     { key: "unitPrice", header: "Unit Price", render: (row: any) => formatCurrency(row.unitPrice) },
+                    { key: "gstValue", header: "GST Value", render: (row: any) => formatCurrency(row.gstValue ?? 0) },
                     {
                       key: "expiryDate",
                       header: "Expiry",

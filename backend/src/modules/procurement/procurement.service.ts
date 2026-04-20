@@ -123,6 +123,7 @@ type PurchaseOrderLinePayload = {
   quantity: number;
   quantityUnit?: string;
   unitPrice: number;
+  gstValue?: number;
   expiryDate?: string;
   note?: string;
 };
@@ -2582,7 +2583,8 @@ export class ProcurementService {
     for (const line of lines) {
       const enteredQuantity = toFixedQuantity(line.quantity);
       const unitPrice = toFixedPrice(line.unitPrice);
-      const lineTotal = toFixedPrice(enteredQuantity * unitPrice);
+      const gstValue = toFixedPrice(Math.max(0, toNumber(line.gstValue ?? 0)));
+      const lineTotal = toFixedPrice(enteredQuantity * unitPrice + gstValue);
 
       if (line.lineType === "ingredient") {
         if (line.expiryDate) {
@@ -2649,6 +2651,7 @@ export class ProcurementService {
           enteredUnit,
           stockAfter,
           unitPrice,
+          gstValue,
           lineTotal,
           unitPriceUpdated: false,
           expiryDate: null
@@ -2696,6 +2699,7 @@ export class ProcurementService {
         enteredUnit,
         stockAfter,
         unitPrice,
+        gstValue,
         lineTotal,
         unitPriceUpdated: false,
         expiryDate: line.expiryDate || null
@@ -3149,6 +3153,7 @@ export class ProcurementService {
         enteredUnit: line.enteredUnit,
         stockAfter: toFixedQuantity(toNumber(line.stockAfter)),
         unitPrice: toFixedPrice(toNumber(line.unitPrice)),
+        gstValue: toFixedPrice(toNumber(line.gstValue)),
         lineTotal: toFixedPrice(toNumber(line.lineTotal)),
         unitPriceUpdated: line.unitPriceUpdated,
         expiryDate: line.expiryDate,

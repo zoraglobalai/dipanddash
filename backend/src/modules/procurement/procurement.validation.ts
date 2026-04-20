@@ -145,6 +145,7 @@ const purchaseLineSchema = z
     quantity: z.coerce.number().positive("Quantity must be greater than zero"),
     quantityUnit: z.string().trim().optional(),
     unitPrice: z.coerce.number().min(0, "Unit price cannot be negative"),
+    gstValue: z.coerce.number().min(0, "GST value cannot be negative").optional().default(0),
     expiryDate: z.string().regex(datePattern, "Expiry date must be in YYYY-MM-DD format").optional(),
     note: z.string().trim().max(255).optional()
   })
