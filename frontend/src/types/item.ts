@@ -144,6 +144,7 @@ export type AddOnDetail = {
   estimatedIngredientCost: number;
   estimatedMargin: number;
   isActive: boolean;
+  sauces: ItemSauceDetailRow[];
   ingredients: ItemRecipeDetailRow[];
   createdAt: string;
   updatedAt: string;

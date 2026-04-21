@@ -7,7 +7,7 @@ export class AddPendingPaymentHistories1776500000000 implements MigrationInterfa
     const hasTable = await queryRunner.hasTable("pending_payment_histories");
     if (!hasTable) {
       await queryRunner.query(`
-        CREATE TABLE "pending_payment_histories" (
+        CREATE TABLE IF NOT EXISTS "pending_payment_histories" (
           "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
           "sourceType" character varying(24) NOT NULL,
           "sourceId" uuid NOT NULL,
@@ -39,22 +39,25 @@ export class AddPendingPaymentHistories1776500000000 implements MigrationInterfa
       ON "pending_payment_histories" ("createdAt")
     `);
 
-    await queryRunner.query(`
-      DO $$
-      BEGIN
-        IF NOT EXISTS (
-          SELECT 1
-          FROM pg_constraint
-          WHERE conname = 'FK_pending_payment_histories_collected_by'
-        ) THEN
-          ALTER TABLE "pending_payment_histories"
-          ADD CONSTRAINT "FK_pending_payment_histories_collected_by"
-          FOREIGN KEY ("collectedByUserId") REFERENCES "users"("id")
-          ON DELETE SET NULL ON UPDATE NO ACTION;
-        END IF;
-      END
-      $$;
-    `);
+    const hasUsersTable = await queryRunner.hasTable("users");
+    if (hasUsersTable) {
+      await queryRunner.query(`
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1
+            FROM pg_constraint
+            WHERE conname = 'FK_pending_payment_histories_collected_by'
+          ) THEN
+            ALTER TABLE "pending_payment_histories"
+            ADD CONSTRAINT "FK_pending_payment_histories_collected_by"
+            FOREIGN KEY ("collectedByUserId") REFERENCES "users"("id")
+            ON DELETE SET NULL ON UPDATE NO ACTION;
+          END IF;
+        END
+        $$;
+      `);
+    }
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
@@ -83,4 +86,3 @@ export class AddPendingPaymentHistories1776500000000 implements MigrationInterfa
     await queryRunner.query(`DROP TABLE IF EXISTS "pending_payment_histories"`);
   }
 }
-

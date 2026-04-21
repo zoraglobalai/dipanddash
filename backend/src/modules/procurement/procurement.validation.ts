@@ -10,6 +10,7 @@ import {
 } from "./procurement.constants";
 
 const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+const STOCK_HEALTH_VALUES = ["LOW_STOCK", "HEALTHY"] as const;
 
 const supplierBodySchema = z.object({
   name: z.string().trim().min(2, "Supplier name must be at least 2 characters").max(140),
@@ -94,6 +95,10 @@ export const upsertProductLedgerRecordSchema = z.object({
   params: productLedgerRecordParamsSchema,
   body: z
     .object({
+      productId: z.string().uuid("Invalid product id").optional(),
+      date: z.string().regex(datePattern, "Date must be in YYYY-MM-DD format").optional(),
+      targetSection: z.enum(PRODUCT_TARGET_SECTIONS).optional(),
+      stockHealth: z.enum(STOCK_HEALTH_VALUES).optional(),
       openingStock: z.coerce.number(),
       purchased: z.coerce.number().min(0, "Purchased cannot be negative"),
       consumption: z.coerce.number().min(0, "Consumption cannot be negative"),

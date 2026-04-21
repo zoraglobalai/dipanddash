@@ -4,5 +4,7 @@ import type { GamingBooking, GamingBookingListFilter } from "@/types/pos";
 export const gamingBookingsRepository = {
   save: (booking: GamingBooking) => posStorage.saveGamingBooking(booking),
   getById: (localBookingId: string) => posStorage.getGamingBooking(localBookingId),
-  list: (filters?: GamingBookingListFilter, limit?: number) => posStorage.listGamingBookings(filters, limit)
+  list: (filters?: GamingBookingListFilter, limit?: number) => posStorage.listGamingBookings(filters, limit),
+  removeById: (localBookingId: string) => posStorage.removeGamingBooking(localBookingId),
+  removeByIds: (localBookingIds: string[]) => posStorage.removeGamingBookings(localBookingIds)
 };

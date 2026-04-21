@@ -104,6 +104,14 @@ const parseOptionalNumber = (value: string) => {
   return Number.isFinite(parsed) ? parsed : undefined;
 };
 
+const parseDraftProductQuantity = (value: string) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return 0;
+  }
+  return Math.max(0, Math.floor(parsed));
+};
+
 const cleanText = (value: string) => {
   const trimmed = value.trim();
   return trimmed.length ? trimmed : undefined;
@@ -582,7 +590,7 @@ export const GamingPage = () => {
           return sum;
         }
         const product = productMap.get(line.productId);
-        const quantity = Math.max(1, Math.round(Number(line.quantity) || 0));
+        const quantity = parseDraftProductQuantity(line.quantity);
         if (!product || quantity <= 0) {
           return sum;
         }
@@ -764,6 +772,50 @@ export const GamingPage = () => {
     []
   );
 
+  const findLinkedSnookerInvoice = useCallback(async (booking: GamingBookingRow) => {
+    const invoiceNumber = cleanText(booking.foodInvoiceNumber ?? "") ?? "";
+    const orderReference = cleanText(booking.foodOrderReference ?? "") ?? "";
+    const fallbackOrderReference = `GM-FOOD-${booking.id}`;
+    const searchTokens = [...new Set([invoiceNumber, orderReference, fallbackOrderReference].filter(Boolean))];
+
+    for (const searchToken of searchTokens) {
+      const listResponse = await invoicesService.getInvoices({
+        search: searchToken,
+        orderType: "snooker",
+        page: 1,
+        limit: 50
+      });
+      const linkedInvoice = listResponse.data.invoices.find(
+        (invoice) =>
+          (invoiceNumber && invoice.invoiceNumber === invoiceNumber) ||
+          (orderReference && invoice.orderReference === orderReference) ||
+          invoice.orderReference === fallbackOrderReference
+      );
+      if (linkedInvoice) {
+        return linkedInvoice;
+      }
+    }
+    return null;
+  }, []);
+
+  const deleteLinkedSnookerInvoice = useCallback(
+    async (booking: GamingBookingRow) => {
+      const linkedInvoice = await findLinkedSnookerInvoice(booking);
+      if (!linkedInvoice) {
+        return;
+      }
+      try {
+        await invoicesService.deleteInvoice(linkedInvoice.id);
+      } catch (error) {
+        const message = extractErrorMessage(error, "Unable to delete linked snooker invoice.");
+        if (!/not found/i.test(message)) {
+          throw error;
+        }
+      }
+    },
+    [findLinkedSnookerInvoice]
+  );
+
   const openCreateModal = useCallback(() => {
     setEditingBooking(null);
     setBookingForm(createDefaultFormState(resources));
@@ -926,13 +978,13 @@ export const GamingPage = () => {
     setSaveLoading(true);
     try {
       const sharedPayload = buildPayloadFromForm();
-      const selectedProductLines = bookingProductLines.filter((line) => line.productId);
-      const parsedProductLines = selectedProductLines.map((line) => {
-        const product = productMap.get(line.productId);
-        const quantity = Math.max(1, Math.round(Number(line.quantity) || 0));
-        if (!product || !Number.isFinite(quantity) || quantity <= 0) {
-          return null;
-        }
+        const selectedProductLines = bookingProductLines.filter((line) => line.productId);
+        const parsedProductLines = selectedProductLines.map((line) => {
+          const product = productMap.get(line.productId);
+          const quantity = parseDraftProductQuantity(line.quantity);
+          if (!product || !Number.isFinite(quantity) || quantity <= 0) {
+            return null;
+          }
         const unitPrice = Number(product.sellingPrice) || 0;
         return {
           productId: product.id,
@@ -1036,6 +1088,7 @@ export const GamingPage = () => {
         savedBooking.foodInvoiceStatus !== "none" ||
         (savedBooking.foodAndBeverageAmount ?? 0) > 0
       ) {
+        await deleteLinkedSnookerInvoice(savedBooking);
         const bookingUpdate = await gamingService.updateBooking(savedBooking.id, {
           foodAndBeverageAmount: 0,
           foodInvoiceStatus: "none",
@@ -1061,6 +1114,7 @@ export const GamingPage = () => {
     bookingModal,
     editingBooking,
     fetchCustomerDirectory,
+    deleteLinkedSnookerInvoice,
     productMap,
     refreshAll,
     toast
@@ -1072,6 +1126,7 @@ export const GamingPage = () => {
     }
     setDeleteLoading(true);
     try {
+      await deleteLinkedSnookerInvoice(deletingBooking);
       await gamingService.deleteBooking(deletingBooking.id);
       toast.success("Gaming booking deleted.");
       deleteDialog.onClose();
@@ -1082,7 +1137,7 @@ export const GamingPage = () => {
     } finally {
       setDeleteLoading(false);
     }
-  }, [deletingBooking, deleteDialog, fetchCustomerDirectory, refreshAll, toast]);
+  }, [deletingBooking, deleteDialog, deleteLinkedSnookerInvoice, fetchCustomerDirectory, refreshAll, toast]);
 
   const resetToFullRecords = useCallback(() => {
     setDateFrom("");
@@ -1805,9 +1860,12 @@ export const GamingPage = () => {
                 ) : (
                   <VStack align="stretch" spacing={3}>
                     {bookingProductLines.map((line) => {
-                      const quantity = Math.max(1, Math.round(Number(line.quantity) || 1));
+                      const quantity = parseDraftProductQuantity(line.quantity);
                       const selectedProduct = productMap.get(line.productId);
-                      const lineTotal = Number((Number(selectedProduct?.sellingPrice || 0) * quantity).toFixed(2));
+                      const lineTotal =
+                        quantity > 0
+                          ? Number((Number(selectedProduct?.sellingPrice || 0) * quantity).toFixed(2))
+                          : 0;
                       return (
                         <SimpleGrid key={line.id} columns={{ base: 1, md: 2, xl: 4 }} spacing={3}>
                           <FormControl>

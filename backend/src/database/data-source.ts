@@ -19,6 +19,7 @@ import { ItemIngredient } from "../modules/items/item-ingredient.entity";
 import { ItemSauce } from "../modules/items/item-sauce.entity";
 import { AddOn } from "../modules/items/add-on.entity";
 import { AddOnIngredient } from "../modules/items/add-on-ingredient.entity";
+import { AddOnSauce } from "../modules/items/add-on-sauce.entity";
 import { Combo } from "../modules/items/combo.entity";
 import { ComboItem } from "../modules/items/combo-item.entity";
 import { SauceRecipe } from "../modules/items/sauce-recipe.entity";
@@ -64,6 +65,7 @@ const entities = [
   ItemSauce,
   AddOn,
   AddOnIngredient,
+  AddOnSauce,
   Combo,
   ComboItem,
   SauceRecipe,

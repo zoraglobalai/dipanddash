@@ -333,6 +333,8 @@ export const gamingBookingsService = {
     const existingByServerId = new Map(
       existingRows.filter((row) => row.serverBookingId).map((row) => [row.serverBookingId as string, row])
     );
+    const serverBookingIdsSeen = new Set<string>();
+    const serverBookingNumbersSeen = new Set<string>();
 
     let page = 1;
     let totalPages = 1;
@@ -344,6 +346,8 @@ export const gamingBookingsService = {
       const payload = response.data.data;
 
       for (const serverRow of payload.bookings) {
+        serverBookingIdsSeen.add(serverRow.id);
+        serverBookingNumbersSeen.add(serverRow.bookingNumber);
         const existing =
           existingByServerId.get(serverRow.id) ??
           existingByBookingNumber.get(serverRow.bookingNumber) ??
@@ -362,6 +366,20 @@ export const gamingBookingsService = {
       totalPages = payload.pagination.totalPages || 1;
       page += 1;
     } while (page <= totalPages);
+
+    const staleSyncedLocalIds = existingRows
+      .filter((row) => !UNSYNCED_STATUSES.has(row.syncStatus))
+      .filter((row) => {
+        if (row.serverBookingId) {
+          return !serverBookingIdsSeen.has(row.serverBookingId);
+        }
+        return !serverBookingNumbersSeen.has(row.bookingNumber);
+      })
+      .map((row) => row.localBookingId);
+
+    if (staleSyncedLocalIds.length) {
+      await gamingBookingsRepository.removeByIds(staleSyncedLocalIds);
+    }
 
     lastServerPullAt = now;
   },

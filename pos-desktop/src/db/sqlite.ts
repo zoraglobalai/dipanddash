@@ -902,6 +902,37 @@ class PosStorage {
     this.persistBrowserState();
   }
 
+  async removeGamingBooking(localBookingId: string) {
+    await this.ensureInitialized();
+
+    if (this.db) {
+      await this.db.execute("DELETE FROM gaming_bookings_local WHERE local_booking_id = ?", [localBookingId]);
+      return;
+    }
+
+    this.state.gamingBookings = this.state.gamingBookings.filter((entry) => entry.localBookingId !== localBookingId);
+    this.persistBrowserState();
+  }
+
+  async removeGamingBookings(localBookingIds: string[]) {
+    await this.ensureInitialized();
+    const ids = [...new Set(localBookingIds.filter((value) => typeof value === "string" && value.trim().length > 0))];
+    if (!ids.length) {
+      return;
+    }
+
+    if (this.db) {
+      for (const localBookingId of ids) {
+        await this.db.execute("DELETE FROM gaming_bookings_local WHERE local_booking_id = ?", [localBookingId]);
+      }
+      return;
+    }
+
+    const idSet = new Set(ids);
+    this.state.gamingBookings = this.state.gamingBookings.filter((entry) => !idSet.has(entry.localBookingId));
+    this.persistBrowserState();
+  }
+
   async getGamingBooking(localBookingId: string) {
     await this.ensureInitialized();
 

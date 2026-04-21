@@ -18,6 +18,17 @@ export class AddPurchaseOrderSection1776700000000 implements MigrationInterface 
 
     const hasPurchaseOrderLinesTable = await queryRunner.hasTable("purchase_order_lines");
     if (hasPurchaseOrderLinesTable) {
+      const hasLineType = await queryRunner.hasColumn("purchase_order_lines", "lineType");
+      const hasPurchaseOrderId = await queryRunner.hasColumn("purchase_order_lines", "purchaseOrderId");
+      const hasDipAndDashStockAdded = await queryRunner.hasColumn(
+        "purchase_order_lines",
+        "dipAndDashStockAdded"
+      );
+      const hasGamingStockAdded = await queryRunner.hasColumn("purchase_order_lines", "gamingStockAdded");
+      if (!hasLineType || !hasPurchaseOrderId || !hasDipAndDashStockAdded || !hasGamingStockAdded) {
+        return;
+      }
+
       await queryRunner.query(`
         UPDATE "purchase_orders" purchase_order
         SET "purchaseSection" = 'gaming'

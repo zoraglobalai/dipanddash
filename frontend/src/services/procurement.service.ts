@@ -252,6 +252,10 @@ export const procurementService = {
     productId: string,
     date: string,
     payload: {
+      productId?: string;
+      date?: string;
+      targetSection?: "dip_and_dash" | "gaming" | "both";
+      stockHealth?: "LOW_STOCK" | "HEALTHY";
       openingStock: number;
       purchased: number;
       consumption: number;

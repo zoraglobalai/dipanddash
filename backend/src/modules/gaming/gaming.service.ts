@@ -1,6 +1,8 @@
 import { AppDataSource } from "../../database/data-source";
 import { UserRole } from "../../constants/roles";
 import { AppError } from "../../errors/app-error";
+import { Invoice } from "../invoices/invoice.entity";
+import { InvoicesService } from "../invoices/invoices.service";
 import { InvoiceLine } from "../invoices/invoice-line.entity";
 import { Product } from "../procurement/product.entity";
 import { PurchaseOrderLine } from "../procurement/purchase-order-line.entity";
@@ -161,10 +163,12 @@ const buildDateRange = (input: { dateFrom?: string; dateTo?: string }) => {
 
 export class GamingService {
   private readonly bookingRepository = AppDataSource.getRepository(GamingBooking);
+  private readonly invoiceRepository = AppDataSource.getRepository(Invoice);
   private readonly userRepository = AppDataSource.getRepository(User);
   private readonly purchaseOrderLineRepository = AppDataSource.getRepository(PurchaseOrderLine);
   private readonly invoiceLineRepository = AppDataSource.getRepository(InvoiceLine);
   private readonly productRepository = AppDataSource.getRepository(Product);
+  private readonly invoicesService = new InvoicesService();
 
   private validateResource(bookingType: GamingBookingType, resourceCode: string) {
     const normalized = resourceCode.trim().toLowerCase();
@@ -370,6 +374,58 @@ export class GamingService {
       createdAt: booking.createdAt,
       updatedAt: booking.updatedAt
     };
+  }
+
+  private async findLinkedSnookerInvoices(booking: GamingBooking) {
+    const invoiceNumber = cleanText(booking.foodInvoiceNumber);
+    const orderReference = cleanText(booking.foodOrderReference);
+    const fallbackOrderReference = `GM-FOOD-${booking.id}`;
+
+    const invoiceNumbers = invoiceNumber ? [invoiceNumber] : [];
+    const orderReferences = [
+      ...new Set(
+        [orderReference, fallbackOrderReference].filter((value): value is string => Boolean(value && value.trim()))
+      )
+    ];
+    if (!invoiceNumbers.length && !orderReferences.length) {
+      return [] as Invoice[];
+    }
+
+    const query = this.invoiceRepository
+      .createQueryBuilder("invoice")
+      .where("invoice.orderType = :orderType", { orderType: "snooker" });
+
+    if (invoiceNumbers.length && orderReferences.length) {
+      query.andWhere(
+        "(invoice.invoiceNumber IN (:...invoiceNumbers) OR invoice.orderReference IN (:...orderReferences))",
+        { invoiceNumbers, orderReferences }
+      );
+    } else if (invoiceNumbers.length) {
+      query.andWhere("invoice.invoiceNumber IN (:...invoiceNumbers)", { invoiceNumbers });
+    } else {
+      query.andWhere("invoice.orderReference IN (:...orderReferences)", { orderReferences });
+    }
+
+    return query.getMany();
+  }
+
+  private async deleteLinkedSnookerInvoices(booking: GamingBooking, context: GamingContext) {
+    const linkedInvoices = await this.findLinkedSnookerInvoices(booking);
+    if (!linkedInvoices.length) {
+      return;
+    }
+
+    const dedupedInvoices = [...new Map(linkedInvoices.map((invoice) => [invoice.id, invoice])).values()];
+    for (const invoice of dedupedInvoices) {
+      try {
+        await this.invoicesService.deleteInvoice(invoice.id, { id: context.userId, role: context.role });
+      } catch (error) {
+        if (error instanceof AppError && error.statusCode === 404) {
+          continue;
+        }
+        throw error;
+      }
+    }
   }
 
   private buildBookingNumber() {
@@ -597,15 +653,31 @@ export class GamingService {
     booking.note = isStaffRole ? booking.note : cleanText(input.note);
     booking.paymentStatus = payment.paymentStatus;
     booking.paymentMode = payment.paymentMode;
-    booking.foodOrderReference =
+    const nextFoodOrderReference =
       input.foodOrderReference === undefined ? booking.foodOrderReference : cleanText(input.foodOrderReference);
-    booking.foodInvoiceNumber =
+    const nextFoodInvoiceNumber =
       input.foodInvoiceNumber === undefined ? booking.foodInvoiceNumber : cleanText(input.foodInvoiceNumber);
-    booking.foodInvoiceStatus = input.foodInvoiceStatus ?? booking.foodInvoiceStatus;
+    const nextFoodInvoiceStatus = input.foodInvoiceStatus ?? booking.foodInvoiceStatus;
     const nextFoodAndBeverageAmount =
       input.foodAndBeverageAmount !== undefined
         ? roundCurrency(Math.max(0, toNumber(input.foodAndBeverageAmount)))
         : roundCurrency(Math.max(0, toNumber(booking.foodAndBeverageAmount)));
+    const hasExistingInvoiceHints = Boolean(
+      cleanText(booking.foodInvoiceNumber) || cleanText(booking.foodOrderReference) || toNumber(booking.foodAndBeverageAmount) > 0
+    );
+    const shouldClearLinkedSnookerInvoice =
+      hasExistingInvoiceHints &&
+      nextFoodAndBeverageAmount <= 0 &&
+      nextFoodInvoiceStatus === "none" &&
+      !nextFoodOrderReference &&
+      !nextFoodInvoiceNumber;
+    if (shouldClearLinkedSnookerInvoice) {
+      await this.deleteLinkedSnookerInvoices(booking, context);
+    }
+
+    booking.foodOrderReference = nextFoodOrderReference;
+    booking.foodInvoiceNumber = nextFoodInvoiceNumber;
+    booking.foodInvoiceStatus = nextFoodInvoiceStatus;
     booking.foodAndBeverageAmount = nextFoodAndBeverageAmount;
 
     const nextCustomerGroup = input.customers?.length ? this.sanitizeCustomerGroup(input.customers) : booking.customerGroup ?? [];
@@ -814,6 +886,7 @@ export class GamingService {
       throw new AppError(403, "Only admin or manager roles can delete bookings.");
     }
 
+    await this.deleteLinkedSnookerInvoices(booking, context);
     await this.bookingRepository.remove(booking);
     return { id };
   }

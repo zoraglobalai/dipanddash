@@ -181,7 +181,8 @@ export const itemsService = {
     gstPercentage: number;
     imageUrl?: string;
     note?: string;
-    ingredients: ItemRecipeRow[];
+    ingredients?: ItemRecipeRow[];
+    sauces?: Array<{ sauceId: string; quantity: number; unit: IngredientUnit }>;
   }) => {
     const response = await apiClient.post<ApiSuccess<{ addOn: AddOnDetail }>>("/items/add-ons", payload);
     return response.data;
@@ -196,6 +197,7 @@ export const itemsService = {
       note?: string;
       isActive?: boolean;
       ingredients?: ItemRecipeRow[];
+      sauces?: Array<{ sauceId: string; quantity: number; unit: IngredientUnit }>;
     }
   ) => {
     const response = await apiClient.patch<ApiSuccess<{ addOn: AddOnDetail }>>(`/items/add-ons/${id}`, payload);

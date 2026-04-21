@@ -151,6 +151,10 @@ export class ProcurementController {
       req.params.productId,
       req.params.date,
       {
+        productId: req.body.productId,
+        date: req.body.date,
+        targetSection: req.body.targetSection,
+        stockHealth: req.body.stockHealth,
         openingStock: req.body.openingStock,
         purchased: req.body.purchased,
         consumption: req.body.consumption,

@@ -142,14 +142,20 @@ export const getAddOnSchema = z.object({
 });
 
 export const createAddOnSchema = z.object({
-  body: z.object({
-    name: z.string().trim().min(2, "Add-on name must be at least 2 characters").max(160),
-    sellingPrice: z.coerce.number().min(0, "Selling price cannot be negative"),
-    gstPercentage: z.coerce.number().min(0, "GST cannot be negative"),
-    imageUrl: z.string().trim().max(1024).optional(),
-    note: z.string().trim().max(500).optional(),
-    ingredients: z.array(recipeIngredientSchema).min(1, "Please add at least one ingredient")
-  })
+  body: z
+    .object({
+      name: z.string().trim().min(2, "Add-on name must be at least 2 characters").max(160),
+      sellingPrice: z.coerce.number().min(0, "Selling price cannot be negative"),
+      gstPercentage: z.coerce.number().min(0, "GST cannot be negative"),
+      imageUrl: z.string().trim().max(1024).optional(),
+      note: z.string().trim().max(500).optional(),
+      ingredients: z.array(recipeIngredientSchema).default([]),
+      sauces: z.array(recipeSauceSchema).default([])
+    })
+    .refine(
+      (value) => (value.ingredients?.length ?? 0) + (value.sauces?.length ?? 0) > 0,
+      "Please add at least one ingredient or sauce."
+    )
 });
 
 export const updateAddOnSchema = z.object({
@@ -164,9 +170,24 @@ export const updateAddOnSchema = z.object({
       imageUrl: z.string().trim().max(1024).optional(),
       note: z.string().trim().max(500).optional(),
       isActive: z.boolean().optional(),
-      ingredients: z.array(recipeIngredientSchema).min(1).optional()
+      ingredients: z.array(recipeIngredientSchema).optional(),
+      sauces: z.array(recipeSauceSchema).optional()
     })
     .refine((value) => Object.keys(value).length > 0, "At least one field must be provided")
+    .superRefine((value, context) => {
+      const hasIngredients = value.ingredients !== undefined;
+      const hasSauces = value.sauces !== undefined;
+      if (!hasIngredients && !hasSauces) {
+        return;
+      }
+
+      if ((value.ingredients?.length ?? 0) + (value.sauces?.length ?? 0) <= 0) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Please add at least one ingredient or sauce."
+        });
+      }
+    })
 });
 
 export const deleteAddOnSchema = z.object({

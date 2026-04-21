@@ -61,6 +61,10 @@ type ProductDayLedgerFilters = PaginationFilters & {
 };
 
 type UpsertProductDayLedgerPayload = {
+  productId?: string;
+  date?: string;
+  targetSection?: ProductTargetSection;
+  stockHealth?: "LOW_STOCK" | "HEALTHY";
   openingStock: number;
   purchased: number;
   consumption: number;
@@ -336,6 +340,51 @@ const applyProductPurchaseSplit = (product: Product, stockAdded: number) => {
     dipAndDashAdded,
     gamingAdded
   };
+};
+
+const getProductLedgerAdjustmentNet = (input: {
+  openingDelta?: number | null;
+  purchasedDelta?: number | null;
+  consumptionDelta?: number | null;
+}) =>
+  toFixedQuantity(
+    toNumber(input.openingDelta) + toNumber(input.purchasedDelta) - toNumber(input.consumptionDelta)
+  );
+
+const applyProductLedgerNetDelta = (product: Product, netDelta: number) => {
+  const delta = toFixedQuantity(toNumber(netDelta));
+  if (Math.abs(delta) <= 0.0005) {
+    return;
+  }
+
+  const existing = normalizeProductSectionStocks({
+    targetSection: product.targetSection,
+    currentStock: toNumber(product.currentStock),
+    dipAndDashStock: toNumber(product.dipAndDashStock),
+    gamingStock: toNumber(product.gamingStock)
+  });
+
+  const nextCurrentStock = toFixedQuantity(Math.max(0, existing.currentStock + delta));
+  if (product.targetSection === "dip_and_dash") {
+    product.currentStock = nextCurrentStock;
+    product.dipAndDashStock = nextCurrentStock;
+    product.gamingStock = 0;
+    return;
+  }
+
+  if (product.targetSection === "gaming") {
+    product.currentStock = nextCurrentStock;
+    product.dipAndDashStock = 0;
+    product.gamingStock = nextCurrentStock;
+    return;
+  }
+
+  const baseTotal = toFixedQuantity(existing.dipAndDashStock + existing.gamingStock);
+  const dipRatio = baseTotal > 0 ? existing.dipAndDashStock / baseTotal : 0.5;
+  const nextDipAndDashStock = toFixedQuantity(nextCurrentStock * dipRatio);
+  product.currentStock = nextCurrentStock;
+  product.dipAndDashStock = nextDipAndDashStock;
+  product.gamingStock = toFixedQuantity(nextCurrentStock - nextDipAndDashStock);
 };
 
 const getTodayDate = () => {
@@ -1613,7 +1662,7 @@ export class ProcurementService {
             .addSelect("COALESCE(SUM(line.quantity), 0)", "soldQty")
             .addSelect("COALESCE(SUM(line.lineTotal), 0)", "soldAmount")
             .where("line.lineType = :lineType", { lineType: "product" })
-            .andWhere("line.\"referenceId\"::text IN (:...productIds)", { productIds })
+            .andWhere("CAST(line.\"referenceId\" AS text) IN (:...productIds)", { productIds })
             .andWhere("invoice.status = :status", { status: "paid" })
             .groupBy("line.\"referenceId\"")
             .getRawMany<{
@@ -1718,7 +1767,7 @@ export class ProcurementService {
         .getRawMany<{ productId: string; name: string; unit: string; qty: string }>(),
       this.invoiceLineRepository
         .createQueryBuilder("line")
-        .leftJoin(Product, "product", "product.id::text = line.\"referenceId\"::text")
+        .leftJoin(Product, "product", "CAST(product.id AS text) = CAST(line.\"referenceId\" AS text)")
         .leftJoin("line.invoice", "invoice")
         .select("line.\"referenceId\"", "productId")
         .addSelect("COALESCE(product.name, MAX(line.\"nameSnapshot\"))", "name")
@@ -1819,7 +1868,7 @@ export class ProcurementService {
         .select("COALESCE(SUM(line.quantity), 0)", "soldQty")
         .addSelect("COALESCE(SUM(line.lineTotal), 0)", "soldAmount")
         .where("line.lineType = :lineType", { lineType: "product" })
-        .andWhere("line.\"referenceId\"::text = :productId", { productId: id })
+        .andWhere("CAST(line.\"referenceId\" AS text) = :productId", { productId: id })
         .andWhere("invoice.status = :status", { status: "paid" })
         .getRawOne<{ soldQty: string; soldAmount: string }>()
     ]);
@@ -1851,9 +1900,9 @@ export class ProcurementService {
         .leftJoin("line.invoice", "invoice")
         .select("COALESCE(SUM(line.quantity), 0)", "quantity")
         .where("line.lineType = :lineType", { lineType: "product" })
-        .andWhere("line.\"referenceId\"::text = :productId", { productId })
+        .andWhere("CAST(line.\"referenceId\" AS text) = :productId", { productId })
         .andWhere("invoice.status = :status", { status: "paid" })
-        .andWhere("timezone('Asia/Kolkata', invoice.\"createdAt\")::date < :date", { date })
+        .andWhere("CAST(timezone('Asia/Kolkata', invoice.\"createdAt\") AS date) < :date", { date })
         .getRawOne<{ quantity: string }>(),
       this.productDayLedgerAdjustmentRepository
         .createQueryBuilder("adjustment")
@@ -1884,9 +1933,15 @@ export class ProcurementService {
     return snapshot.rows.find((row) => row.productId === productId && row.date === date) ?? null;
   }
 
-  async upsertProductDayLedgerAdjustment(productId: string, date: string, payload: UpsertProductDayLedgerPayload) {
-    resolveDayRangeInUtc(date);
-    await this.getProductOrFail(productId);
+  async upsertProductDayLedgerAdjustment(sourceProductId: string, sourceDate: string, payload: UpsertProductDayLedgerPayload) {
+    resolveDayRangeInUtc(sourceDate);
+    const targetProductId = payload.productId?.trim() || sourceProductId;
+    const targetDate = payload.date?.trim() || sourceDate;
+    resolveDayRangeInUtc(targetDate);
+
+    const sourceProduct = await this.getProductOrFail(sourceProductId);
+    const targetProduct = targetProductId === sourceProductId ? sourceProduct : await this.getProductOrFail(targetProductId);
+    const isSameLedgerKey = sourceProductId === targetProductId && sourceDate === targetDate;
 
     const targetOpeningStock = toFixedQuantity(toNumber(payload.openingStock));
     const targetPurchased = toFixedQuantity(toNumber(payload.purchased));
@@ -1901,13 +1956,33 @@ export class ProcurementService {
     if (Math.abs(targetConsumption - (targetDipAndDashConsumption + targetSnookerConsumption)) > 0.001) {
       throw new AppError(422, "Consumption must equal Dip Used + Snooker Used.");
     }
+    const targetClosingStock = toFixedQuantity(targetOpeningStock + targetPurchased - targetConsumption);
+    if (payload.stockHealth === "HEALTHY" && targetClosingStock <= 0) {
+      throw new AppError(422, "Cannot mark health as Healthy when closing stock is zero or below.");
+    }
 
-    const [existingAdjustment, currentRow, openingBefore] = await Promise.all([
-      this.productDayLedgerAdjustmentRepository.findOne({
-        where: { productId, date }
-      }),
-      this.getProductLedgerRowSnapshot(productId, date),
-      this.getProductLedgerOpeningBeforeDate(productId, date)
+    const sourceAdjustment = await this.productDayLedgerAdjustmentRepository.findOne({
+      where: { productId: sourceProductId, date: sourceDate }
+    });
+    const targetExistingAdjustment = isSameLedgerKey
+      ? sourceAdjustment
+      : await this.productDayLedgerAdjustmentRepository.findOne({
+          where: { productId: targetProductId, date: targetDate }
+        });
+
+    const sourceNetBefore = getProductLedgerAdjustmentNet(sourceAdjustment ?? {});
+    const targetNetBefore = isSameLedgerKey
+      ? sourceNetBefore
+      : getProductLedgerAdjustmentNet(targetExistingAdjustment ?? {});
+
+    if (!isSameLedgerKey && sourceAdjustment) {
+      await this.productDayLedgerAdjustmentRepository.delete(sourceAdjustment.id);
+    }
+
+    const currentAdjustment = isSameLedgerKey ? sourceAdjustment : targetExistingAdjustment;
+    const [currentRow, openingBefore] = await Promise.all([
+      this.getProductLedgerRowSnapshot(targetProductId, targetDate),
+      this.getProductLedgerOpeningBeforeDate(targetProductId, targetDate)
     ]);
 
     const currentOpeningStock = toFixedQuantity(currentRow?.openingStock ?? openingBefore);
@@ -1916,11 +1991,11 @@ export class ProcurementService {
     const currentDipAndDashConsumption = toFixedQuantity(currentRow?.dipAndDashConsumption ?? 0);
     const currentSnookerConsumption = toFixedQuantity(currentRow?.snookerConsumption ?? 0);
 
-    const baseOpeningDelta = toFixedQuantity(toNumber(existingAdjustment?.openingDelta));
-    const basePurchasedDelta = toFixedQuantity(toNumber(existingAdjustment?.purchasedDelta));
-    const baseConsumptionDelta = toFixedQuantity(toNumber(existingAdjustment?.consumptionDelta));
-    const baseDipDelta = toFixedQuantity(toNumber(existingAdjustment?.dipAndDashConsumptionDelta));
-    const baseSnookerDelta = toFixedQuantity(toNumber(existingAdjustment?.snookerConsumptionDelta));
+    const baseOpeningDelta = toFixedQuantity(toNumber(currentAdjustment?.openingDelta));
+    const basePurchasedDelta = toFixedQuantity(toNumber(currentAdjustment?.purchasedDelta));
+    const baseConsumptionDelta = toFixedQuantity(toNumber(currentAdjustment?.consumptionDelta));
+    const baseDipDelta = toFixedQuantity(toNumber(currentAdjustment?.dipAndDashConsumptionDelta));
+    const baseSnookerDelta = toFixedQuantity(toNumber(currentAdjustment?.snookerConsumptionDelta));
 
     const nextOpeningDelta = toFixedQuantity(baseOpeningDelta + (targetOpeningStock - currentOpeningStock));
     const nextPurchasedDelta = toFixedQuantity(basePurchasedDelta + (targetPurchased - currentPurchased));
@@ -1935,18 +2010,21 @@ export class ProcurementService {
       Math.abs(nextDipDelta) > 0.0005 ||
       Math.abs(nextSnookerDelta) > 0.0005;
 
+    let targetNetAfter = 0;
     if (!hasMeaningfulDelta && !note) {
-      if (existingAdjustment) {
-        await this.productDayLedgerAdjustmentRepository.delete(existingAdjustment.id);
+      if (currentAdjustment) {
+        await this.productDayLedgerAdjustmentRepository.delete(currentAdjustment.id);
       }
     } else {
       const entity =
-        existingAdjustment ??
+        currentAdjustment ??
         this.productDayLedgerAdjustmentRepository.create({
-          productId,
-          date
+          productId: targetProductId,
+          date: targetDate
         });
 
+      entity.productId = targetProductId;
+      entity.date = targetDate;
       entity.openingDelta = nextOpeningDelta;
       entity.purchasedDelta = nextPurchasedDelta;
       entity.consumptionDelta = nextConsumptionDelta;
@@ -1954,9 +2032,49 @@ export class ProcurementService {
       entity.snookerConsumptionDelta = nextSnookerDelta;
       entity.note = note;
       await this.productDayLedgerAdjustmentRepository.save(entity);
+      targetNetAfter = getProductLedgerAdjustmentNet({
+        openingDelta: nextOpeningDelta,
+        purchasedDelta: nextPurchasedDelta,
+        consumptionDelta: nextConsumptionDelta
+      });
     }
 
-    const refreshedRow = await this.getProductLedgerRowSnapshot(productId, date);
+    if (payload.targetSection && payload.targetSection !== targetProduct.targetSection) {
+      targetProduct.targetSection = payload.targetSection;
+      const normalized = normalizeProductSectionStocks({
+        targetSection: payload.targetSection,
+        currentStock: toNumber(targetProduct.currentStock),
+        dipAndDashStock: toNumber(targetProduct.dipAndDashStock),
+        gamingStock: toNumber(targetProduct.gamingStock)
+      });
+      targetProduct.currentStock = normalized.currentStock;
+      targetProduct.dipAndDashStock = normalized.dipAndDashStock;
+      targetProduct.gamingStock = normalized.gamingStock;
+    }
+
+    if (payload.stockHealth) {
+      if (payload.stockHealth === "LOW_STOCK") {
+        targetProduct.minStock = toFixedQuantity(Math.max(toNumber(targetProduct.minStock), Math.max(targetClosingStock, 0)));
+      } else {
+        targetProduct.minStock = toFixedQuantity(Math.max(0, targetClosingStock - 0.001));
+      }
+    }
+
+    if (isSameLedgerKey) {
+      const netDelta = toFixedQuantity(targetNetAfter - sourceNetBefore);
+      applyProductLedgerNetDelta(targetProduct, netDelta);
+    } else {
+      applyProductLedgerNetDelta(sourceProduct, toFixedQuantity(-sourceNetBefore));
+      applyProductLedgerNetDelta(targetProduct, toFixedQuantity(targetNetAfter - targetNetBefore));
+    }
+
+    if (targetProduct.id === sourceProduct.id) {
+      await this.productRepository.save(targetProduct);
+    } else {
+      await this.productRepository.save([sourceProduct, targetProduct]);
+    }
+
+    const refreshedRow = await this.getProductLedgerRowSnapshot(targetProductId, targetDate);
     if (!refreshedRow) {
       throw new AppError(500, "Unable to load refreshed product ledger row.");
     }
@@ -1965,7 +2083,7 @@ export class ProcurementService {
 
   async deleteProductDayLedgerAdjustment(productId: string, date: string) {
     resolveDayRangeInUtc(date);
-    await this.getProductOrFail(productId);
+    const product = await this.getProductOrFail(productId);
 
     const existing = await this.productDayLedgerAdjustmentRepository.findOne({
       where: { productId, date }
@@ -1978,7 +2096,16 @@ export class ProcurementService {
       };
     }
 
+    const netBeforeDelete = getProductLedgerAdjustmentNet({
+      openingDelta: existing.openingDelta,
+      purchasedDelta: existing.purchasedDelta,
+      consumptionDelta: existing.consumptionDelta
+    });
+
     await this.productDayLedgerAdjustmentRepository.delete(existing.id);
+    applyProductLedgerNetDelta(product, toFixedQuantity(-netBeforeDelete));
+    await this.productRepository.save(product);
+
     return {
       productId,
       date,
@@ -2082,10 +2209,10 @@ export class ProcurementService {
           "snookerConsumption"
         )
         .where("line.lineType = :lineType", { lineType: "product" })
-        .andWhere("line.\"referenceId\"::text IN (:...productIds)", { productIds })
+        .andWhere("CAST(line.\"referenceId\" AS text) IN (:...productIds)", { productIds })
         .andWhere("invoice.status = :status", { status: "paid" })
-        .andWhere(dateFrom ? "timezone('Asia/Kolkata', invoice.\"createdAt\")::date >= :dateFrom" : "1=1", { dateFrom })
-        .andWhere(dateTo ? "timezone('Asia/Kolkata', invoice.\"createdAt\")::date <= :dateTo" : "1=1", { dateTo })
+        .andWhere(dateFrom ? "CAST(timezone('Asia/Kolkata', invoice.\"createdAt\") AS date) >= :dateFrom" : "1=1", { dateFrom })
+        .andWhere(dateTo ? "CAST(timezone('Asia/Kolkata', invoice.\"createdAt\") AS date) <= :dateTo" : "1=1", { dateTo })
         .setParameter("snookerOrderType", "snooker")
         .groupBy("to_char(timezone('Asia/Kolkata', invoice.\"createdAt\"), 'YYYY-MM-DD')")
         .addGroupBy("line.\"referenceId\"")
@@ -2115,9 +2242,9 @@ export class ProcurementService {
             .select("line.\"referenceId\"", "productId")
             .addSelect("COALESCE(SUM(line.quantity), 0)", "quantity")
             .where("line.lineType = :lineType", { lineType: "product" })
-            .andWhere("line.\"referenceId\"::text IN (:...productIds)", { productIds })
+            .andWhere("CAST(line.\"referenceId\" AS text) IN (:...productIds)", { productIds })
             .andWhere("invoice.status = :status", { status: "paid" })
-            .andWhere("timezone('Asia/Kolkata', invoice.\"createdAt\")::date < :dateFrom", { dateFrom })
+            .andWhere("CAST(timezone('Asia/Kolkata', invoice.\"createdAt\") AS date) < :dateFrom", { dateFrom })
             .groupBy("line.\"referenceId\"")
             .getRawMany<{ productId: string; quantity: string }>()
         : Promise.resolve([] as Array<{ productId: string; quantity: string }>),

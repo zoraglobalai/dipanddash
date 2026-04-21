@@ -13,6 +13,7 @@ import {
 } from "../ingredients/ingredients.constants";
 import { AddOn } from "./add-on.entity";
 import { AddOnIngredient } from "./add-on-ingredient.entity";
+import { AddOnSauce } from "./add-on-sauce.entity";
 import { Combo } from "./combo.entity";
 import { ComboItem } from "./combo-item.entity";
 import { ItemCategory } from "./item-category.entity";
@@ -289,6 +290,7 @@ export class ItemsService {
   private readonly itemSauceRepository = AppDataSource.getRepository(ItemSauce);
   private readonly addOnRepository = AppDataSource.getRepository(AddOn);
   private readonly addOnIngredientRepository = AppDataSource.getRepository(AddOnIngredient);
+  private readonly addOnSauceRepository = AppDataSource.getRepository(AddOnSauce);
   private readonly comboRepository = AppDataSource.getRepository(Combo);
   private readonly comboItemRepository = AppDataSource.getRepository(ComboItem);
   private readonly sauceRecipeRepository = AppDataSource.getRepository(SauceRecipe);
@@ -1835,16 +1837,26 @@ export class ItemsService {
     const addOns = await query.offset(offset).limit(limit).getMany();
 
     const addOnIds = addOns.map((row) => row.id);
-    const ingredientCounts = addOnIds.length
-      ? await this.addOnIngredientRepository
-          .createQueryBuilder("recipe")
-          .select("recipe.addOnId", "addOnId")
-          .addSelect("COUNT(*)", "count")
-          .where("recipe.addOnId IN (:...addOnIds)", { addOnIds })
-          .groupBy("recipe.addOnId")
-          .getRawMany<{ addOnId: string; count: string }>()
-      : [];
-    const countMap = new Map(ingredientCounts.map((entry) => [entry.addOnId, Number(entry.count)]));
+    const [ingredientCounts, sauceCounts] = addOnIds.length
+      ? await Promise.all([
+          this.addOnIngredientRepository
+            .createQueryBuilder("recipe")
+            .select("recipe.addOnId", "addOnId")
+            .addSelect("COUNT(*)", "count")
+            .where("recipe.addOnId IN (:...addOnIds)", { addOnIds })
+            .groupBy("recipe.addOnId")
+            .getRawMany<{ addOnId: string; count: string }>(),
+          this.addOnSauceRepository
+            .createQueryBuilder("addOnSauce")
+            .select("addOnSauce.addOnId", "addOnId")
+            .addSelect("COUNT(*)", "count")
+            .where("addOnSauce.addOnId IN (:...addOnIds)", { addOnIds })
+            .groupBy("addOnSauce.addOnId")
+            .getRawMany<{ addOnId: string; count: string }>()
+        ])
+      : [[], []];
+    const ingredientCountMap = new Map(ingredientCounts.map((entry) => [entry.addOnId, Number(entry.count)]));
+    const sauceCountMap = new Map(sauceCounts.map((entry) => [entry.addOnId, Number(entry.count)]));
 
     return {
       addOns: addOns.map((row) => ({
@@ -1855,7 +1867,7 @@ export class ItemsService {
         imageUrl: row.imageUrl,
         note: row.note,
         estimatedIngredientCost: toFixed(getNumericValue(row.estimatedIngredientCost)),
-        ingredientCount: countMap.get(row.id) ?? 0,
+        ingredientCount: (ingredientCountMap.get(row.id) ?? 0) + (sauceCountMap.get(row.id) ?? 0),
         isActive: row.isActive,
         createdAt: row.createdAt,
         updatedAt: row.updatedAt
@@ -1866,15 +1878,26 @@ export class ItemsService {
 
   async getAddOn(id: string) {
     const addOn = await this.getAddOnOrFail(id);
-    const recipeRows = await this.addOnIngredientRepository.find({
-      where: { addOnId: id },
-      relations: {
-        ingredient: { category: true }
-      },
-      order: {
-        createdAt: "ASC"
-      }
-    });
+    const [recipeRows, sauceRows] = await Promise.all([
+      this.addOnIngredientRepository.find({
+        where: { addOnId: id },
+        relations: {
+          ingredient: { category: true }
+        },
+        order: {
+          createdAt: "ASC"
+        }
+      }),
+      this.addOnSauceRepository.find({
+        where: { addOnId: id },
+        relations: {
+          sauceRecipe: true
+        },
+        order: {
+          createdAt: "ASC"
+        }
+      })
+    ]);
 
     const estimatedIngredientCost = toFixed(
       recipeRows.reduce((sum, row) => sum + getNumericValue(row.costContribution), 0)
@@ -1891,6 +1914,15 @@ export class ItemsService {
       estimatedIngredientCost,
       estimatedMargin: toMoney(sellingPrice - estimatedIngredientCost),
       isActive: addOn.isActive,
+      sauces: sauceRows.map((row) => ({
+        id: row.id,
+        sauceId: row.sauceRecipeId,
+        sauceName: row.sauceRecipe.name,
+        quantity: toFixed(getNumericValue(row.quantity)),
+        unit: row.unit,
+        normalizedQuantity: toFixed(getNumericValue(row.normalizedQuantity), 6),
+        estimatedCostContribution: toFixed(getNumericValue(row.estimatedCostContribution))
+      })),
       ingredients: recipeRows.map((row) => ({
         id: row.id,
         ingredientId: row.ingredientId,
@@ -1915,18 +1947,33 @@ export class ItemsService {
     gstPercentage: number;
     imageUrl?: string;
     note?: string;
-    ingredients: RecipePayload[];
+    ingredients?: RecipePayload[];
+    sauces?: ItemSaucePayload[];
   }) {
     const name = payload.name.trim();
     await this.validateUniqueAddOnName(name);
 
-    const preparedRecipe = await this.prepareRecipeRows(payload.ingredients);
+    const ingredientPayload = payload.ingredients ?? [];
+    const saucePayload = payload.sauces ?? [];
+    if (!ingredientPayload.length && !saucePayload.length) {
+      throw new AppError(422, "Please add at least one ingredient or sauce");
+    }
+
+    const preparedRecipe = ingredientPayload.length
+      ? await this.prepareRecipeRows(ingredientPayload)
+      : { rows: [], totalEstimatedCost: 0 };
+    const preparedSauces = await this.prepareItemSauceRows(saucePayload);
+    const mergedRecipe = await this.mergeItemRecipeRows(preparedRecipe.rows, preparedSauces.rows);
+    if (!mergedRecipe.rows.length) {
+      throw new AppError(422, "Unable to derive ingredient usage from selected recipe mapping.");
+    }
     const imageUrl = cleanOptionalText(payload.imageUrl) ?? null;
     const note = cleanOptionalText(payload.note) ?? null;
 
     const savedAddOn = await AppDataSource.transaction(async (manager) => {
       const addOnRepo = manager.getRepository(AddOn);
       const recipeRepo = manager.getRepository(AddOnIngredient);
+      const addOnSauceRepo = manager.getRepository(AddOnSauce);
 
       const addOn = addOnRepo.create({
         name,
@@ -1934,12 +1981,12 @@ export class ItemsService {
         gstPercentage: toMoney(payload.gstPercentage),
         imageUrl,
         note,
-        estimatedIngredientCost: toFixed(preparedRecipe.totalEstimatedCost),
+        estimatedIngredientCost: toFixed(mergedRecipe.totalEstimatedCost),
         isActive: true
       });
 
       const saved = await addOnRepo.save(addOn);
-      const recipeEntities = preparedRecipe.rows.map((row) =>
+      const recipeEntities = mergedRecipe.rows.map((row) =>
         recipeRepo.create({
           addOnId: saved.id,
           ingredientId: row.ingredientId,
@@ -1950,6 +1997,20 @@ export class ItemsService {
         })
       );
       await recipeRepo.save(recipeEntities);
+
+      if (preparedSauces.rows.length) {
+        const sauceEntities = preparedSauces.rows.map((row) =>
+          addOnSauceRepo.create({
+            addOnId: saved.id,
+            sauceRecipeId: row.sauceRecipeId,
+            quantity: row.quantity,
+            unit: row.unit,
+            normalizedQuantity: row.normalizedQuantity,
+            estimatedCostContribution: row.estimatedCostContribution
+          })
+        );
+        await addOnSauceRepo.save(sauceEntities);
+      }
       return saved;
     });
 
@@ -1966,6 +2027,7 @@ export class ItemsService {
       note?: string;
       isActive?: boolean;
       ingredients?: RecipePayload[];
+      sauces?: ItemSaucePayload[];
     }
   ) {
     const existing = await this.getAddOnOrFail(id);
@@ -1996,20 +2058,70 @@ export class ItemsService {
       existing.isActive = payload.isActive;
     }
 
-    const preparedRecipe = payload.ingredients ? await this.prepareRecipeRows(payload.ingredients) : null;
-    if (preparedRecipe) {
-      existing.estimatedIngredientCost = toFixed(preparedRecipe.totalEstimatedCost);
+    const shouldReplaceRecipe = payload.ingredients !== undefined || payload.sauces !== undefined;
+    let preparedRecipe: {
+      rows: Array<{
+        ingredientId: string;
+        quantity: number;
+        unit: IngredientUnit;
+        ingredientBaseUnit: IngredientUnit;
+        normalizedQuantity: number;
+        costContribution: number;
+      }>;
+      totalEstimatedCost: number;
+    } | null = null;
+    let preparedSauces: {
+      rows: Array<{
+        sauceRecipeId: string;
+        quantity: number;
+        unit: IngredientUnit;
+        normalizedQuantity: number;
+        estimatedCostContribution: number;
+      }>;
+      totalEstimatedCost: number;
+    } | null = null;
+    let mergedRecipe: {
+      rows: Array<{
+        ingredientId: string;
+        quantity: number;
+        unit: IngredientUnit;
+        normalizedQuantity: number;
+        costContribution: number;
+      }>;
+      totalEstimatedCost: number;
+    } | null = null;
+
+    if (shouldReplaceRecipe) {
+      const ingredientPayload = payload.ingredients ?? [];
+      const saucePayload = payload.sauces ?? [];
+      if (!ingredientPayload.length && !saucePayload.length) {
+        throw new AppError(422, "Please add at least one ingredient or sauce");
+      }
+
+      preparedRecipe = ingredientPayload.length
+        ? await this.prepareRecipeRows(ingredientPayload)
+        : { rows: [], totalEstimatedCost: 0 };
+      preparedSauces = await this.prepareItemSauceRows(saucePayload);
+      mergedRecipe = await this.mergeItemRecipeRows(preparedRecipe.rows, preparedSauces.rows);
+      if (!mergedRecipe.rows.length) {
+        throw new AppError(422, "Unable to derive ingredient usage from selected recipe mapping.");
+      }
+
+      existing.estimatedIngredientCost = toFixed(mergedRecipe.totalEstimatedCost);
     }
 
     await AppDataSource.transaction(async (manager) => {
       const addOnRepo = manager.getRepository(AddOn);
       const recipeRepo = manager.getRepository(AddOnIngredient);
+      const addOnSauceRepo = manager.getRepository(AddOnSauce);
 
       await addOnRepo.save(existing);
 
-      if (preparedRecipe) {
+      if (mergedRecipe && preparedSauces) {
         await recipeRepo.delete({ addOnId: id });
-        const entities = preparedRecipe.rows.map((row) =>
+        await addOnSauceRepo.delete({ addOnId: id });
+
+        const entities = mergedRecipe.rows.map((row) =>
           recipeRepo.create({
             addOnId: id,
             ingredientId: row.ingredientId,
@@ -2020,6 +2132,20 @@ export class ItemsService {
           })
         );
         await recipeRepo.save(entities);
+
+        if (preparedSauces.rows.length) {
+          const sauceEntities = preparedSauces.rows.map((row) =>
+            addOnSauceRepo.create({
+              addOnId: id,
+              sauceRecipeId: row.sauceRecipeId,
+              quantity: row.quantity,
+              unit: row.unit,
+              normalizedQuantity: row.normalizedQuantity,
+              estimatedCostContribution: row.estimatedCostContribution
+            })
+          );
+          await addOnSauceRepo.save(sauceEntities);
+        }
       }
     });
 
@@ -2088,12 +2214,13 @@ export class ItemsService {
   }
 
   private async getSauceReferenceCount(outputIngredientId: string, sauceRecipeId: string) {
-    const [itemCount, addOnCount, itemSauceCount] = await Promise.all([
+    const [itemCount, addOnCount, itemSauceCount, addOnSauceCount] = await Promise.all([
       this.itemIngredientRepository.count({ where: { ingredientId: outputIngredientId } }),
       this.addOnIngredientRepository.count({ where: { ingredientId: outputIngredientId } }),
-      this.itemSauceRepository.count({ where: { sauceRecipeId } })
+      this.itemSauceRepository.count({ where: { sauceRecipeId } }),
+      this.addOnSauceRepository.count({ where: { sauceRecipeId } })
     ]);
-    return itemCount + addOnCount + itemSauceCount;
+    return itemCount + addOnCount + itemSauceCount + addOnSauceCount;
   }
 
   private async getSauceSummaryById(id: string) {

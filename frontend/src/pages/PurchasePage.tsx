@@ -59,6 +59,7 @@ import type {
   ProcurementStatsResponse,
   ProductTargetSection,
   ProductUnit,
+  StockHealth,
   PurchaseSection,
   PurchaseLineType,
   PurchaseOrderDetail,
@@ -1203,7 +1204,19 @@ type ProductLedgerEditModalProps = {
   onClose: () => void;
   loading: boolean;
   row: ProductLedgerRow | null;
+  productOptions: Array<{
+    id: string;
+    name: string;
+    category: string;
+    unit: ProductUnit;
+    targetSection: ProductTargetSection;
+    minStock: number;
+  }>;
   onSubmit: (payload: {
+    productId: string;
+    date: string;
+    targetSection: ProductTargetSection;
+    stockHealth: StockHealth;
     openingStock: number;
     purchased: number;
     consumption: number;
@@ -1213,18 +1226,27 @@ type ProductLedgerEditModalProps = {
   }) => Promise<void>;
 };
 
-const ProductLedgerEditModal = memo(({ isOpen, onClose, loading, row, onSubmit }: ProductLedgerEditModalProps) => {
+const ProductLedgerEditModal = memo(
+  ({ isOpen, onClose, loading, row, productOptions, onSubmit }: ProductLedgerEditModalProps) => {
   const [openingStock, setOpeningStock] = useState("0");
   const [purchased, setPurchased] = useState("0");
   const [consumption, setConsumption] = useState("0");
   const [dipAndDashConsumption, setDipAndDashConsumption] = useState("0");
   const [snookerConsumption, setSnookerConsumption] = useState("0");
+  const [productId, setProductId] = useState("");
+  const [date, setDate] = useState("");
+  const [targetSection, setTargetSection] = useState<ProductTargetSection>("dip_and_dash");
+  const [stockHealth, setStockHealth] = useState<StockHealth>("HEALTHY");
   const [note, setNote] = useState("");
 
   useEffect(() => {
     if (!isOpen || !row) {
       return;
     }
+    setProductId(row.productId);
+    setDate(row.date);
+    setTargetSection(row.targetSection);
+    setStockHealth(row.stockHealth);
     setOpeningStock(String(row.openingStock ?? 0));
     setPurchased(String(row.purchased ?? 0));
     setConsumption(String(row.consumption ?? 0));
@@ -1233,14 +1255,25 @@ const ProductLedgerEditModal = memo(({ isOpen, onClose, loading, row, onSubmit }
     setNote(row.adjustmentNote ?? "");
   }, [isOpen, row]);
 
+  const selectedProduct = useMemo(
+    () => productOptions.find((option) => option.id === productId) ?? null,
+    [productId, productOptions]
+  );
+  const displayUnit = selectedProduct?.unit ?? row?.unit ?? "";
+
   const purchasedNumber = Number(purchased || 0);
   const consumptionNumber = Number(consumption || 0);
   const dipNumber = Number(dipAndDashConsumption || 0);
   const snookerNumber = Number(snookerConsumption || 0);
   const isConsumptionSplitValid = Math.abs(consumptionNumber - (dipNumber + snookerNumber)) <= 0.001;
+  const closingStock = Number((Number(openingStock || 0) + purchasedNumber - consumptionNumber).toFixed(3));
 
   const handleSave = async () => {
     await onSubmit({
+      productId,
+      date,
+      targetSection,
+      stockHealth,
       openingStock: Number(openingStock || 0),
       purchased: purchasedNumber,
       consumption: consumptionNumber,
@@ -1259,17 +1292,60 @@ const ProductLedgerEditModal = memo(({ isOpen, onClose, loading, row, onSubmit }
         <ModalBody>
           <VStack spacing={4} align="stretch">
             <SimpleGrid columns={{ base: 1, md: 2 }} spacing={3}>
-              <AppInput label="Date" value={row?.date ?? ""} isDisabled />
-              <AppInput label="Product" value={row?.productName ?? ""} isDisabled />
+              <FormControl>
+                <FormLabel>Date</FormLabel>
+                <Input type="date" value={date} onChange={(event) => setDate(event.target.value)} />
+              </FormControl>
+              <FormControl>
+                <FormLabel>Product</FormLabel>
+                <Select
+                  value={productId}
+                  onChange={(event) => {
+                    const nextProductId = event.target.value;
+                    const nextProduct = productOptions.find((option) => option.id === nextProductId) ?? null;
+                    setProductId(nextProductId);
+                    if (nextProduct) {
+                      setTargetSection(nextProduct.targetSection);
+                    }
+                  }}
+                >
+                  <option value="">Select product</option>
+                  {productOptions.map((option) => (
+                    <option key={option.id} value={option.id}>
+                      {option.name} ({option.category} | {option.unit.toUpperCase()})
+                    </option>
+                  ))}
+                </Select>
+              </FormControl>
+              <FormControl>
+                <FormLabel>Section</FormLabel>
+                <Select
+                  value={targetSection}
+                  onChange={(event) => setTargetSection(event.target.value as ProductTargetSection)}
+                >
+                  {PRODUCT_TARGET_SECTION_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </Select>
+              </FormControl>
+              <FormControl>
+                <FormLabel>Stock Health</FormLabel>
+                <Select value={stockHealth} onChange={(event) => setStockHealth(event.target.value as StockHealth)}>
+                  <option value="HEALTHY">Healthy</option>
+                  <option value="LOW_STOCK">Low Stock</option>
+                </Select>
+              </FormControl>
               <AppInput
-                label={`Opening (${row?.unit ?? ""})`}
+                label={`Opening (${displayUnit})`}
                 type="number"
                 step="0.001"
                 value={openingStock}
                 onChange={(event) => setOpeningStock((event.target as HTMLInputElement).value)}
               />
               <AppInput
-                label={`Purchase (${row?.unit ?? ""})`}
+                label={`Purchase (${displayUnit})`}
                 type="number"
                 min={0}
                 step="0.001"
@@ -1277,7 +1353,7 @@ const ProductLedgerEditModal = memo(({ isOpen, onClose, loading, row, onSubmit }
                 onChange={(event) => setPurchased((event.target as HTMLInputElement).value)}
               />
               <AppInput
-                label={`Consumption (${row?.unit ?? ""})`}
+                label={`Consumption (${displayUnit})`}
                 type="number"
                 min={0}
                 step="0.001"
@@ -1285,7 +1361,7 @@ const ProductLedgerEditModal = memo(({ isOpen, onClose, loading, row, onSubmit }
                 onChange={(event) => setConsumption((event.target as HTMLInputElement).value)}
               />
               <AppInput
-                label={`Dip Used (${row?.unit ?? ""})`}
+                label={`Dip Used (${displayUnit})`}
                 type="number"
                 min={0}
                 step="0.001"
@@ -1293,7 +1369,7 @@ const ProductLedgerEditModal = memo(({ isOpen, onClose, loading, row, onSubmit }
                 onChange={(event) => setDipAndDashConsumption((event.target as HTMLInputElement).value)}
               />
               <AppInput
-                label={`Snooker Used (${row?.unit ?? ""})`}
+                label={`Snooker Used (${displayUnit})`}
                 type="number"
                 min={0}
                 step="0.001"
@@ -1301,8 +1377,8 @@ const ProductLedgerEditModal = memo(({ isOpen, onClose, loading, row, onSubmit }
                 onChange={(event) => setSnookerConsumption((event.target as HTMLInputElement).value)}
               />
               <AppInput
-                label={`Closing (${row?.unit ?? ""})`}
-                value={String((Number(openingStock || 0) + purchasedNumber - consumptionNumber).toFixed(3))}
+                label={`Closing (${displayUnit})`}
+                value={String(closingStock)}
                 isDisabled
               />
             </SimpleGrid>
@@ -1319,6 +1395,9 @@ const ProductLedgerEditModal = memo(({ isOpen, onClose, loading, row, onSubmit }
                 Consumption must equal Dip Used + Snooker Used.
               </Text>
             ) : null}
+            <Text fontSize="xs" color="#7A6359">
+              Section or health changes update product-level settings so valuation and stock status stay in sync.
+            </Text>
           </VStack>
         </ModalBody>
         <ModalFooter gap={3}>
@@ -1330,6 +1409,8 @@ const ProductLedgerEditModal = memo(({ isOpen, onClose, loading, row, onSubmit }
             isLoading={loading}
             isDisabled={
               !row ||
+              !productId ||
+              !date ||
               !isConsumptionSplitValid ||
               Number.isNaN(Number(openingStock)) ||
               Number.isNaN(purchasedNumber) ||
@@ -1348,7 +1429,8 @@ const ProductLedgerEditModal = memo(({ isOpen, onClose, loading, row, onSubmit }
       </ModalContent>
     </Modal>
   );
-});
+  }
+);
 ProductLedgerEditModal.displayName = "ProductLedgerEditModal";
 
 type PurchasePageSection = "orders" | "products";
@@ -1653,6 +1735,38 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
     });
     return [{ value: "", label: "All Products" }, ...Array.from(productMap.values()).sort((a, b) => a.label.localeCompare(b.label))];
   }, [meta?.products, productRows]);
+  const productLedgerEditOptions = useMemo(
+    () =>
+      Array.from(
+        [...(meta?.products ?? []), ...productRows].reduce(
+          (acc, product) => {
+            if (!acc.has(product.id)) {
+              acc.set(product.id, {
+                id: product.id,
+                name: product.name,
+                category: product.category,
+                unit: product.unit,
+                targetSection: product.targetSection,
+                minStock: product.minStock ?? 0
+              });
+            }
+            return acc;
+          },
+          new Map<
+            string,
+            {
+              id: string;
+              name: string;
+              category: string;
+              unit: ProductUnit;
+              targetSection: ProductTargetSection;
+              minStock: number;
+            }
+          >()
+        ).values()
+      ).sort((left, right) => left.name.localeCompare(right.name)),
+    [meta?.products, productRows]
+  );
 
   const openCreateProduct = () => {
     setSelectedProduct(null);
@@ -1948,6 +2062,10 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
   };
 
   const handleSaveLedgerRecord = async (payload: {
+    productId: string;
+    date: string;
+    targetSection: ProductTargetSection;
+    stockHealth: StockHealth;
     openingStock: number;
     purchased: number;
     consumption: number;
@@ -2860,6 +2978,7 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
           }}
           loading={mutationLoading}
           row={editingLedgerRow}
+          productOptions={productLedgerEditOptions}
           onSubmit={handleSaveLedgerRecord}
         />
       ) : null}

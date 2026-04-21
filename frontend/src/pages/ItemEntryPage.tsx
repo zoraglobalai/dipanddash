@@ -605,6 +605,7 @@ export const ItemEntryPage = () => {
       note?: string;
       isActive?: boolean;
       ingredients: { ingredientId: string; quantity: number; unit: ItemMetaIngredient["unit"] }[];
+      sauces: { sauceId: string; quantity: number; unit: ItemMetaIngredient["unit"] }[];
     }) => {
       setAddOnMutationLoading(true);
       try {
@@ -1702,6 +1703,7 @@ export const ItemEntryPage = () => {
         }}
         loading={addOnMutationLoading}
         ingredients={metaIngredients}
+        sauces={metaSauces}
         unitMeta={metaUnits}
         initialData={selectedAddOn}
         onSubmit={handleAddOnSubmit}

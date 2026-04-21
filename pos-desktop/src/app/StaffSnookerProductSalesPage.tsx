@@ -25,14 +25,22 @@ import { makeId } from "@/utils/idempotency";
 type DirectSaleLine = {
   id: string;
   productId: string;
-  quantity: number;
+  quantity: string;
 };
 
 const makeLine = (): DirectSaleLine => ({
   id: makeId(),
   productId: "",
-  quantity: 1
+  quantity: "1"
 });
+
+const parsePositiveInteger = (value: string) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return 0;
+  }
+  return Math.max(0, Math.floor(parsed));
+};
 
 export const StaffSnookerProductSalesPage = () => {
   const toast = useToast();
@@ -61,7 +69,11 @@ export const StaffSnookerProductSalesPage = () => {
       const next: CartLine[] = [];
       lines.forEach((line) => {
         const product = productMap.get(line.productId);
+        const quantity = parsePositiveInteger(line.quantity);
         if (!product) {
+          return;
+        }
+        if (quantity <= 0) {
           return;
         }
         next.push({
@@ -69,7 +81,7 @@ export const StaffSnookerProductSalesPage = () => {
           lineType: "product",
           refId: product.id,
           name: product.name,
-          quantity: Math.max(1, Math.round(Number(line.quantity) || 0)),
+          quantity,
           unitPrice: Number(product.sellingPrice) || 0,
           gstPercentage: 0,
           addOns: [],
@@ -105,13 +117,22 @@ export const StaffSnookerProductSalesPage = () => {
     }
 
     const quantityByProduct = new Map<string, number>();
+    let hasInvalidSelectedQuantity = false;
     lines.forEach((line) => {
       if (!line.productId) {
         return;
       }
-      const qty = Math.max(1, Math.round(Number(line.quantity) || 0));
+      const qty = parsePositiveInteger(line.quantity);
+      if (qty <= 0) {
+        hasInvalidSelectedQuantity = true;
+        return;
+      }
       quantityByProduct.set(line.productId, (quantityByProduct.get(line.productId) ?? 0) + qty);
     });
+
+    if (hasInvalidSelectedQuantity) {
+      errors.push("Quantity must be at least 1 for selected product.");
+    }
 
     quantityByProduct.forEach((qty, productId) => {
       const product = productMap.get(productId);
@@ -187,10 +208,16 @@ export const StaffSnookerProductSalesPage = () => {
 
     const payloadLines = lines
       .filter((line) => line.productId)
-      .map((line) => ({
-        productId: line.productId,
-        quantity: Math.max(1, Math.round(Number(line.quantity) || 0))
-      }));
+      .map((line) => {
+        const quantity = parsePositiveInteger(line.quantity);
+        return quantity > 0
+          ? {
+              productId: line.productId,
+              quantity
+            }
+          : null;
+      })
+      .filter((line): line is { productId: string; quantity: number } => Boolean(line));
 
     if (!payloadLines.length) {
       return;
@@ -270,7 +297,7 @@ export const StaffSnookerProductSalesPage = () => {
         <VStack align="stretch" spacing={3}>
           {lines.map((line, index) => {
             const product = productMap.get(line.productId);
-            const quantity = Math.max(1, Math.round(Number(line.quantity) || 0));
+            const quantity = parsePositiveInteger(line.quantity);
             const lineTotal = roundMoney((product?.sellingPrice ?? 0) * quantity);
             return (
               <Grid key={line.id} templateColumns={{ base: "1fr", md: "2.3fr 1fr auto auto" }} gap={3} alignItems="end">
@@ -293,12 +320,18 @@ export const StaffSnookerProductSalesPage = () => {
                   <Input
                     type="number"
                     min={1}
-                    value={quantity}
-                    onChange={(event) =>
-                      updateLine(line.id, {
-                        quantity: Math.max(1, Math.round(Number(event.target.value) || 1))
-                      })
-                    }
+                    value={line.quantity}
+                    onChange={(event) => {
+                      const nextValue = event.target.value;
+                      if (nextValue === "" || /^\d+$/.test(nextValue)) {
+                        updateLine(line.id, { quantity: nextValue });
+                      }
+                    }}
+                    onBlur={() => {
+                      if (parsePositiveInteger(line.quantity) <= 0) {
+                        updateLine(line.id, { quantity: "1" });
+                      }
+                    }}
                   />
                 </FormControl>
                 <Box pb={1}>
