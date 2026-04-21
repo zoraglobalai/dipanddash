@@ -231,23 +231,6 @@ export const StaffOrdersPage = () => {
     void fetchCompletedInvoices();
   }, [fetchCompletedInvoices]);
 
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      void fetchCompletedInvoices();
-    }, 5000);
-    return () => window.clearInterval(timer);
-  }, [fetchCompletedInvoices]);
-
-  useEffect(() => {
-    const handleVisible = () => {
-      if (document.visibilityState === "visible") {
-        void fetchCompletedInvoices();
-      }
-    };
-    document.addEventListener("visibilitychange", handleVisible);
-    return () => document.removeEventListener("visibilitychange", handleVisible);
-  }, [fetchCompletedInvoices]);
-
   const openPreview = useCallback(
     async (invoiceId: string) => {
       setLoadingPreview(true);

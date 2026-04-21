@@ -173,13 +173,6 @@ export const StaffPendingPage = () => {
     void fetchCustomers();
   }, [fetchCustomers]);
 
-  useEffect(() => {
-    const interval = window.setInterval(() => {
-      void fetchCustomers();
-    }, 20000);
-    return () => window.clearInterval(interval);
-  }, [fetchCustomers]);
-
   const customerColumns = useMemo<PosTableColumn<PendingCustomerSummary>[]>(
     () => [
       {

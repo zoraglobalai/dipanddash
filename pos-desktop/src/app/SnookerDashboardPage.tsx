@@ -51,12 +51,8 @@ export const SnookerDashboardPage = () => {
       }
     };
     void load();
-    const timer = window.setInterval(() => {
-      void load();
-    }, 30000);
     return () => {
       mounted = false;
-      window.clearInterval(timer);
     };
   }, []);
 

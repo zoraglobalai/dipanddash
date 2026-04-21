@@ -211,7 +211,7 @@ export const PosProvider = ({ children }: PropsWithChildren) => {
 
   const refreshPendingBills = useCallback(async () => {
     try {
-      await ordersSyncService.pullFromServer(true);
+      await ordersSyncService.pullFromServer(false);
     } catch {
       // no-op: keep local snapshot in offline mode.
     }
@@ -221,7 +221,7 @@ export const PosProvider = ({ children }: PropsWithChildren) => {
 
   const refreshRecentBills = useCallback(async () => {
     try {
-      await ordersSyncService.pullFromServer(true);
+      await ordersSyncService.pullFromServer(false);
     } catch {
       // no-op: keep local snapshot in offline mode.
     }
@@ -231,7 +231,7 @@ export const PosProvider = ({ children }: PropsWithChildren) => {
 
   const refreshCompletedBills = useCallback(async () => {
     try {
-      await ordersSyncService.pullFromServer(true);
+      await ordersSyncService.pullFromServer(false);
     } catch {
       // no-op: keep local snapshot in offline mode.
     }
@@ -241,7 +241,7 @@ export const PosProvider = ({ children }: PropsWithChildren) => {
 
   const refreshKitchenOrders = useCallback(async () => {
     try {
-      await ordersSyncService.pullFromServer(true);
+      await ordersSyncService.pullFromServer(false);
     } catch {
       // no-op: keep local snapshot in offline mode.
     }
