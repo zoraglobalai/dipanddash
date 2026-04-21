@@ -20,6 +20,7 @@ import { dumpRoutes } from "../modules/dump/dump.routes";
 import { outletsRoutes } from "../modules/outlets/outlets.routes";
 import { outletTransfersRoutes } from "../modules/outlet-transfers/outlet-transfers.routes";
 import { pendingRoutes } from "../modules/pending/pending.routes";
+import { assetsRoutes } from "../modules/assets/assets.routes";
 
 const router = Router();
 
@@ -43,5 +44,6 @@ router.use("/dump", dumpRoutes);
 router.use("/outlets", outletsRoutes);
 router.use("/outlet-transfers", outletTransfersRoutes);
 router.use("/pending", pendingRoutes);
+router.use("/assets", assetsRoutes);
 
 export const apiRoutes = router;

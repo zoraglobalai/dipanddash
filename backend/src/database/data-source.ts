@@ -48,6 +48,7 @@ import { OutletTransfer } from "../modules/outlet-transfers/outlet-transfer.enti
 import { OutletIngredientStock } from "../modules/outlet-transfers/outlet-ingredient-stock.entity";
 import { OutletProductStock } from "../modules/outlet-transfers/outlet-product-stock.entity";
 import { PendingPaymentHistory } from "../modules/pending/pending-payment-history.entity";
+import { Asset } from "../modules/assets/asset.entity";
 
 const entities = [
   User,
@@ -93,7 +94,8 @@ const entities = [
   OutletTransfer,
   OutletIngredientStock,
   OutletProductStock,
-  PendingPaymentHistory
+  PendingPaymentHistory,
+  Asset
 ];
 
 const migrations = [

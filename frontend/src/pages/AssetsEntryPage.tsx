@@ -18,7 +18,7 @@ import {
   useDisclosure
 } from "@chakra-ui/react";
 import { Edit2, Plus, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import { EmptyState } from "@/components/common/EmptyState";
@@ -28,58 +28,22 @@ import { ActionIconButton } from "@/components/ui/ActionIconButton";
 import { AppButton } from "@/components/ui/AppButton";
 import { AppCard } from "@/components/ui/AppCard";
 import { AppInput } from "@/components/ui/AppInput";
-import { AppSearchableSelect, type AppSearchableSelectOption } from "@/components/ui/AppSearchableSelect";
 import { DataTable } from "@/components/ui/DataTable";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useAppToast } from "@/hooks/useAppToast";
-import { procurementService } from "@/services/procurement.service";
-import type {
-  ProductListItem,
-  ProductListResponse,
-  ProductUnit,
-  ProcurementStatsResponse,
-  SupplierListItem
-} from "@/types/procurement";
+import { assetsService } from "@/services/assets.service";
+import type { AssetListItem, AssetListResponse, AssetUnit } from "@/types/assets";
+import type { PaginationData } from "@/types/ingredient";
 import { extractErrorMessage } from "@/utils/api-error";
 
-const defaultPagination = {
+const defaultPagination: PaginationData = {
   page: 1,
   limit: 10,
   total: 0,
   totalPages: 1
 };
 
-const formatCurrency = (value: number) =>
-  new Intl.NumberFormat("en-IN", {
-    style: "currency",
-    currency: "INR",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2
-  }).format(value);
-
-const formatDateTime = (value?: string | null) => {
-  if (!value) {
-    return "-";
-  }
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    return value;
-  }
-  return parsed.toLocaleString("en-IN", {
-    year: "numeric",
-    month: "short",
-    day: "2-digit",
-    hour: "numeric",
-    minute: "2-digit"
-  });
-};
-
-const getToday = () => new Date().toISOString().slice(0, 10);
-const getDateBefore = (days: number) => {
-  const date = new Date();
-  date.setDate(date.getDate() - days);
-  return date.toISOString().slice(0, 10);
-};
+const unitOptions: AssetUnit[] = ["pcs", "unit", "set", "nos", "kg", "g", "l", "ml", "custom"];
 
 const AssetMetric = ({ label, value, helper }: { label: string; value: string; helper?: string }) => (
   <Box
@@ -105,34 +69,24 @@ const AssetMetric = ({ label, value, helper }: { label: string; value: string; h
   </Box>
 );
 
-type ProductFormModalProps = {
+type AssetFormModalProps = {
   isOpen: boolean;
   onClose: () => void;
   loading: boolean;
-  initialData: ProductListItem | null;
-  suppliers: SupplierListItem[];
-  units: string[];
+  initialData: AssetListItem | null;
   onSubmit: (payload: {
     name: string;
-    category: string;
-    sku?: string;
-    packSize?: string;
-    unit: ProductUnit;
-    minStock: number;
-    defaultSupplierId?: string | null;
+    quantity: number;
+    unit: AssetUnit;
     isActive: boolean;
   }) => Promise<void>;
 };
 
-const ProductFormModal = ({ isOpen, onClose, loading, initialData, suppliers, units, onSubmit }: ProductFormModalProps) => {
+const AssetFormModal = ({ isOpen, onClose, loading, initialData, onSubmit }: AssetFormModalProps) => {
   const [form, setForm] = useState({
     name: "",
-    category: "",
-    sku: "",
-    packSize: "",
-    unit: (units[0] ?? "pcs") as ProductUnit,
-    minStock: "0",
-    defaultSupplierId: "",
+    quantity: "0",
+    unit: "pcs" as AssetUnit,
     isActive: true
   });
 
@@ -142,113 +96,68 @@ const ProductFormModal = ({ isOpen, onClose, loading, initialData, suppliers, un
     }
     setForm({
       name: initialData?.name ?? "",
-      category: initialData?.category ?? "",
-      sku: initialData?.sku ?? "",
-      packSize: initialData?.packSize ?? "",
-      unit: (initialData?.unit ?? units[0] ?? "pcs") as ProductUnit,
-      minStock: String(initialData?.minStock ?? 0),
-      defaultSupplierId: initialData?.defaultSupplierId ?? "",
+      quantity: String(initialData?.quantity ?? 0),
+      unit: (initialData?.unit as AssetUnit) || "pcs",
       isActive: initialData?.isActive ?? true
     });
-  }, [initialData, isOpen, units]);
+  }, [initialData, isOpen]);
 
-  const supplierOptions: AppSearchableSelectOption[] = useMemo(
-    () =>
-      suppliers.map((supplier) => ({
-        value: supplier.id,
-        label: supplier.name,
-        description: supplier.phone,
-        searchText: `${supplier.name} ${supplier.phone}`
-      })),
-    [suppliers]
-  );
-
-  const unitOptions: AppSearchableSelectOption[] = useMemo(
-    () =>
-      units.map((unit) => ({
-        value: unit,
-        label: unit.toUpperCase()
-      })),
-    [units]
-  );
+  const hasInvalid = !form.name.trim() || Number(form.quantity) < 0 || !Number.isFinite(Number(form.quantity));
 
   const handleSave = async () => {
     await onSubmit({
       name: form.name.trim(),
-      category: form.category.trim(),
-      sku: form.sku.trim() || undefined,
-      packSize: form.packSize.trim() || undefined,
+      quantity: Number(form.quantity),
       unit: form.unit,
-      minStock: Number(form.minStock),
-      defaultSupplierId: form.defaultSupplierId || null,
       isActive: form.isActive
     });
   };
 
-  const hasInvalidNumber = Number(form.minStock) < 0;
-
   return (
-    <Modal isOpen={isOpen} onClose={onClose} isCentered size="xl">
+    <Modal isOpen={isOpen} onClose={onClose} isCentered size="lg">
       <ModalOverlay />
       <ModalContent borderRadius="18px">
         <ModalHeader>{initialData ? "Edit Asset" : "Create Asset"}</ModalHeader>
         <ModalCloseButton />
         <ModalBody>
           <VStack spacing={4} align="stretch">
+            <AppInput
+              label="Asset Name"
+              value={form.name}
+              onChange={(event) => setForm((previous) => ({ ...previous, name: (event.target as HTMLInputElement).value }))}
+            />
             <SimpleGrid columns={{ base: 1, md: 2 }} spacing={3}>
               <AppInput
-                label="Asset Name"
-                value={form.name}
-                onChange={(event) => setForm((prev) => ({ ...prev, name: (event.target as HTMLInputElement).value }))}
-              />
-              <AppInput
-                label="Category"
-                value={form.category}
-                onChange={(event) =>
-                  setForm((prev) => ({ ...prev, category: (event.target as HTMLInputElement).value }))
-                }
-              />
-              <AppInput
-                label="SKU (optional)"
-                value={form.sku}
-                onChange={(event) => setForm((prev) => ({ ...prev, sku: (event.target as HTMLInputElement).value }))}
-              />
-              <AppInput
-                label="Pack Size (optional)"
-                value={form.packSize}
-                onChange={(event) =>
-                  setForm((prev) => ({ ...prev, packSize: (event.target as HTMLInputElement).value }))
-                }
-              />
-              <AppSearchableSelect
-                label="Unit"
-                value={form.unit}
-                options={unitOptions}
-                onValueChange={(value) => setForm((prev) => ({ ...prev, unit: value as ProductUnit }))}
-                isClearable={false}
-              />
-              <AppSearchableSelect
-                label="Default Supplier"
-                value={form.defaultSupplierId}
-                options={supplierOptions}
-                onValueChange={(value) => setForm((prev) => ({ ...prev, defaultSupplierId: value }))}
-                placeholder="Select supplier"
-                searchPlaceholder="Search supplier"
-              />
-              <AppInput
-                label="Minimum Stock"
+                label="Quantity"
                 type="number"
                 min={0}
                 step="0.001"
-                value={form.minStock}
-                onChange={(event) => setForm((prev) => ({ ...prev, minStock: (event.target as HTMLInputElement).value }))}
+                value={form.quantity}
+                onChange={(event) =>
+                  setForm((previous) => ({ ...previous, quantity: (event.target as HTMLInputElement).value }))
+                }
               />
+              <FormControl>
+                <FormLabel>Unit</FormLabel>
+                <Select
+                  value={form.unit}
+                  onChange={(event) =>
+                    setForm((previous) => ({ ...previous, unit: event.target.value as AssetUnit }))
+                  }
+                >
+                  {unitOptions.map((unit) => (
+                    <option key={unit} value={unit}>
+                      {unit.toUpperCase()}
+                    </option>
+                  ))}
+                </Select>
+              </FormControl>
             </SimpleGrid>
             <FormControl display="flex" alignItems="center" justifyContent="space-between">
               <FormLabel mb={0}>Active Asset</FormLabel>
               <Checkbox
                 isChecked={form.isActive}
-                onChange={(event) => setForm((prev) => ({ ...prev, isActive: event.target.checked }))}
+                onChange={(event) => setForm((previous) => ({ ...previous, isActive: event.target.checked }))}
               >
                 Active
               </Checkbox>
@@ -259,11 +168,7 @@ const ProductFormModal = ({ isOpen, onClose, loading, initialData, suppliers, un
           <AppButton variant="outline" onClick={onClose}>
             Cancel
           </AppButton>
-          <AppButton
-            onClick={() => void handleSave()}
-            isLoading={loading}
-            isDisabled={!form.name.trim() || !form.category.trim() || hasInvalidNumber}
-          >
+          <AppButton onClick={() => void handleSave()} isLoading={loading} isDisabled={hasInvalid}>
             {initialData ? "Save Asset" : "Create Asset"}
           </AppButton>
         </ModalFooter>
@@ -274,86 +179,36 @@ const ProductFormModal = ({ isOpen, onClose, loading, initialData, suppliers, un
 
 export const AssetsEntryPage = () => {
   const toast = useAppToast();
-  const productModal = useDisclosure();
+  const assetModal = useDisclosure();
   const deleteDialog = useDisclosure();
 
-  const [rows, setRows] = useState<ProductListItem[]>([]);
-  const [pagination, setPagination] = useState(defaultPagination);
-  const [stats, setStats] = useState<ProductListResponse["stats"]>({
-    totalProducts: 0,
-    activeProducts: 0,
-    inactiveProducts: 0,
-    lowStockProducts: 0,
-    stockValuation: 0,
-    totalPurchasedQuantity: 0,
-    totalPurchasedAmount: 0,
-    totalSoldQuantity: 0,
-    totalSoldAmount: 0,
-    totalEstimatedProfit: 0,
-    topPurchasedProducts: [],
-    topSoldProducts: []
-  });
-  const [procurementSummary, setProcurementSummary] = useState<ProcurementStatsResponse["summary"]>({
-    totalSuppliers: 0,
-    totalProducts: 0,
-    totalPurchaseOrders: 0,
-    totalPurchaseAmount: 0,
-    totalProductPurchasedQuantity: 0,
-    totalProductPurchasedAmount: 0
+  const [rows, setRows] = useState<AssetListItem[]>([]);
+  const [pagination, setPagination] = useState<PaginationData>(defaultPagination);
+  const [stats, setStats] = useState<AssetListResponse["stats"]>({
+    totalAssets: 0,
+    activeAssets: 0,
+    inactiveAssets: 0,
+    totalQuantity: 0
   });
 
-  const [suppliers, setSuppliers] = useState<SupplierListItem[]>([]);
-  const [units, setUnits] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [mutationLoading, setMutationLoading] = useState(false);
-
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebouncedValue(search, 350);
-  const [categoryFilter, setCategoryFilter] = useState("");
-  const [supplierFilter, setSupplierFilter] = useState("");
-  const [includeInactive, setIncludeInactive] = useState(true);
   const [page, setPage] = useState(1);
   const [limit, setLimit] = useState(10);
+  const [selectedAsset, setSelectedAsset] = useState<AssetListItem | null>(null);
 
-  const [selectedProduct, setSelectedProduct] = useState<ProductListItem | null>(null);
-
-  const loadMeta = useCallback(async () => {
-    try {
-      const [suppliersResponse, unitsResponse] = await Promise.all([
-        procurementService.getSuppliers({ includeInactive: true, page: 1, limit: 200 }),
-        procurementService.getUnits()
-      ]);
-      setSuppliers(suppliersResponse.data.suppliers);
-      setUnits([...unitsResponse.data.productUnits]);
-    } catch (error) {
-      toast.error(extractErrorMessage(error, "Unable to fetch asset master data."));
-    }
-  }, [toast]);
-
-  const loadProcurementSummary = useCallback(async () => {
-    try {
-      const response = await procurementService.getStats({
-        dateFrom: getDateBefore(29),
-        dateTo: getToday()
-      });
-      setProcurementSummary(response.data.summary);
-    } catch (error) {
-      toast.error(extractErrorMessage(error, "Unable to fetch asset spend summary."));
-    }
-  }, [toast]);
-
-  const loadProducts = useCallback(async () => {
+  const loadAssets = useCallback(async () => {
     setLoading(true);
     try {
-      const response = await procurementService.getProducts({
+      const response = await assetsService.getAssets({
         search: debouncedSearch || undefined,
-        category: categoryFilter || undefined,
-        supplierId: supplierFilter || undefined,
-        includeInactive,
+        includeInactive: true,
         page,
         limit
       });
-      setRows(response.data.products);
+      setRows(response.data.assets);
       setPagination(response.data.pagination);
       setStats(response.data.stats);
     } catch (error) {
@@ -361,216 +216,165 @@ export const AssetsEntryPage = () => {
     } finally {
       setLoading(false);
     }
-  }, [categoryFilter, debouncedSearch, includeInactive, limit, page, supplierFilter, toast]);
+  }, [debouncedSearch, limit, page, toast]);
 
   useEffect(() => {
-    void loadMeta();
-    void loadProcurementSummary();
-  }, [loadMeta, loadProcurementSummary]);
-
-  useEffect(() => {
-    void loadProducts();
-  }, [loadProducts]);
+    void loadAssets();
+  }, [loadAssets]);
 
   useEffect(() => {
     setPage(1);
-  }, [debouncedSearch, categoryFilter, supplierFilter, includeInactive, limit]);
+  }, [debouncedSearch, limit]);
 
-  const supplierOptions = useMemo(
-    () => suppliers.map((supplier) => ({ value: supplier.id, label: supplier.name })),
-    [suppliers]
-  );
-
-  const categoryOptions = useMemo(() => {
-    const uniqueCategories = [...new Set(rows.map((row) => row.category).filter(Boolean))];
-    return uniqueCategories.map((category) => ({ value: category, label: category }));
-  }, [rows]);
-
-  const lowStockRows = useMemo(() => rows.filter((row) => row.stockStatus === "LOW_STOCK"), [rows]);
+  const lowQuantityRows = useMemo(() => rows.filter((row) => row.isActive && row.quantity <= 0), [rows]);
 
   const columns = useMemo(
-    () =>
-      [
-        {
-          key: "name",
-          header: "Asset",
-          render: (row: ProductListItem) => (
-            <Box>
-              <Text fontWeight={800}>{row.name}</Text>
-              <Text fontSize="sm" color="#7A6359">
-                {row.sku || "-"}
-                {row.packSize ? ` | ${row.packSize}` : ""}
-              </Text>
-            </Box>
-          )
-        },
-        { key: "category", header: "Category", render: (row: ProductListItem) => row.category },
-        { key: "stock", header: "Stock", render: (row: ProductListItem) => `${row.currentStock} ${row.unit}` },
-        { key: "minStock", header: "Min Stock", render: (row: ProductListItem) => `${row.minStock} ${row.unit}` },
-        {
-          key: "purchaseUnitPrice",
-          header: "Unit Price",
-          render: (row: ProductListItem) => formatCurrency(row.purchaseUnitPrice)
-        },
-        { key: "valuation", header: "Valuation", render: (row: ProductListItem) => formatCurrency(row.valuation) },
-        {
-          key: "defaultSupplierName",
-          header: "Supplier",
-          render: (row: ProductListItem) => row.defaultSupplierName || "-"
-        },
-        {
-          key: "status",
-          header: "Status",
-          render: (row: ProductListItem) => (
-            <Box
-              px={3}
-              py={1}
-              borderRadius="full"
-              bg={row.stockStatus === "LOW_STOCK" ? "red.100" : "green.100"}
-              color={row.stockStatus === "LOW_STOCK" ? "red.700" : "green.700"}
-              fontSize="xs"
-              fontWeight={700}
-              w="fit-content"
-            >
-              {row.stockStatus === "LOW_STOCK" ? "Low Stock" : "Healthy"}
-            </Box>
-          )
-        },
-        {
-          key: "actions",
-          header: "Actions",
-          render: (row: ProductListItem) => (
-            <HStack spacing={2}>
-              <ActionIconButton
-                aria-label="Edit asset"
-                tooltip="Edit asset"
-                icon={<Edit2 size={16} />}
-                variant="outline"
-                onClick={() => {
-                  setSelectedProduct(row);
-                  productModal.onOpen();
-                }}
-              />
-              <ActionIconButton
-                aria-label="Delete asset"
-                tooltip="Delete asset"
-                icon={<Trash2 size={16} />}
-                variant="outline"
-                colorScheme="accentRed"
-                onClick={() => {
-                  setSelectedProduct(row);
-                  deleteDialog.onOpen();
-                }}
-              />
-            </HStack>
-          )
-        }
-      ] as Array<{ key: string; header: string; render?: (row: ProductListItem) => ReactNode }>,
-    [deleteDialog, productModal]
+    () => [
+      {
+        key: "name",
+        header: "Asset",
+        render: (row: AssetListItem) => (
+          <Box>
+            <Text fontWeight={800}>{row.name}</Text>
+            <Text fontSize="sm" color="#7A6359">
+              ID: {row.id.slice(0, 8)}
+            </Text>
+          </Box>
+        )
+      },
+      { key: "quantity", header: "Quantity", render: (row: AssetListItem) => row.quantity },
+      { key: "unit", header: "Unit", render: (row: AssetListItem) => row.unit.toUpperCase() },
+      {
+        key: "status",
+        header: "Status",
+        render: (row: AssetListItem) => (
+          <Box
+            px={3}
+            py={1}
+            borderRadius="full"
+            bg={row.isActive ? "green.100" : "gray.200"}
+            color={row.isActive ? "green.700" : "gray.700"}
+            fontSize="xs"
+            fontWeight={700}
+            w="fit-content"
+          >
+            {row.isActive ? "Active" : "Inactive"}
+          </Box>
+        )
+      },
+      {
+        key: "updatedAt",
+        header: "Last Updated",
+        render: (row: AssetListItem) => new Date(row.updatedAt).toLocaleString("en-IN")
+      },
+      {
+        key: "actions",
+        header: "Actions",
+        render: (row: AssetListItem) => (
+          <HStack spacing={2}>
+            <ActionIconButton
+              aria-label="Edit asset"
+              tooltip="Edit asset"
+              icon={<Edit2 size={16} />}
+              variant="outline"
+              onClick={() => {
+                setSelectedAsset(row);
+                assetModal.onOpen();
+              }}
+            />
+            <ActionIconButton
+              aria-label="Delete asset"
+              tooltip="Delete asset"
+              icon={<Trash2 size={16} />}
+              variant="outline"
+              colorScheme="accentRed"
+              onClick={() => {
+                setSelectedAsset(row);
+                deleteDialog.onOpen();
+              }}
+            />
+          </HStack>
+        )
+      }
+    ],
+    [assetModal, deleteDialog]
   );
 
-  const handleSaveProduct = useCallback(
+  const handleSaveAsset = useCallback(
     async (payload: {
       name: string;
-      category: string;
-      sku?: string;
-      packSize?: string;
-      unit: ProductUnit;
-      minStock: number;
-      defaultSupplierId?: string | null;
+      quantity: number;
+      unit: AssetUnit;
       isActive: boolean;
     }) => {
       setMutationLoading(true);
       try {
-        if (selectedProduct) {
-          await procurementService.updateProduct(selectedProduct.id, payload);
+        if (selectedAsset) {
+          await assetsService.updateAsset(selectedAsset.id, payload);
           toast.success("Asset updated successfully.");
         } else {
-          await procurementService.createProduct(payload);
+          await assetsService.createAsset(payload);
           toast.success("Asset created successfully.");
         }
-        productModal.onClose();
-        setSelectedProduct(null);
-        await Promise.all([loadProducts(), loadProcurementSummary()]);
+        assetModal.onClose();
+        setSelectedAsset(null);
+        await loadAssets();
       } catch (error) {
         toast.error(extractErrorMessage(error, "Unable to save asset."));
       } finally {
         setMutationLoading(false);
       }
     },
-    [loadProducts, loadProcurementSummary, productModal, selectedProduct, toast]
+    [assetModal, loadAssets, selectedAsset, toast]
   );
 
-  const handleDeleteProduct = useCallback(async () => {
-    if (!selectedProduct) {
+  const handleDeleteAsset = useCallback(async () => {
+    if (!selectedAsset) {
       return;
     }
-
     setMutationLoading(true);
     try {
-      await procurementService.deleteProduct(selectedProduct.id);
+      await assetsService.deleteAsset(selectedAsset.id);
       toast.success("Asset deleted successfully.");
       deleteDialog.onClose();
-      setSelectedProduct(null);
-      await Promise.all([loadProducts(), loadProcurementSummary()]);
+      setSelectedAsset(null);
+      await loadAssets();
     } catch (error) {
       toast.error(extractErrorMessage(error, "Unable to delete asset."));
     } finally {
       setMutationLoading(false);
     }
-  }, [deleteDialog, loadProducts, loadProcurementSummary, selectedProduct, toast]);
+  }, [deleteDialog, loadAssets, selectedAsset, toast]);
 
   return (
     <VStack spacing={6} align="stretch">
       <PageHeader
         title="Assets Entry"
-        subtitle="Manage product assets, stock health, valuation and procurement movement."
+        subtitle="Manage kitchen assets like vessels, gas cylinders and equipment."
       />
 
       <AppCard
         title="Assets Control Room"
-        subtitle="Filter assets, monitor risk and maintain clean stock data."
+        subtitle="Add, edit and delete asset records with quantity and unit."
         rightContent={
           <AppButton
             leftIcon={<Plus size={16} />}
             onClick={() => {
-              setSelectedProduct(null);
-              productModal.onOpen();
+              setSelectedAsset(null);
+              assetModal.onOpen();
             }}
           >
             Add Asset
           </AppButton>
         }
       >
-        <SimpleGrid columns={{ base: 1, md: 2, xl: 5 }} spacing={4}>
+        <SimpleGrid columns={{ base: 1, md: 3, xl: 5 }} spacing={4}>
           <AppInput
             label="Search"
-            placeholder="Search by asset name / SKU / pack"
+            placeholder="Search by asset name / unit"
             value={search}
             onChange={(event) => setSearch((event.target as HTMLInputElement).value)}
           />
-          <FormControl>
-            <FormLabel>Category</FormLabel>
-            <Select value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}>
-              <option value="">All Categories</option>
-              {categoryOptions.map((category) => (
-                <option key={category.value} value={category.value}>
-                  {category.label}
-                </option>
-              ))}
-            </Select>
-          </FormControl>
-          <FormControl>
-            <FormLabel>Supplier</FormLabel>
-            <Select value={supplierFilter} onChange={(event) => setSupplierFilter(event.target.value)}>
-              <option value="">All Suppliers</option>
-              {supplierOptions.map((supplier) => (
-                <option key={supplier.value} value={supplier.value}>
-                  {supplier.label}
-                </option>
-              ))}
-            </Select>
-          </FormControl>
           <FormControl>
             <FormLabel>Rows per page</FormLabel>
             <Select value={String(limit)} onChange={(event) => setLimit(Number(event.target.value) || 10)}>
@@ -580,45 +384,19 @@ export const AssetsEntryPage = () => {
               <option value="50">50</option>
             </Select>
           </FormControl>
-          <FormControl display="flex" alignItems="center" justifyContent="space-between">
-            <FormLabel mb={0}>Include Inactive</FormLabel>
-            <Checkbox isChecked={includeInactive} onChange={(event) => setIncludeInactive(event.target.checked)}>
-              Show
-            </Checkbox>
-          </FormControl>
         </SimpleGrid>
       </AppCard>
 
       <SimpleGrid columns={{ base: 1, sm: 2, xl: 4 }} spacing={4}>
-        <AssetMetric label="Total Assets" value={String(stats.totalProducts)} helper={`${stats.activeProducts} active`} />
-        <AssetMetric
-          label="Low Stock Alerts"
-          value={String(stats.lowStockProducts)}
-          helper={`${stats.inactiveProducts} inactive`}
-        />
-        <AssetMetric label="Stock Valuation" value={formatCurrency(stats.stockValuation)} />
-        <AssetMetric
-          label="Purchase Value (30d)"
-          value={formatCurrency(procurementSummary.totalProductPurchasedAmount)}
-          helper={`${procurementSummary.totalPurchaseOrders} purchase orders`}
-        />
-        <AssetMetric
-          label="Purchased Qty (30d)"
-          value={String(procurementSummary.totalProductPurchasedQuantity)}
-          helper="Products added through purchase"
-        />
-        <AssetMetric label="Suppliers" value={String(procurementSummary.totalSuppliers)} />
-        <AssetMetric label="Recent Spend" value={formatCurrency(procurementSummary.totalPurchaseAmount)} />
-        <AssetMetric
-          label="Top Product Count"
-          value={String(stats.topPurchasedProducts.length)}
-          helper="Top purchased list"
-        />
+        <AssetMetric label="Total Assets" value={String(stats.totalAssets)} />
+        <AssetMetric label="Active Assets" value={String(stats.activeAssets)} />
+        <AssetMetric label="Inactive Assets" value={String(stats.inactiveAssets)} />
+        <AssetMetric label="Total Quantity" value={String(stats.totalQuantity)} helper="Across filtered inventory" />
       </SimpleGrid>
 
       <SimpleGrid columns={{ base: 1, xl: 3 }} spacing={4}>
         <Box gridColumn={{ base: "auto", xl: "span 2" }}>
-          <AppCard title="Asset Registry" subtitle="Maintain clean stock, valuation and supplier mapping">
+          <AppCard title="Asset Registry" subtitle="Track all assets with quantity and unit">
             {loading ? (
               <SkeletonTable />
             ) : (
@@ -626,19 +404,14 @@ export const AssetsEntryPage = () => {
                 <DataTable
                   columns={columns}
                   rows={rows.map((row) => ({ ...row, id: row.id }))}
-                  emptyState={
-                    <EmptyState
-                      title="No assets found"
-                      description="Try adjusting search or filter and add new assets when required."
-                    />
-                  }
+                  emptyState={<EmptyState title="No assets found" description="Add your first kitchen asset to start tracking." />}
                 />
                 <HStack justify="space-between" mt={4}>
                   <Text color="#705B52" fontSize="sm">
                     Showing {rows.length} of {pagination.total} records
                   </Text>
                   <HStack>
-                    <AppButton variant="outline" isDisabled={page <= 1} onClick={() => setPage((prev) => prev - 1)}>
+                    <AppButton variant="outline" isDisabled={page <= 1} onClick={() => setPage((previous) => previous - 1)}>
                       Previous
                     </AppButton>
                     <Text fontWeight={700}>
@@ -647,7 +420,7 @@ export const AssetsEntryPage = () => {
                     <AppButton
                       variant="outline"
                       isDisabled={pagination.page >= pagination.totalPages}
-                      onClick={() => setPage((prev) => prev + 1)}
+                      onClick={() => setPage((previous) => previous + 1)}
                     >
                       Next
                     </AppButton>
@@ -658,88 +431,56 @@ export const AssetsEntryPage = () => {
           </AppCard>
         </Box>
 
-        <VStack spacing={4} align="stretch">
-          <AppCard title="Top Purchased Assets" subtitle="High movement products by quantity">
-            {stats.topPurchasedProducts.length ? (
-              <VStack align="stretch" spacing={3}>
-                {stats.topPurchasedProducts.slice(0, 8).map((entry) => (
-                  <Box
-                    key={entry.productId}
-                    p={3}
-                    borderRadius="12px"
-                    border="1px solid"
-                    borderColor="rgba(133, 78, 48, 0.18)"
-                    bg="rgba(255,255,255,0.8)"
-                  >
-                    <HStack justify="space-between">
-                      <Text fontWeight={700} color="#2A1A14">
-                        {entry.name}
-                      </Text>
-                      <Text fontWeight={900} color="#7A3E16">
-                        {entry.quantity} {entry.unit}
-                      </Text>
-                    </HStack>
-                  </Box>
-                ))}
-              </VStack>
-            ) : (
-              <EmptyState title="No purchase movement" description="No purchased quantity recorded for products yet." />
-            )}
-          </AppCard>
-
-          <AppCard title="Low Stock Priority" subtitle="Immediate refill candidates">
-            {lowStockRows.length ? (
-              <VStack align="stretch" spacing={3}>
-                {lowStockRows.slice(0, 8).map((row) => (
-                  <Box
-                    key={row.id}
-                    p={3}
-                    borderRadius="12px"
-                    border="1px solid"
-                    borderColor="rgba(185, 28, 28, 0.28)"
-                    bg="rgba(255, 240, 240, 0.6)"
-                  >
-                    <Text fontWeight={800} color="#2A1A14">
-                      {row.name}
-                    </Text>
-                    <Text fontSize="sm" color="#7A6359">
-                      Stock {row.currentStock} {row.unit} | Min {row.minStock} {row.unit}
-                    </Text>
-                    <Text fontSize="sm" color="#8D1C13" fontWeight={700}>
-                      Last update {formatDateTime(row.updatedAt)}
-                    </Text>
-                  </Box>
-                ))}
-              </VStack>
-            ) : (
-              <EmptyState title="No low stock assets" description="Current list has healthy stock levels." />
-            )}
-          </AppCard>
-        </VStack>
+        <AppCard title="Refill Watch" subtitle="Assets with zero quantity">
+          {lowQuantityRows.length ? (
+            <VStack align="stretch" spacing={3}>
+              {lowQuantityRows.slice(0, 10).map((row) => (
+                <Box
+                  key={row.id}
+                  p={3}
+                  borderRadius="12px"
+                  border="1px solid"
+                  borderColor="rgba(185, 28, 28, 0.28)"
+                  bg="rgba(255, 240, 240, 0.6)"
+                >
+                  <Text fontWeight={800} color="#2A1A14">
+                    {row.name}
+                  </Text>
+                  <Text fontSize="sm" color="#7A6359">
+                    Quantity {row.quantity} {row.unit.toUpperCase()}
+                  </Text>
+                  <Text fontSize="sm" color="#8D1C13" fontWeight={700}>
+                    Last update {new Date(row.updatedAt).toLocaleString("en-IN")}
+                  </Text>
+                </Box>
+              ))}
+            </VStack>
+          ) : (
+            <EmptyState title="No refill alerts" description="All active assets currently have quantity above zero." />
+          )}
+        </AppCard>
       </SimpleGrid>
 
-      <ProductFormModal
-        isOpen={productModal.isOpen}
+      <AssetFormModal
+        isOpen={assetModal.isOpen}
         onClose={() => {
-          setSelectedProduct(null);
-          productModal.onClose();
+          setSelectedAsset(null);
+          assetModal.onClose();
         }}
         loading={mutationLoading}
-        initialData={selectedProduct}
-        suppliers={suppliers}
-        units={units}
-        onSubmit={handleSaveProduct}
+        initialData={selectedAsset}
+        onSubmit={handleSaveAsset}
       />
 
       <ConfirmDialog
         isOpen={deleteDialog.isOpen}
         title="Delete this asset?"
-        description={selectedProduct ? `Are you sure you want to delete ${selectedProduct.name}?` : "Are you sure?"}
+        description={selectedAsset ? `Are you sure you want to delete ${selectedAsset.name}?` : "Are you sure?"}
         onClose={() => {
           deleteDialog.onClose();
-          setSelectedProduct(null);
+          setSelectedAsset(null);
         }}
-        onConfirm={() => void handleDeleteProduct()}
+        onConfirm={() => void handleDeleteAsset()}
         isLoading={mutationLoading}
       />
     </VStack>

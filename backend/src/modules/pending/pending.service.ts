@@ -1,6 +1,7 @@
 import { EntityManager } from "typeorm";
 
 import { AppDataSource } from "../../database/data-source";
+import { UserRole } from "../../constants/roles";
 import { AppError } from "../../errors/app-error";
 import { InvoicePayment } from "../invoices/invoice-payment.entity";
 import { Invoice } from "../invoices/invoice.entity";
@@ -9,6 +10,7 @@ import { PendingPaymentHistory, type PendingSourceType } from "./pending-payment
 
 type PendingCustomerFilters = {
   search?: string;
+  scope?: PendingScope;
   page: number;
   limit: number;
 };
@@ -16,6 +18,7 @@ type PendingCustomerFilters = {
 type CustomerDetailsFilter = {
   phone?: string;
   name?: string;
+  scope?: PendingScope;
 };
 
 type CollectPendingInput = {
@@ -25,6 +28,14 @@ type CollectPendingInput = {
   amount?: number;
   referenceNo?: string;
   note?: string;
+};
+
+type PendingScope = "all" | "dip_and_dash" | "snooker";
+
+type PendingContextUser = {
+  userId: string;
+  role: UserRole;
+  clientType: "desktop" | "web" | "unknown";
 };
 
 type PendingDocumentRow = {
@@ -126,17 +137,100 @@ export class PendingService {
   private readonly gamingBookingRepository = AppDataSource.getRepository(GamingBooking);
   private readonly pendingHistoryRepository = AppDataSource.getRepository(PendingPaymentHistory);
 
-  private async fetchInvoicePendingRows(search?: string): Promise<PendingDocumentRow[]> {
+  private resolveScopeByRole(
+    role: UserRole,
+    requestedScope?: PendingScope,
+    clientType: PendingContextUser["clientType"] = "unknown"
+  ): PendingScope {
+    if (role === UserRole.SNOOKER_STAFF) {
+      return "snooker";
+    }
+    if (role === UserRole.STAFF) {
+      return "dip_and_dash";
+    }
+    // Desktop POS must always stay outlet-scoped:
+    // - snooker_staff -> snooker (handled above)
+    // - all other desktop roles -> dip_and_dash
+    if (clientType === "desktop") {
+      return "dip_and_dash";
+    }
+    return requestedScope ?? "all";
+  }
+
+  private isSnookerInvoice(invoice?: Pick<Invoice, "orderType" | "invoiceNumber" | "orderReference" | "tableLabel"> & {
+    staff?: { role?: UserRole | null } | null;
+  }) {
+    if (!invoice) {
+      return false;
+    }
+
+    const invoiceNumber = (invoice.invoiceNumber ?? "").toUpperCase();
+    const orderReference = (invoice.orderReference ?? "").toLowerCase();
+    const tableLabel = (invoice.tableLabel ?? "").toLowerCase();
+
+    return (
+      invoice.orderType === "snooker" ||
+      invoice.staff?.role === UserRole.SNOOKER_STAFF ||
+      invoiceNumber.startsWith("SNK-") ||
+      invoiceNumber.startsWith("INV-LEGACY-SNK-") ||
+      orderReference.startsWith("legacy_snk_") ||
+      tableLabel.includes("snooker")
+    );
+  }
+
+  private assertScopeCanAccessSource(scope: PendingScope, sourceType: PendingSourceType, invoice?: Invoice) {
+    if (scope === "all") {
+      return;
+    }
+    if (scope === "dip_and_dash") {
+      if (sourceType === "gaming_booking") {
+        throw new AppError(403, "Gaming pending records are not available in Dip & Dash staff view.");
+      }
+      if (this.isSnookerInvoice(invoice)) {
+        throw new AppError(403, "Snooker pending invoices are not available in Dip & Dash staff view.");
+      }
+      return;
+    }
+    // scope === "snooker"
+    if (sourceType === "invoice" && invoice && !this.isSnookerInvoice(invoice)) {
+      throw new AppError(403, "Dip & Dash pending invoices are not available in Snooker staff view.");
+    }
+  }
+
+  private async fetchInvoicePendingRows(search: string | undefined, scope: PendingScope): Promise<PendingDocumentRow[]> {
+    const snookerScopeCondition = `(
+      invoice."orderType" = :snookerOrderType
+      OR staff.role = :snookerStaffRole
+      OR invoice."invoiceNumber" ILIKE :snookerInvoicePrefix
+      OR invoice."invoiceNumber" ILIKE :snookerLegacyInvoicePrefix
+      OR COALESCE(invoice."orderReference", '') ILIKE :snookerOrderReferencePrefix
+      OR COALESCE(invoice."tableLabel", '') ILIKE :snookerTableLabelHint
+    )`;
+
     const query = this.invoiceRepository
       .createQueryBuilder("invoice")
       .leftJoin("invoice.customer", "customer")
+      .leftJoin("invoice.staff", "staff")
       .leftJoin(
         InvoicePayment,
         "payment",
         "payment.\"invoiceId\" = invoice.id AND payment.status = 'success'"
       )
       .where("invoice.status = :status", { status: "pending" })
-      .andWhere("invoice.orderType != :snookerType", { snookerType: "snooker" });
+      .setParameters({
+        snookerOrderType: "snooker",
+        snookerStaffRole: UserRole.SNOOKER_STAFF,
+        snookerInvoicePrefix: "SNK-%",
+        snookerLegacyInvoicePrefix: "INV-LEGACY-SNK-%",
+        snookerOrderReferencePrefix: "legacy_snk_%",
+        snookerTableLabelHint: "%snooker%"
+      });
+
+    if (scope === "dip_and_dash") {
+      query.andWhere(`NOT ${snookerScopeCondition}`);
+    } else if (scope === "snooker") {
+      query.andWhere(snookerScopeCondition);
+    }
 
     if (search?.trim()) {
       const term = `%${search.trim()}%`;
@@ -196,7 +290,11 @@ export class PendingService {
       .filter((row) => row.pendingAmount > 0.001);
   }
 
-  private async fetchGamingPendingRows(search?: string): Promise<PendingDocumentRow[]> {
+  private async fetchGamingPendingRows(search: string | undefined, scope: PendingScope): Promise<PendingDocumentRow[]> {
+    if (scope === "dip_and_dash") {
+      return [];
+    }
+
     const query = this.gamingBookingRepository
       .createQueryBuilder("booking")
       .leftJoin(
@@ -267,10 +365,10 @@ export class PendingService {
       .filter((row) => row.pendingAmount > 0.001);
   }
 
-  private async fetchPendingDocuments(search?: string) {
+  private async fetchPendingDocuments(search: string | undefined, scope: PendingScope) {
     const [invoiceRows, gamingRows] = await Promise.all([
-      this.fetchInvoicePendingRows(search),
-      this.fetchGamingPendingRows(search)
+      this.fetchInvoicePendingRows(search, scope),
+      this.fetchGamingPendingRows(search, scope)
     ]);
 
     return [...invoiceRows, ...gamingRows].sort(
@@ -337,8 +435,9 @@ export class PendingService {
     };
   }
 
-  async listPendingCustomers(filters: PendingCustomerFilters) {
-    const rows = await this.fetchPendingDocuments(filters.search);
+  async listPendingCustomers(filters: PendingCustomerFilters, contextUser: PendingContextUser) {
+    const scope = this.resolveScopeByRole(contextUser.role, filters.scope, contextUser.clientType);
+    const rows = await this.fetchPendingDocuments(filters.search, scope);
     const summaries = this.buildSummaryRows(rows);
     const total = summaries.length;
     const start = (filters.page - 1) * filters.limit;
@@ -364,9 +463,10 @@ export class PendingService {
     };
   }
 
-  async getCustomerPendingDetails(filter: CustomerDetailsFilter) {
+  async getCustomerPendingDetails(filter: CustomerDetailsFilter, contextUser: PendingContextUser) {
+    const scope = this.resolveScopeByRole(contextUser.role, filter.scope, contextUser.clientType);
     const identity = this.resolveCustomerIdentity(filter);
-    const rows = await this.fetchPendingDocuments();
+    const rows = await this.fetchPendingDocuments(undefined, scope);
     const customerRows = rows.filter((row) => {
       const rowKey = buildCustomerKey({
         customerName: row.customerName,
@@ -399,6 +499,10 @@ export class PendingService {
     }
 
     const histories = await historyQuery.take(300).getMany();
+    const allowedSourceKeys = new Set(customerRows.map((row) => `${row.sourceType}:${row.sourceId}`));
+    const scopedHistories = histories.filter((history) =>
+      allowedSourceKeys.has(`${history.sourceType}:${history.sourceId}`)
+    );
 
     return {
       summary,
@@ -415,7 +519,7 @@ export class PendingService {
         documentDate: row.documentDate,
         updatedAt: row.updatedAt
       })),
-      paymentHistory: histories.map((history) => ({
+      paymentHistory: scopedHistories.map((history) => ({
         id: history.id,
         sourceType: history.sourceType,
         sourceId: history.sourceId,
@@ -440,7 +544,7 @@ export class PendingService {
 
     const invoice = await invoiceRepository.findOne({
       where: { id: invoiceId },
-      relations: { customer: true }
+      relations: { customer: true, staff: true }
     });
     if (!invoice) {
       throw new AppError(404, "Invoice not found.");
@@ -517,14 +621,17 @@ export class PendingService {
     };
   }
 
-  async collectPendingAmount(input: CollectPendingInput, contextUserId: string) {
+  async collectPendingAmount(input: CollectPendingInput, contextUser: PendingContextUser) {
     if ((input.paymentMode === "card" || input.paymentMode === "upi") && !cleanOptionalText(input.referenceNo)) {
       throw new AppError(422, "Reference ID is required for Card and UPI payments.");
     }
 
     return AppDataSource.transaction(async (manager) => {
+      const scope = this.resolveScopeByRole(contextUser.role, undefined, contextUser.clientType);
+
       if (input.sourceType === "invoice") {
         const state = await this.resolveInvoicePendingState(input.sourceId, manager);
+        this.assertScopeCanAccessSource(scope, "invoice", state.invoice);
         if (state.pendingAmount <= 0.001) {
           return {
             sourceType: input.sourceType,
@@ -581,7 +688,7 @@ export class PendingService {
             remainingAmount,
             referenceNo: cleanOptionalText(input.referenceNo),
             note: cleanOptionalText(input.note),
-            collectedByUserId: contextUserId
+            collectedByUserId: contextUser.userId
           })
         );
 
@@ -599,6 +706,7 @@ export class PendingService {
       }
 
       const state = await this.resolveGamingPendingState(input.sourceId, manager);
+      this.assertScopeCanAccessSource(scope, "gaming_booking");
       if (state.pendingAmount <= 0.001) {
         return {
           sourceType: "gaming_booking" as const,
@@ -635,7 +743,7 @@ export class PendingService {
           remainingAmount,
           referenceNo: cleanOptionalText(input.referenceNo),
           note: cleanOptionalText(input.note),
-          collectedByUserId: contextUserId
+          collectedByUserId: contextUser.userId
         })
       );
 

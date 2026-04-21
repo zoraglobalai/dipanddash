@@ -3,10 +3,12 @@ import { z } from "zod";
 import { PENDING_SOURCE_TYPES } from "./pending-payment-history.entity";
 
 const paymentModeSchema = z.enum(["cash", "card", "upi"]);
+const pendingScopeSchema = z.enum(["all", "dip_and_dash", "snooker"]);
 
 export const pendingCustomersListSchema = z.object({
   query: z.object({
     search: z.string().trim().max(120).optional(),
+    scope: pendingScopeSchema.optional(),
     page: z.coerce.number().int().min(1).default(1),
     limit: z.coerce.number().int().min(1).max(100).default(10)
   }),
@@ -18,7 +20,8 @@ export const pendingCustomerDetailsSchema = z.object({
   query: z
     .object({
       phone: z.string().trim().max(24).optional(),
-      name: z.string().trim().max(120).optional()
+      name: z.string().trim().max(120).optional(),
+      scope: pendingScopeSchema.optional()
     })
     .superRefine((value, ctx) => {
       if (!value.phone?.trim() && !value.name?.trim()) {
@@ -55,4 +58,3 @@ export const collectPendingAmountSchema = z.object({
   query: z.object({}).optional(),
   params: z.object({}).optional()
 });
-

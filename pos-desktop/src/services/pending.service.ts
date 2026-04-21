@@ -13,12 +13,20 @@ type ApiSuccess<T> = {
 };
 
 export const pendingService = {
-  async listCustomers(params?: { search?: string; page?: number; limit?: number }) {
-    const response = await apiClient.get<ApiSuccess<PendingCustomersResponse>>("/pending/customers", { params });
+  async listCustomers(params?: { search?: string; page?: number; limit?: number; scope?: "all" | "dip_and_dash" | "snooker" }) {
+    const safePage = Math.max(1, Number(params?.page ?? 1) || 1);
+    const safeLimit = Math.min(100, Math.max(1, Number(params?.limit ?? 10) || 10));
+    const response = await apiClient.get<ApiSuccess<PendingCustomersResponse>>("/pending/customers", {
+      params: {
+        ...params,
+        page: safePage,
+        limit: safeLimit
+      }
+    });
     return response.data;
   },
 
-  async getCustomerDetails(params: { phone?: string; name?: string }) {
+  async getCustomerDetails(params: { phone?: string; name?: string; scope?: "all" | "dip_and_dash" | "snooker" }) {
     const response = await apiClient.get<ApiSuccess<PendingCustomerDetails>>("/pending/customer-details", { params });
     return response.data;
   },
@@ -35,4 +43,3 @@ export const pendingService = {
     return response.data;
   }
 };
-

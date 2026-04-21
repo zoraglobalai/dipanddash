@@ -16,6 +16,7 @@ import {
   VStack,
   useDisclosure
 } from "@chakra-ui/react";
+import axios from "axios";
 import { Download, Edit2, Eye, Plus, Trash2, Upload } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type ReactNode } from "react";
 
@@ -261,7 +262,7 @@ export const IngredientEntryPage = ({ mode = "core" }: IngredientEntryPageProps)
     try {
       const response = await ingredientsService.getCategories({
         kind: mode,
-        includeInactive: true,
+        includeInactive: false,
         search: debouncedCategorySearch || undefined,
         page: categoryPage,
         limit: categoryLimit
@@ -282,7 +283,7 @@ export const IngredientEntryPage = ({ mode = "core" }: IngredientEntryPageProps)
         search: debouncedIngredientSearch || undefined,
         categoryId: ingredientCategoryFilter || undefined,
         categoryKind: mode,
-        includeInactive: true,
+        includeInactive: false,
         page: ingredientPage,
         limit: ingredientLimit
       });
@@ -552,11 +553,27 @@ export const IngredientEntryPage = ({ mode = "core" }: IngredientEntryPageProps)
       deleteIngredientDialog.onClose();
       await Promise.all([fetchIngredients(), fetchCategories()]);
     } catch (error) {
-      toast.error(extractErrorMessage(error, "Unable to delete ingredient."));
+      if (axios.isAxiosError(error) && error.response?.status === 409) {
+        try {
+          const archived = await ingredientsService.updateIngredient(selectedIngredient.id, {
+            isActive: false,
+            minStock: 0,
+            currentStock: 0
+          });
+          toast.success(archived.message || `${stockItemLabel} archived successfully.`);
+          deleteIngredientDialog.onClose();
+          await Promise.all([fetchIngredients(), fetchCategories()]);
+          return;
+        } catch (archiveError) {
+          toast.error(extractErrorMessage(archiveError, `Unable to archive ${stockItemLabel.toLowerCase()}.`));
+          return;
+        }
+      }
+      toast.error(extractErrorMessage(error, `Unable to delete ${stockItemLabel.toLowerCase()}.`));
     } finally {
       setIngredientMutationLoading(false);
     }
-  }, [deleteIngredientDialog, fetchCategories, fetchIngredients, selectedIngredient, toast]);
+  }, [deleteIngredientDialog, fetchCategories, fetchIngredients, selectedIngredient, stockItemLabel, toast]);
 
   const openStockDetails = useCallback(
     async (ingredient: IngredientListItem) => {

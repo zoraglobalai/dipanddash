@@ -16,15 +16,18 @@ import {
   Select,
   Text,
   VStack,
-  useDisclosure,
   useToast
 } from "@chakra-ui/react";
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 
 import { usePosAuth } from "@/app/PosAuthContext";
-import { usePos } from "@/app/PosContext";
 import { PosDataTable, type PosTableColumn } from "@/components/common/PosDataTable";
-import type { PosOrder } from "@/types/pos";
+import {
+  invoicesService,
+  type DesktopInvoiceDetailsResponse,
+  type DesktopInvoiceListRow
+} from "@/services/invoices.service";
+import type { CartAddOnSelection, CustomerRecord, PosOrder } from "@/types/pos";
 import logo from "@/assets/logo.png";
 import {
   buildBillDocumentHtml,
@@ -47,102 +50,247 @@ const toOrderTypeLabel = (value: PosOrder["orderType"] | string | null | undefin
 const toPaymentModeLabel = (value: PosOrder["paymentMode"] | null | undefined) =>
   value ? value.toUpperCase() : "-";
 
+const toApiDateStart = (value: string) => new Date(`${value}T00:00:00.000`).toISOString();
+const toApiDateEnd = (value: string) => new Date(`${value}T23:59:59.999`).toISOString();
+
+const toSafeAddOns = (meta: unknown): CartAddOnSelection[] => {
+  if (!meta || typeof meta !== "object") {
+    return [];
+  }
+  const addOns = (meta as Record<string, unknown>).addOns;
+  if (!Array.isArray(addOns)) {
+    return [];
+  }
+
+  return addOns
+    .map((entry) => {
+      if (!entry || typeof entry !== "object") {
+        return null;
+      }
+      const source = entry as Record<string, unknown>;
+      const addOnId = typeof source.addOnId === "string" ? source.addOnId : "";
+      const name = typeof source.name === "string" ? source.name : "";
+      const unitPrice = Number(source.unitPrice ?? 0);
+      const gstPercentage = Number(source.gstPercentage ?? 0);
+      const quantity = Number(source.quantity ?? 0);
+      if (!addOnId || !name || !Number.isFinite(unitPrice) || !Number.isFinite(quantity)) {
+        return null;
+      }
+      return {
+        addOnId,
+        name,
+        unitPrice,
+        gstPercentage: Number.isFinite(gstPercentage) ? gstPercentage : 0,
+        quantity
+      } satisfies CartAddOnSelection;
+    })
+    .filter((entry): entry is CartAddOnSelection => Boolean(entry));
+};
+
+const mapInvoiceDetailsToPosOrder = (detail: DesktopInvoiceDetailsResponse): PosOrder => {
+  const invoice = detail.invoice;
+  const snapshot = (invoice.customerSnapshot ?? {}) as Record<string, unknown>;
+  const snapshotName = typeof snapshot.name === "string" ? snapshot.name.trim() : "";
+  const snapshotPhone = typeof snapshot.phone === "string" ? snapshot.phone.trim() : "";
+  const customerName = invoice.customer?.name?.trim() || snapshotName;
+  const customerPhone = invoice.customer?.phone?.trim() || snapshotPhone;
+
+  let customer: CustomerRecord | null = null;
+  if (customerName || customerPhone) {
+    const now = new Date().toISOString();
+    customer = {
+      localId: `server-${invoice.id}`,
+      serverId: null,
+      name: customerName || "Walk-in Customer",
+      phone: customerPhone || "-",
+      email: null,
+      notes: null,
+      createdAt: now,
+      updatedAt: now,
+      syncStatus: "synced"
+    };
+  }
+
+  return {
+    localOrderId: invoice.id,
+    serverInvoiceId: invoice.id,
+    invoiceNumber: invoice.invoiceNumber,
+    orderType: invoice.orderType,
+    orderChannel: invoice.orderType === "snooker" ? "snooker" : null,
+    tableLabel: invoice.tableLabel ?? null,
+    kitchenStatus:
+      (typeof (invoice as { kitchenStatus?: unknown }).kitchenStatus === "string"
+        ? ((invoice as { kitchenStatus?: PosOrder["kitchenStatus"] }).kitchenStatus ?? "served")
+        : "served"),
+    status: invoice.status === "refunded" ? "cancelled" : invoice.status,
+    paymentMode: invoice.paymentMode,
+    customer,
+    lines: detail.lines.map((line) => ({
+      lineId: line.id,
+      lineType: line.lineType === "custom" ? "item" : line.lineType,
+      refId: line.referenceId ?? line.id,
+      name: line.nameSnapshot,
+      quantity: Number(line.quantity),
+      unitPrice: Number(line.unitPrice),
+      gstPercentage: Number(line.gstPercentage),
+      addOns: toSafeAddOns(line.meta),
+      notes: null
+    })),
+    appliedOffer: null,
+    manualDiscountAmount: Number(invoice.manualDiscountAmount ?? 0),
+    notes: invoice.notes ?? null,
+    totals: {
+      subtotal: Number(invoice.subtotal ?? 0),
+      itemDiscountAmount: Number(invoice.itemDiscountAmount ?? 0),
+      couponDiscountAmount: Number(invoice.couponDiscountAmount ?? 0),
+      manualDiscountAmount: Number(invoice.manualDiscountAmount ?? 0),
+      taxAmount: Number(invoice.taxAmount ?? 0),
+      totalAmount: Number(invoice.totalAmount ?? 0)
+    },
+    createdAt: invoice.sourceCreatedAt ?? invoice.createdAt,
+    updatedAt: invoice.updatedAt,
+    syncStatus: "synced"
+  };
+};
+
 export const StaffOrdersPage = () => {
   const toast = useToast();
   const { session } = usePosAuth();
-  const { completedBills, getOrderById, refreshCompletedBills } = usePos();
   const [search, setSearch] = useState("");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [paymentModeFilter, setPaymentModeFilter] = useState<Exclude<PosOrder["paymentMode"], null> | "all">("all");
   const [page, setPage] = useState(1);
   const [rowsPerPage, setRowsPerPage] = useState(10);
+  const [rows, setRows] = useState<DesktopInvoiceListRow[]>([]);
+  const [pagination, setPagination] = useState({
+    page: 1,
+    limit: 10,
+    total: 0,
+    totalPages: 1
+  });
+  const [loading, setLoading] = useState(false);
   const [previewOrder, setPreviewOrder] = useState<PosOrder | null>(null);
   const [loadingPreview, setLoadingPreview] = useState(false);
-  const previewModal = useDisclosure();
+  const previewModal = useState(false);
+  const [isPreviewOpen, setIsPreviewOpen] = previewModal;
 
-  const filteredBills = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    return completedBills.filter((bill) => {
-      const searchable = [bill.invoiceNumber, bill.customerName, bill.customerPhone].some((value) =>
-        value.toLowerCase().includes(query)
-      );
+  const fetchCompletedInvoices = useCallback(async () => {
+    setLoading(true);
+    try {
+      const params: {
+        search?: string;
+        status: "paid";
+        paymentMode?: "cash" | "card" | "upi" | "mixed";
+        orderType?: "snooker";
+        excludeOrderType?: "snooker";
+        dateFrom?: string;
+        dateTo?: string;
+        page: number;
+        limit: number;
+      } = {
+        status: "paid",
+        page,
+        limit: rowsPerPage
+      };
 
-      if (!searchable) {
-        return false;
+      if (search.trim()) {
+        params.search = search.trim();
+      }
+      if (paymentModeFilter !== "all") {
+        params.paymentMode = paymentModeFilter;
+      }
+      if (dateFrom) {
+        params.dateFrom = toApiDateStart(dateFrom);
+      }
+      if (dateTo) {
+        params.dateTo = toApiDateEnd(dateTo);
       }
 
-      if (paymentModeFilter !== "all" && (bill.paymentMode ?? null) !== paymentModeFilter) {
-        return false;
+      if (session?.role === "snooker_staff") {
+        params.orderType = "snooker";
+      } else {
+        params.excludeOrderType = "snooker";
       }
 
-      const billDate = new Date(bill.updatedAt);
-      if (Number.isNaN(billDate.getTime())) {
-        return !dateFrom && !dateTo;
-      }
-
-      const billDay = billDate.toISOString().slice(0, 10);
-      const fromOk = !dateFrom || billDay >= dateFrom;
-      const toOk = !dateTo || billDay <= dateTo;
-      return fromOk && toOk;
-    });
-  }, [completedBills, dateFrom, dateTo, paymentModeFilter, search]);
-
-  const totalPages = useMemo(() => Math.max(1, Math.ceil(filteredBills.length / rowsPerPage)), [filteredBills.length, rowsPerPage]);
+      const response = await invoicesService.list(params);
+      setRows(response.data.invoices);
+      setPagination(response.data.pagination);
+    } catch (error) {
+      toast({
+        status: "error",
+        title: "Unable to load invoices",
+        description: error instanceof Error ? error.message : "Please retry."
+      });
+    } finally {
+      setLoading(false);
+    }
+  }, [dateFrom, dateTo, page, paymentModeFilter, rowsPerPage, search, session?.role, toast]);
 
   useEffect(() => {
-    if (page > totalPages) {
-      setPage(totalPages);
-    }
-  }, [page, totalPages]);
+    void fetchCompletedInvoices();
+  }, [fetchCompletedInvoices]);
 
-  const pagedBills = useMemo(() => {
-    const safePage = Math.min(page, totalPages);
-    const offset = (safePage - 1) * rowsPerPage;
-    return filteredBills.slice(offset, offset + rowsPerPage);
-  }, [filteredBills, page, rowsPerPage, totalPages]);
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void fetchCompletedInvoices();
+    }, 5000);
+    return () => window.clearInterval(timer);
+  }, [fetchCompletedInvoices]);
+
+  useEffect(() => {
+    const handleVisible = () => {
+      if (document.visibilityState === "visible") {
+        void fetchCompletedInvoices();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisible);
+    return () => document.removeEventListener("visibilitychange", handleVisible);
+  }, [fetchCompletedInvoices]);
 
   const openPreview = useCallback(
-    async (localOrderId: string) => {
+    async (invoiceId: string) => {
       setLoadingPreview(true);
       try {
-        const order = await getOrderById(localOrderId);
-        if (!order) {
-          toast({
-            status: "warning",
-            title: "Invoice not found"
-          });
-          return;
-        }
-        setPreviewOrder(order);
-        previewModal.onOpen();
+        const detail = await invoicesService.getById(invoiceId);
+        const mapped = mapInvoiceDetailsToPosOrder(detail.data);
+        setPreviewOrder(mapped);
+        setIsPreviewOpen(true);
+      } catch (error) {
+        toast({
+          status: "warning",
+          title: "Invoice not found",
+          description: error instanceof Error ? error.message : "Please retry."
+        });
       } finally {
         setLoadingPreview(false);
       }
     },
-    [getOrderById, previewModal, toast]
+    [setIsPreviewOpen, toast]
   );
 
-  const printByOrderId = useCallback(
-    async (localOrderId: string) => {
-      const order = await getOrderById(localOrderId);
-      if (!order) {
+  const printByInvoiceId = useCallback(
+    async (invoiceId: string) => {
+      try {
+        const detail = await invoicesService.getById(invoiceId);
+        const mapped = mapInvoiceDetailsToPosOrder(detail.data);
+        const printable = buildBillDocumentHtml(mapped, session?.fullName);
+        const success = openBillInPrintFrame(printable);
+        if (!success) {
+          toast({
+            status: "error",
+            title: "Unable to open print window"
+          });
+        }
+      } catch (error) {
         toast({
           status: "warning",
-          title: "Unable to find bill for print"
-        });
-        return;
-      }
-      const printable = buildBillDocumentHtml(order, session?.fullName);
-      const success = openBillInPrintFrame(printable);
-      if (!success) {
-        toast({
-          status: "error",
-          title: "Unable to open print window"
+          title: "Unable to find bill for print",
+          description: error instanceof Error ? error.message : "Please retry."
         });
       }
     },
-    [getOrderById, session?.fullName, toast]
+    [session?.fullName, toast]
   );
 
   const handleRowsPerPageChange = (value: string) => {
@@ -175,9 +323,7 @@ export const StaffOrdersPage = () => {
     setPage(1);
   };
 
-  const displayPage = Math.min(page, totalPages);
-
-  const columns = useMemo<PosTableColumn<(typeof pagedBills)[number]>[]>(
+  const columns = useMemo<PosTableColumn<DesktopInvoiceListRow>[]>(
     () => [
       {
         key: "invoiceNumber",
@@ -189,9 +335,9 @@ export const StaffOrdersPage = () => {
         header: "Customer",
         render: (bill) => (
           <VStack align="start" spacing={0}>
-            <Text>{bill.customerName}</Text>
+            <Text>{bill.customerName ?? "Walk-in"}</Text>
             <Text fontSize="xs" color="#7A6258">
-              {bill.customerPhone}
+              {bill.customerPhone ?? "-"}
             </Text>
           </VStack>
         )
@@ -227,17 +373,17 @@ export const StaffOrdersPage = () => {
         alwaysVisible: true,
         render: (bill) => (
           <HStack>
-            <Button size="xs" variant="outline" onClick={() => void openPreview(bill.localOrderId)}>
+            <Button size="xs" variant="outline" onClick={() => void openPreview(bill.id)}>
               View
             </Button>
-            <Button size="xs" variant="outline" onClick={() => void printByOrderId(bill.localOrderId)}>
+            <Button size="xs" variant="outline" onClick={() => void printByInvoiceId(bill.id)}>
               Print
             </Button>
           </HStack>
         )
       }
     ],
-    [openPreview, printByOrderId]
+    [openPreview, printByInvoiceId]
   );
 
   return (
@@ -248,7 +394,7 @@ export const StaffOrdersPage = () => {
             Completed Invoices
           </Text>
           <Text fontSize="sm" color="#705B52">
-            Staff completed bills with quick preview and print.
+            Server-synced completed bills with quick preview and print.
           </Text>
         </VStack>
         <HStack align="end" flexWrap="wrap" gap={3} w={{ base: "full", "2xl": "auto" }}>
@@ -288,47 +434,48 @@ export const StaffOrdersPage = () => {
               <option value="50">50</option>
             </Select>
           </FormControl>
-          <Button variant="outline" onClick={() => void refreshCompletedBills()}>
+          <Button variant="outline" onClick={() => void fetchCompletedInvoices()}>
             Refresh
           </Button>
         </HStack>
       </HStack>
 
       <PosDataTable
-        rows={pagedBills}
+        rows={rows}
         columns={columns}
-        getRowId={(bill) => bill.localOrderId}
+        getRowId={(bill) => bill.id}
         emptyMessage="No completed invoices found for current filters."
+        loading={loading}
         maxColumns={7}
       />
       <HStack justify="space-between" flexWrap="wrap" gap={3}>
         <Text fontSize="sm" color="#705B52">
-          Showing {pagedBills.length} of {filteredBills.length} invoices
+          Showing {rows.length} of {pagination.total} invoices
         </Text>
         <HStack>
           <Button
             variant="outline"
             size="sm"
-            isDisabled={displayPage <= 1}
+            isDisabled={pagination.page <= 1}
             onClick={() => setPage((previous) => Math.max(1, previous - 1))}
           >
             Previous
           </Button>
           <Text fontWeight={700} fontSize="sm">
-            Page {displayPage} of {totalPages}
+            Page {pagination.page} of {pagination.totalPages}
           </Text>
           <Button
             variant="outline"
             size="sm"
-            isDisabled={displayPage >= totalPages}
-            onClick={() => setPage((previous) => Math.min(totalPages, previous + 1))}
+            isDisabled={pagination.page >= pagination.totalPages}
+            onClick={() => setPage((previous) => Math.min(pagination.totalPages, previous + 1))}
           >
             Next
           </Button>
         </HStack>
       </HStack>
 
-      <Modal isOpen={previewModal.isOpen} onClose={previewModal.onClose} size="4xl" isCentered scrollBehavior="inside">
+      <Modal isOpen={isPreviewOpen} onClose={() => setIsPreviewOpen(false)} size="4xl" isCentered scrollBehavior="inside">
         <ModalOverlay />
         <ModalContent>
           <ModalHeader>Invoice Preview</ModalHeader>
@@ -535,13 +682,13 @@ export const StaffOrdersPage = () => {
             ) : null}
           </ModalBody>
           <ModalFooter>
-            <Button variant="outline" mr={2} onClick={previewModal.onClose}>
+            <Button variant="outline" mr={2} onClick={() => setIsPreviewOpen(false)}>
               Close
             </Button>
             {previewOrder ? (
               <Button
                 onClick={() => {
-                  void printByOrderId(previewOrder.localOrderId);
+                  void printByInvoiceId(previewOrder.localOrderId);
                 }}
               >
                 Print

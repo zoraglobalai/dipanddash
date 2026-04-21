@@ -22,6 +22,7 @@ import {
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { FiRefreshCw } from "react-icons/fi";
 
+import { usePosAuth } from "@/app/PosAuthContext";
 import { PosDataTable, type PosTableColumn } from "@/components/common/PosDataTable";
 import { pendingService } from "@/services/pending.service";
 import type {
@@ -63,6 +64,15 @@ type CollectState = {
 
 export const StaffPendingPage = () => {
   const toast = useToast();
+  const { session } = usePosAuth();
+  const pendingScope = useMemo<"all" | "dip_and_dash" | "snooker">(() => {
+    if (session?.role === "snooker_staff") {
+      return "snooker";
+    }
+    // Staff desktop should stay outlet-scoped by default.
+    // Only explicit snooker role sees snooker pending; all other desktop roles use Dip & Dash scope.
+    return "dip_and_dash";
+  }, [session?.role]);
 
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -89,11 +99,22 @@ export const StaffPendingPage = () => {
     try {
       const response = await pendingService.listCustomers({
         search: search.trim() || undefined,
+        scope: pendingScope,
         page: 1,
         limit: 100
       });
-      setRows(response.data.customers);
-      setTotals(response.data.totals);
+      if (pendingScope === "dip_and_dash") {
+        const dipOnlyRows = response.data.customers.filter((row) => row.pendingGamingBookings <= 0);
+        setRows(dipOnlyRows);
+        setTotals({
+          pendingCustomers: dipOnlyRows.length,
+          pendingDocuments: dipOnlyRows.reduce((sum, row) => sum + row.pendingDocuments, 0),
+          pendingAmount: Number(dipOnlyRows.reduce((sum, row) => sum + row.totalPendingAmount, 0).toFixed(2))
+        });
+      } else {
+        setRows(response.data.customers);
+        setTotals(response.data.totals);
+      }
     } catch (error) {
       toast({
         status: "error",
@@ -103,7 +124,7 @@ export const StaffPendingPage = () => {
     } finally {
       setLoading(false);
     }
-  }, [search, toast]);
+  }, [pendingScope, search, toast]);
 
   const fetchCustomerDetails = useCallback(
     async (customer: PendingCustomerSummary) => {
@@ -111,9 +132,30 @@ export const StaffPendingPage = () => {
       try {
         const response = await pendingService.getCustomerDetails({
           phone: customer.customerPhone || undefined,
-          name: customer.customerName || undefined
+          name: customer.customerName || undefined,
+          scope: pendingScope
         });
-        setDetails(response.data);
+        if (pendingScope === "dip_and_dash") {
+          const dipOnlyDocuments = response.data.pendingDocuments.filter((row) => row.sourceType === "invoice");
+          const allowedKeys = new Set(dipOnlyDocuments.map((row) => `invoice:${row.sourceId}`));
+          const dipOnlyHistory = response.data.paymentHistory.filter(
+            (entry) => entry.sourceType === "invoice" && allowedKeys.has(`invoice:${entry.sourceId}`)
+          );
+          setDetails({
+            summary: {
+              customerName: response.data.summary.customerName,
+              customerPhone: response.data.summary.customerPhone,
+              totalPendingAmount: Number(
+                dipOnlyDocuments.reduce((sum, row) => sum + row.pendingAmount, 0).toFixed(2)
+              ),
+              pendingDocuments: dipOnlyDocuments.length
+            },
+            pendingDocuments: dipOnlyDocuments,
+            paymentHistory: dipOnlyHistory
+          });
+        } else {
+          setDetails(response.data);
+        }
       } catch (error) {
         toast({
           status: "error",
@@ -124,11 +166,18 @@ export const StaffPendingPage = () => {
         setDetailsLoading(false);
       }
     },
-    [toast]
+    [pendingScope, toast]
   );
 
   useEffect(() => {
     void fetchCustomers();
+  }, [fetchCustomers]);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      void fetchCustomers();
+    }, 20000);
+    return () => window.clearInterval(interval);
   }, [fetchCustomers]);
 
   const customerColumns = useMemo<PosTableColumn<PendingCustomerSummary>[]>(
@@ -504,4 +553,3 @@ export const StaffPendingPage = () => {
     </VStack>
   );
 };
-

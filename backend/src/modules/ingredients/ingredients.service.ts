@@ -1,4 +1,4 @@
-import { EntityManager, In, QueryFailedError } from "typeorm";
+import { EntityManager, In } from "typeorm";
 
 import { AppDataSource } from "../../database/data-source";
 import { AppError } from "../../errors/app-error";
@@ -994,13 +994,44 @@ export class IngredientsService {
     await this.getActiveCategoryOrFail(payload.categoryId);
 
     const normalizedName = payload.name.trim();
-    const exists = await this.ingredientRepository
+    const existing = await this.ingredientRepository
       .createQueryBuilder("ingredient")
       .where("LOWER(ingredient.name) = LOWER(:name)", { name: normalizedName })
       .getOne();
 
-    if (exists) {
+    if (existing?.isActive) {
       throw new AppError(409, "Ingredient with this name already exists");
+    }
+
+    const initialStock = toFixedQuantity(payload.currentStock ?? 0);
+
+    if (existing && !existing.isActive) {
+      existing.name = normalizedName;
+      existing.categoryId = payload.categoryId;
+      existing.unit = payload.unit;
+      existing.perUnitPrice = toFixedQuantity(payload.perUnitPrice ?? 0);
+      existing.minStock = toFixedQuantity(payload.minStock);
+      existing.isActive = true;
+
+      const savedExisting = await this.ingredientRepository.save(existing);
+      const stock = await this.getOrCreateStockByIngredientId(savedExisting.id);
+      const previousStock = toFixedQuantity(getNumericValue(stock.totalStock));
+      const adjustment = toFixedQuantity(initialStock - previousStock);
+
+      if (adjustment !== 0) {
+        stock.totalStock = initialStock;
+        stock.lastUpdatedAt = new Date();
+        await this.stockRepository.save(stock);
+
+        await this.createStockLog({
+          ingredientId: savedExisting.id,
+          type: IngredientStockLogType.ADJUST,
+          quantity: adjustment,
+          note: "Stock reset during ingredient re-activation."
+        });
+      }
+
+      return savedExisting;
     }
 
     const ingredient = this.ingredientRepository.create({
@@ -1013,7 +1044,6 @@ export class IngredientsService {
     });
 
     const saved = await this.ingredientRepository.save(ingredient);
-    const initialStock = toFixedQuantity(payload.currentStock ?? 0);
 
     const stock = this.stockRepository.create({
       ingredientId: saved.id,
@@ -1122,30 +1152,44 @@ export class IngredientsService {
       throw new AppError(404, "Ingredient not found");
     }
 
-    const [itemUsageCount, addOnUsageCount] = await Promise.all([
-      this.itemIngredientRepository.count({ where: { ingredientId: id } }),
-      this.addOnIngredientRepository.count({ where: { ingredientId: id } })
-    ]);
-
-    if (itemUsageCount + addOnUsageCount > 0) {
-      throw new AppError(
-        409,
-        `Cannot delete this ingredient because it is used in ${itemUsageCount} item recipe(s) and ${addOnUsageCount} add-on recipe(s).`
-      );
-    }
-
-    try {
-      await this.ingredientRepository.remove(ingredient);
+    if (!ingredient.isActive) {
       return ingredient;
-    } catch (error) {
-      if (error instanceof QueryFailedError) {
-        throw new AppError(
-          409,
-          "Cannot delete this ingredient because it is linked to existing records."
-        );
-      }
-      throw error;
     }
+
+    await AppDataSource.transaction(async (manager) => {
+      const ingredientRepo = manager.getRepository(Ingredient);
+      const stockRepo = manager.getRepository(IngredientStock);
+      const stockLogRepo = manager.getRepository(IngredientStockLog);
+
+      ingredient.isActive = false;
+      ingredient.minStock = 0;
+      await ingredientRepo.save(ingredient);
+
+      const existingStock = await stockRepo.findOne({ where: { ingredientId: id } });
+      if (!existingStock) {
+        return;
+      }
+
+      const previousStock = toFixedQuantity(getNumericValue(existingStock.totalStock));
+      if (previousStock <= 0) {
+        return;
+      }
+
+      existingStock.totalStock = 0;
+      existingStock.lastUpdatedAt = new Date();
+      await stockRepo.save(existingStock);
+
+      await stockLogRepo.save(
+        stockLogRepo.create({
+          ingredientId: id,
+          type: IngredientStockLogType.ADJUST,
+          quantity: previousStock,
+          note: "Stock reset to 0 during ingredient delete (archived)."
+        })
+      );
+    });
+
+    return ingredient;
   }
 
   async getIngredientStock(ingredientId: string, filters: StockLogListFilters) {
