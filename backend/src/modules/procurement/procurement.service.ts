@@ -200,6 +200,8 @@ const PRODUCT_BULK_TEMPLATE_HEADERS = [
 const VALID_PRODUCT_UNIT_SET = new Set<string>(PRODUCT_UNITS.map((unit) => unit.toLowerCase()));
 const VALID_PRODUCT_TARGET_SECTION_SET = new Set<string>(PRODUCT_TARGET_SECTIONS.map((section) => section.toLowerCase()));
 const MAX_PRODUCT_BULK_INVALID_DETAILS = 40;
+const LEDGER_MOVE_SUPPRESS_PREFIX = "__ledger_move_suppress__:";
+const LEDGER_ROW_DELETE_SUPPRESS_PREFIX = "__ledger_row_delete_suppress__:";
 
 const toNumber = (value: string | number | null | undefined) => {
   if (value === null || value === undefined) {
@@ -211,6 +213,9 @@ const toNumber = (value: string | number | null | undefined) => {
 
 const toFixedQuantity = (value: number) => Number(value.toFixed(3));
 const toFixedPrice = (value: number) => Number(value.toFixed(2));
+const isLedgerSuppressionNote = (note: string | null | undefined) =>
+  typeof note === "string" &&
+  (note.startsWith(LEDGER_MOVE_SUPPRESS_PREFIX) || note.startsWith(LEDGER_ROW_DELETE_SUPPRESS_PREFIX));
 const toYmd = (value: unknown) => {
   if (typeof value === "string") {
     const trimmed = value.trim();
@@ -350,6 +355,28 @@ const getProductLedgerAdjustmentNet = (input: {
   toFixedQuantity(
     toNumber(input.openingDelta) + toNumber(input.purchasedDelta) - toNumber(input.consumptionDelta)
   );
+
+const sumProductLedgerAdjustments = (rows: ProductDayLedgerAdjustment[]) => {
+  const totals = {
+    openingDelta: 0,
+    purchasedDelta: 0,
+    consumptionDelta: 0,
+    dipAndDashConsumptionDelta: 0,
+    snookerConsumptionDelta: 0
+  };
+  for (const row of rows) {
+    totals.openingDelta = toFixedQuantity(totals.openingDelta + toNumber(row.openingDelta));
+    totals.purchasedDelta = toFixedQuantity(totals.purchasedDelta + toNumber(row.purchasedDelta));
+    totals.consumptionDelta = toFixedQuantity(totals.consumptionDelta + toNumber(row.consumptionDelta));
+    totals.dipAndDashConsumptionDelta = toFixedQuantity(
+      totals.dipAndDashConsumptionDelta + toNumber(row.dipAndDashConsumptionDelta)
+    );
+    totals.snookerConsumptionDelta = toFixedQuantity(
+      totals.snookerConsumptionDelta + toNumber(row.snookerConsumptionDelta)
+    );
+  }
+  return totals;
+};
 
 const applyProductLedgerNetDelta = (product: Product, netDelta: number) => {
   const delta = toFixedQuantity(toNumber(netDelta));
@@ -1961,22 +1988,55 @@ export class ProcurementService {
       throw new AppError(422, "Cannot mark health as Healthy when closing stock is zero or below.");
     }
 
-    const sourceAdjustment = await this.productDayLedgerAdjustmentRepository.findOne({
-      where: { productId: sourceProductId, date: sourceDate }
+    const sourceAdjustmentRows = await this.productDayLedgerAdjustmentRepository.find({
+      where: { productId: sourceProductId, date: sourceDate },
+      order: { updatedAt: "DESC", createdAt: "DESC" }
     });
-    const targetExistingAdjustment = isSameLedgerKey
-      ? sourceAdjustment
-      : await this.productDayLedgerAdjustmentRepository.findOne({
-          where: { productId: targetProductId, date: targetDate }
-        });
+    const sourceAdjustment = sourceAdjustmentRows[0] ?? null;
+    const sourceAdjustmentTotals = sumProductLedgerAdjustments(sourceAdjustmentRows);
+    const staleSourceAdjustmentIds = sourceAdjustmentRows.slice(1).map((row) => row.id);
+    if (staleSourceAdjustmentIds.length) {
+      await this.productDayLedgerAdjustmentRepository.delete(staleSourceAdjustmentIds);
+    }
 
-    const sourceNetBefore = getProductLedgerAdjustmentNet(sourceAdjustment ?? {});
+    const targetAdjustmentRows = isSameLedgerKey
+      ? sourceAdjustmentRows
+      : await this.productDayLedgerAdjustmentRepository.find({
+          where: { productId: targetProductId, date: targetDate },
+          order: { updatedAt: "DESC", createdAt: "DESC" }
+        });
+    const targetExistingAdjustment = isSameLedgerKey ? sourceAdjustment : targetAdjustmentRows[0] ?? null;
+    const targetAdjustmentTotals = isSameLedgerKey
+      ? sourceAdjustmentTotals
+      : sumProductLedgerAdjustments(targetAdjustmentRows);
+    const staleTargetAdjustmentIds = !isSameLedgerKey ? targetAdjustmentRows.slice(1).map((row) => row.id) : [];
+    if (staleTargetAdjustmentIds.length) {
+      await this.productDayLedgerAdjustmentRepository.delete(staleTargetAdjustmentIds);
+    }
+
+    const sourceNetBefore = getProductLedgerAdjustmentNet(sourceAdjustmentTotals);
     const targetNetBefore = isSameLedgerKey
       ? sourceNetBefore
-      : getProductLedgerAdjustmentNet(targetExistingAdjustment ?? {});
+      : getProductLedgerAdjustmentNet(targetAdjustmentTotals);
 
-    if (!isSameLedgerKey && sourceAdjustment) {
-      await this.productDayLedgerAdjustmentRepository.delete(sourceAdjustment.id);
+    if (!isSameLedgerKey) {
+      await this.productDayLedgerAdjustmentRepository.delete({
+        productId: sourceProductId,
+        date: sourceDate
+      });
+      const sourceAdjustmentForMove = this.productDayLedgerAdjustmentRepository.create({
+        productId: sourceProductId,
+        date: sourceDate
+      });
+      sourceAdjustmentForMove.productId = sourceProductId;
+      sourceAdjustmentForMove.date = sourceDate;
+      sourceAdjustmentForMove.openingDelta = 0;
+      sourceAdjustmentForMove.purchasedDelta = 0;
+      sourceAdjustmentForMove.consumptionDelta = 0;
+      sourceAdjustmentForMove.dipAndDashConsumptionDelta = 0;
+      sourceAdjustmentForMove.snookerConsumptionDelta = 0;
+      sourceAdjustmentForMove.note = `${LEDGER_MOVE_SUPPRESS_PREFIX}${targetDate}::${targetProductId}`;
+      await this.productDayLedgerAdjustmentRepository.save(sourceAdjustmentForMove);
     }
 
     const currentAdjustment = isSameLedgerKey ? sourceAdjustment : targetExistingAdjustment;
@@ -1991,11 +2051,12 @@ export class ProcurementService {
     const currentDipAndDashConsumption = toFixedQuantity(currentRow?.dipAndDashConsumption ?? 0);
     const currentSnookerConsumption = toFixedQuantity(currentRow?.snookerConsumption ?? 0);
 
-    const baseOpeningDelta = toFixedQuantity(toNumber(currentAdjustment?.openingDelta));
-    const basePurchasedDelta = toFixedQuantity(toNumber(currentAdjustment?.purchasedDelta));
-    const baseConsumptionDelta = toFixedQuantity(toNumber(currentAdjustment?.consumptionDelta));
-    const baseDipDelta = toFixedQuantity(toNumber(currentAdjustment?.dipAndDashConsumptionDelta));
-    const baseSnookerDelta = toFixedQuantity(toNumber(currentAdjustment?.snookerConsumptionDelta));
+    const targetBaseDeltas = isSameLedgerKey ? sourceAdjustmentTotals : targetAdjustmentTotals;
+    const baseOpeningDelta = toFixedQuantity(toNumber(targetBaseDeltas.openingDelta));
+    const basePurchasedDelta = toFixedQuantity(toNumber(targetBaseDeltas.purchasedDelta));
+    const baseConsumptionDelta = toFixedQuantity(toNumber(targetBaseDeltas.consumptionDelta));
+    const baseDipDelta = toFixedQuantity(toNumber(targetBaseDeltas.dipAndDashConsumptionDelta));
+    const baseSnookerDelta = toFixedQuantity(toNumber(targetBaseDeltas.snookerConsumptionDelta));
 
     const nextOpeningDelta = toFixedQuantity(baseOpeningDelta + (targetOpeningStock - currentOpeningStock));
     const nextPurchasedDelta = toFixedQuantity(basePurchasedDelta + (targetPurchased - currentPurchased));
@@ -2012,9 +2073,10 @@ export class ProcurementService {
 
     let targetNetAfter = 0;
     if (!hasMeaningfulDelta && !note) {
-      if (currentAdjustment) {
-        await this.productDayLedgerAdjustmentRepository.delete(currentAdjustment.id);
-      }
+      await this.productDayLedgerAdjustmentRepository.delete({
+        productId: targetProductId,
+        date: targetDate
+      });
     } else {
       const entity =
         currentAdjustment ??
@@ -2083,12 +2145,10 @@ export class ProcurementService {
 
   async deleteProductDayLedgerAdjustment(productId: string, date: string) {
     resolveDayRangeInUtc(date);
-    const product = await this.getProductOrFail(productId);
-
-    const existing = await this.productDayLedgerAdjustmentRepository.findOne({
+    const existingRows = await this.productDayLedgerAdjustmentRepository.find({
       where: { productId, date }
     });
-    if (!existing) {
+    if (!existingRows.length) {
       return {
         productId,
         date,
@@ -2096,15 +2156,66 @@ export class ProcurementService {
       };
     }
 
-    const netBeforeDelete = getProductLedgerAdjustmentNet({
-      openingDelta: existing.openingDelta,
-      purchasedDelta: existing.purchasedDelta,
-      consumptionDelta: existing.consumptionDelta
-    });
+    const product = await this.productRepository.findOne({ where: { id: productId } });
+    if (!product) {
+      await this.productDayLedgerAdjustmentRepository.delete({ productId, date });
+      return {
+        productId,
+        date,
+        deleted: true
+      };
+    }
 
-    await this.productDayLedgerAdjustmentRepository.delete(existing.id);
+    const totals = sumProductLedgerAdjustments(existingRows);
+    const netBeforeDelete = getProductLedgerAdjustmentNet(totals);
+
+    await this.productDayLedgerAdjustmentRepository.delete({ productId, date });
     applyProductLedgerNetDelta(product, toFixedQuantity(-netBeforeDelete));
     await this.productRepository.save(product);
+
+    return {
+      productId,
+      date,
+      deleted: true
+    };
+  }
+
+  async removeProductDayLedgerRow(productId: string, date: string) {
+    resolveDayRangeInUtc(date);
+    const row = await this.getProductLedgerRowSnapshot(productId, date);
+    if (!row) {
+      return {
+        productId,
+        date,
+        deleted: false
+      };
+    }
+
+    const product = await this.getProductOrFail(productId);
+    const existingRows = await this.productDayLedgerAdjustmentRepository.find({
+      where: { productId, date }
+    });
+    const totals = sumProductLedgerAdjustments(existingRows);
+    const netBeforeDelete = getProductLedgerAdjustmentNet(totals);
+
+    await this.productDayLedgerAdjustmentRepository.delete({ productId, date });
+    await this.productDayLedgerAdjustmentRepository.save(
+      this.productDayLedgerAdjustmentRepository.create({
+        productId,
+        date,
+        openingDelta: 0,
+        purchasedDelta: 0,
+        consumptionDelta: 0,
+        dipAndDashConsumptionDelta: 0,
+        snookerConsumptionDelta: 0,
+        note: `${LEDGER_ROW_DELETE_SUPPRESS_PREFIX}${new Date().toISOString()}`
+      })
+    );
+
+    if (Math.abs(netBeforeDelete) > 0.0005) {
+      applyProductLedgerNetDelta(product, toFixedQuantity(-netBeforeDelete));
+      await this.productRepository.save(product);
+    }
 
     return {
       productId,
@@ -2336,6 +2447,7 @@ export class ProcurementService {
         dipAndDashConsumptionDelta: number;
         snookerConsumptionDelta: number;
         note: string | null;
+        isSuppressedByMove: boolean;
       }
     >();
     adjustmentRows.forEach((row) => {
@@ -2347,7 +2459,8 @@ export class ProcurementService {
         consumptionDelta: 0,
         dipAndDashConsumptionDelta: 0,
         snookerConsumptionDelta: 0,
-        note: null as string | null
+        note: null as string | null,
+        isSuppressedByMove: false
       };
       existing.openingDelta = toFixedQuantity(existing.openingDelta + toNumber(row.openingDelta));
       existing.purchasedDelta = toFixedQuantity(existing.purchasedDelta + toNumber(row.purchasedDelta));
@@ -2359,6 +2472,7 @@ export class ProcurementService {
         existing.snookerConsumptionDelta + toNumber(row.snookerConsumptionDelta)
       );
       existing.note = row.note ?? existing.note;
+      existing.isSuppressedByMove = isLedgerSuppressionNote(existing.note);
       adjustmentMap.set(key, existing);
       getMovement(date, row.productId);
     });
@@ -2395,6 +2509,9 @@ export class ProcurementService {
           return null;
         }
         const adjustment = adjustmentMap.get(`${movement.date}::${product.id}`);
+        if (adjustment?.isSuppressedByMove) {
+          return null;
+        }
         const openingStock = toFixedQuantity(
           (runningStockByProduct.get(product.id) ?? 0) + toNumber(adjustment?.openingDelta)
         );

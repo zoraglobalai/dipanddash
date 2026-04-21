@@ -118,6 +118,9 @@ const getExpiryBadge = (row: ProductListItem): { label: string; tone: "red" | "o
   return { label: "No expiry", tone: "neutral" };
 };
 
+const getStockOverviewCalculatedCurrentStock = (row: ProductListItem) =>
+  Math.max(0, Number((row.purchasedQuantity - row.soldQuantity).toFixed(3)));
+
 const extractFileNameFromDisposition = (contentDisposition?: string | null) => {
   if (!contentDisposition) {
     return null;
@@ -1396,7 +1399,7 @@ const ProductLedgerEditModal = memo(
               </Text>
             ) : null}
             <Text fontSize="xs" color="#7A6359">
-              Section or health changes update product-level settings so valuation and stock status stay in sync.
+              Date/Product can be edited. Save will move this manual adjustment to the selected row key without creating duplicate adjustment rows.
             </Text>
           </VStack>
         </ModalBody>
@@ -1487,6 +1490,13 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
     topSoldProducts: []
   });
   const [productsLoading, setProductsLoading] = useState(true);
+  const [stockOverviewRows, setStockOverviewRows] = useState<ProductListItem[]>([]);
+  const [stockOverviewPagination, setStockOverviewPagination] = useState(defaultPagination);
+  const [stockOverviewLoading, setStockOverviewLoading] = useState(true);
+  const [stockOverviewSearch, setStockOverviewSearch] = useState("");
+  const debouncedStockOverviewSearch = useDebouncedValue(stockOverviewSearch, 350);
+  const [stockOverviewPage, setStockOverviewPage] = useState(1);
+  const stockOverviewLimit = 10;
   const [productSearch, setProductSearch] = useState("");
   const debouncedProductSearch = useDebouncedValue(productSearch, 350);
   const [productCategoryFilter, setProductCategoryFilter] = useState("");
@@ -1528,6 +1538,7 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
   const [selectedProductToDelete, setSelectedProductToDelete] = useState<{ id: string; name: string } | null>(null);
   const [editingLedgerRow, setEditingLedgerRow] = useState<ProductLedgerRow | null>(null);
   const [ledgerRowToReset, setLedgerRowToReset] = useState<ProductLedgerRow | null>(null);
+  const [ledgerRowToDelete, setLedgerRowToDelete] = useState<ProductLedgerRow | null>(null);
   const purchaseBulkInputRef = useRef<HTMLInputElement | null>(null);
   const productBulkInputRef = useRef<HTMLInputElement | null>(null);
   const orderDetailCacheRef = useRef<Map<string, PurchaseOrderDetail>>(new Map());
@@ -1539,6 +1550,7 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
   const deleteProductDialog = useDisclosure();
   const ledgerEditModal = useDisclosure();
   const resetLedgerDialog = useDisclosure();
+  const deleteLedgerDialog = useDisclosure();
 
   const loadMeta = useCallback(
     async (date?: string) => {
@@ -1625,6 +1637,24 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
     }
   }, [debouncedProductSearch, productCategoryFilter, productLimit, productPage, productSupplierFilter, toast]);
 
+  const loadStockOverview = useCallback(async () => {
+    setStockOverviewLoading(true);
+    try {
+      const response = await procurementService.getProducts({
+        search: debouncedStockOverviewSearch || undefined,
+        includeInactive: true,
+        page: stockOverviewPage,
+        limit: stockOverviewLimit
+      });
+      setStockOverviewRows(response.data.products);
+      setStockOverviewPagination(response.data.pagination);
+    } catch (error) {
+      toast.error("Unable to fetch stock overview", extractErrorMessage(error));
+    } finally {
+      setStockOverviewLoading(false);
+    }
+  }, [debouncedStockOverviewSearch, stockOverviewPage, toast]);
+
   const loadProductLedger = useCallback(async () => {
     setProductLedgerLoading(true);
     try {
@@ -1673,8 +1703,16 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
   }, [loadProducts]);
 
   useEffect(() => {
+    void loadStockOverview();
+  }, [loadStockOverview]);
+
+  useEffect(() => {
     setProductPage(1);
   }, [debouncedProductSearch, productCategoryFilter, productSupplierFilter, productLimit]);
+
+  useEffect(() => {
+    setStockOverviewPage(1);
+  }, [debouncedStockOverviewSearch]);
 
   useEffect(() => {
     void loadProductLedger();
@@ -1813,6 +1851,14 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
     [resetLedgerDialog, toast]
   );
 
+  const openDeleteLedgerRow = useCallback(
+    (row: ProductLedgerRow) => {
+      setLedgerRowToDelete(row);
+      deleteLedgerDialog.onOpen();
+    },
+    [deleteLedgerDialog]
+  );
+
   const openViewOrder = useCallback(
     async (orderId: string) => {
       const cached = orderDetailCacheRef.current.get(orderId);
@@ -1924,6 +1970,7 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
         await Promise.all([
           loadOrders(),
           loadProducts(),
+          loadStockOverview(),
           loadProductLedger(),
           loadStats(),
           loadMeta(response.data.purchaseDate),
@@ -1935,7 +1982,7 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
         setPurchaseBulkUploadLoading(false);
       }
     },
-    [loadMeta, loadOrders, loadProductLedger, loadProducts, loadStats, loadSuppliers, toast]
+    [loadMeta, loadOrders, loadProductLedger, loadProducts, loadStats, loadStockOverview, loadSuppliers, toast]
   );
 
   const handleDownloadProductTemplate = useCallback(async () => {
@@ -1980,14 +2027,14 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
         toast.success(
           `Product bulk import completed. Added ${summary.insertedProducts}, skipped existing ${summary.skippedExistingProducts}, duplicate rows ${summary.skippedDuplicateRows}, invalid rows ${summary.invalidRows}.`
         );
-        await Promise.all([loadProducts(), loadProductLedger(), loadStats(), loadMeta(meta?.date)]);
+        await Promise.all([loadProducts(), loadStockOverview(), loadProductLedger(), loadStats(), loadMeta(meta?.date)]);
       } catch (error) {
         toast.error("Unable to import product CSV", extractErrorMessage(error));
       } finally {
         setProductBulkUploadLoading(false);
       }
     },
-    [loadMeta, loadProductLedger, loadProducts, loadStats, meta?.date, toast]
+    [loadMeta, loadProductLedger, loadProducts, loadStats, loadStockOverview, meta?.date, toast]
   );
 
   const handleSaveOrder = async (
@@ -2024,7 +2071,7 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
       setOrderFormBootstrapping(false);
       setOrderFormMode("create");
       setEditingOrder(null);
-      await Promise.all([loadOrders(), loadProducts(), loadProductLedger(), loadStats(), loadMeta(payload.purchaseDate)]);
+      await Promise.all([loadOrders(), loadProducts(), loadStockOverview(), loadProductLedger(), loadStats(), loadMeta(payload.purchaseDate)]);
     } catch (error) {
       toast.error(
         editingOrder ? "Unable to update purchase order" : "Unable to create purchase order",
@@ -2060,7 +2107,7 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
       }
       productModal.onClose();
       setSelectedProduct(null);
-      await Promise.all([loadProducts(), loadProductLedger(), loadStats(), loadMeta(meta?.date)]);
+      await Promise.all([loadProducts(), loadStockOverview(), loadProductLedger(), loadStats(), loadMeta(meta?.date)]);
     } catch (error) {
       toast.error("Unable to save product", extractErrorMessage(error));
     } finally {
@@ -2089,7 +2136,7 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
       toast.success("Ledger record updated successfully");
       ledgerEditModal.onClose();
       setEditingLedgerRow(null);
-      await Promise.all([loadProductLedger(), loadProducts(), loadStats(), loadMeta(meta?.date)]);
+      await Promise.all([loadProductLedger(), loadProducts(), loadStockOverview(), loadStats(), loadMeta(meta?.date)]);
     } catch (error) {
       toast.error("Unable to update ledger record", extractErrorMessage(error));
     } finally {
@@ -2114,9 +2161,31 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
       }
       resetLedgerDialog.onClose();
       setLedgerRowToReset(null);
-      await Promise.all([loadProductLedger(), loadProducts(), loadStats(), loadMeta(meta?.date)]);
+      await Promise.all([loadProductLedger(), loadProducts(), loadStockOverview(), loadStats(), loadMeta(meta?.date)]);
     } catch (error) {
       toast.error("Unable to reset ledger record", extractErrorMessage(error));
+    } finally {
+      setMutationLoading(false);
+    }
+  };
+
+  const handleDeleteLedgerRow = async () => {
+    if (!ledgerRowToDelete) {
+      return;
+    }
+    setMutationLoading(true);
+    try {
+      const response = await procurementService.removeProductLedgerRow(ledgerRowToDelete.productId, ledgerRowToDelete.date);
+      if (response.data.deleted) {
+        toast.success("Ledger row deleted successfully");
+      } else {
+        toast.info("Ledger row not found", "This row may already be removed.");
+      }
+      deleteLedgerDialog.onClose();
+      setLedgerRowToDelete(null);
+      await Promise.all([loadProductLedger(), loadProducts(), loadStockOverview(), loadStats(), loadMeta(meta?.date)]);
+    } catch (error) {
+      toast.error("Unable to delete ledger row", extractErrorMessage(error));
     } finally {
       setMutationLoading(false);
     }
@@ -2131,12 +2200,13 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
       const deletedProductId = selectedProductToDelete.id;
       await procurementService.deleteProduct(deletedProductId);
       setProductRows((previous) => previous.filter((row) => row.id !== deletedProductId));
+      setStockOverviewRows((previous) => previous.filter((row) => row.id !== deletedProductId));
       setProductLedgerRows((previous) => previous.filter((row) => row.productId !== deletedProductId));
       toast.success("Product deleted successfully");
       deleteProductDialog.onClose();
       setSelectedProductToDelete(null);
       setSelectedProduct(null);
-      await Promise.all([loadProducts(), loadProductLedger(), loadStats(), loadMeta(meta?.date)]);
+      await Promise.all([loadProducts(), loadStockOverview(), loadProductLedger(), loadStats(), loadMeta(meta?.date)]);
     } catch (error) {
       toast.error("Unable to delete product", extractErrorMessage(error));
     } finally {
@@ -2167,7 +2237,7 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
       toast.success("Purchase order deleted successfully");
       deleteOrderDialog.onClose();
       setSelectedOrderToDelete(null);
-      await Promise.all([loadOrders(), loadProducts(), loadProductLedger(), loadStats(), loadMeta(deletedDate)]);
+      await Promise.all([loadOrders(), loadProducts(), loadStockOverview(), loadProductLedger(), loadStats(), loadMeta(deletedDate)]);
     } catch (error) {
       toast.error("Unable to delete purchase order", extractErrorMessage(error));
     } finally {
@@ -2244,6 +2314,127 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
   useEffect(() => {
     setActiveTabIndex(initialTabIndex);
   }, [initialTabIndex]);
+
+  const stockOverviewSection = (
+    <AppCard p={4}>
+      <VStack spacing={4} align="stretch">
+        <Box>
+          <Text fontWeight={800}>Stocks Overview</Text>
+          <Text fontSize="sm" color="#7A6359">
+            Overall purchased quantity, consumption and current stock (Purchase - Consumption) for all products.
+          </Text>
+        </Box>
+
+        <SimpleGrid columns={{ base: 1, md: 2 }} spacing={3} alignItems="end">
+          <GridItem minW={0}>
+            <AppInput
+              label="Search Product"
+              placeholder="Search by product, sku, category"
+              value={stockOverviewSearch}
+              onChange={(event) => setStockOverviewSearch((event.target as HTMLInputElement).value)}
+            />
+          </GridItem>
+          <GridItem minW={0}>
+            <FormControl>
+              <FormLabel>Rows per page</FormLabel>
+              <Input value={String(stockOverviewLimit)} isDisabled bg="white" />
+            </FormControl>
+          </GridItem>
+        </SimpleGrid>
+
+        {stockOverviewLoading ? (
+          <SkeletonTable rows={10} />
+        ) : (
+          <DataTable
+            columns={[
+              {
+                key: "name",
+                header: "Product",
+                render: (row: ProductListItem) => (
+                  <Box>
+                    <Text fontWeight={800}>{row.name}</Text>
+                    <Text fontSize="sm" color="#7A6359">
+                      {row.sku || "-"} | {row.category}
+                    </Text>
+                  </Box>
+                )
+              },
+              {
+                key: "section",
+                header: "Section",
+                render: (row: ProductListItem) => formatTargetSectionLabel(row.targetSection)
+              },
+              {
+                key: "overallPurchased",
+                header: "Overall Purchase",
+                render: (row: ProductListItem) => `${row.purchasedQuantity} ${row.unit}`
+              },
+              {
+                key: "overallConsumption",
+                header: "Overall Consumption",
+                render: (row: ProductListItem) => `${row.soldQuantity} ${row.unit}`
+              },
+              {
+                key: "currentStock",
+                header: "Current Stock",
+                render: (row: ProductListItem) => `${getStockOverviewCalculatedCurrentStock(row)} ${row.unit}`
+              },
+              {
+                key: "health",
+                header: "Health",
+                render: (row: ProductListItem) => (
+                  <Box
+                    px={3}
+                    py={1}
+                    borderRadius="full"
+                    bg={getStockOverviewCalculatedCurrentStock(row) <= row.minStock ? "red.100" : "green.100"}
+                    color={getStockOverviewCalculatedCurrentStock(row) <= row.minStock ? "red.700" : "green.700"}
+                    fontSize="xs"
+                    fontWeight={700}
+                    w="fit-content"
+                  >
+                    {getStockOverviewCalculatedCurrentStock(row) <= row.minStock ? "Low Stock" : "Healthy"}
+                  </Box>
+                )
+              }
+            ]}
+            rows={stockOverviewRows}
+            emptyState={
+              <EmptyState
+                title="No stock records found"
+                description="Try another product search to view stock movement summary."
+              />
+            }
+          />
+        )}
+
+        <HStack justify="space-between" flexWrap="wrap" gap={3}>
+          <Text color="#6F594F" fontSize="sm">
+            Showing {stockOverviewRows.length} of {stockOverviewPagination.total} records
+          </Text>
+          <HStack flexWrap="wrap">
+            <AppButton
+              variant="outline"
+              isDisabled={stockOverviewPage <= 1}
+              onClick={() => setStockOverviewPage((prev) => prev - 1)}
+            >
+              Previous
+            </AppButton>
+            <Text fontWeight={700}>
+              Page {stockOverviewPagination.page} of {stockOverviewPagination.totalPages}
+            </Text>
+            <AppButton
+              variant="outline"
+              isDisabled={stockOverviewPagination.page >= stockOverviewPagination.totalPages}
+              onClick={() => setStockOverviewPage((prev) => prev + 1)}
+            >
+              Next
+            </AppButton>
+          </HStack>
+        </HStack>
+      </VStack>
+    </AppCard>
+  );
 
   return (
     <VStack spacing={5} align="stretch" w="full" minW={0}>
@@ -2676,17 +2867,12 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
                                 onClick={() => openResetLedgerRecord(row)}
                               />
                               <ActionIconButton
-                                aria-label="Delete product"
-                                tooltip="Delete product permanently"
+                                aria-label="Delete ledger row"
+                                tooltip="Delete this ledger row only"
                                 icon={<Trash2 size={16} />}
                                 variant="outline"
                                 colorScheme="accentRed"
-                                onClick={() =>
-                                  openDeleteProduct({
-                                    id: row.productId,
-                                    name: row.productName
-                                  })
-                                }
+                                onClick={() => openDeleteLedgerRow(row)}
                               />
                             </HStack>
                           )
@@ -2729,237 +2915,246 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
                 </VStack>
               </AppCard>
 
-              {!isStandaloneProducts ? (
-                <>
-                  <SimpleGrid mt={4} columns={{ base: 1, md: 2, "2xl": 4 }} spacing={3} alignItems="end" minW={0}>
-                    <GridItem minW={0}>
-                      <AppInput
-                        label="Search Product"
-                        placeholder="Search name, sku, pack size"
-                        value={productSearch}
-                        onChange={(event) => setProductSearch((event.target as HTMLInputElement).value)}
-                      />
-                    </GridItem>
-                    <GridItem minW={0}>
-                      <AppSearchableSelect
-                        label="Category"
-                        value={productCategoryFilter}
-                        options={categoryFilterOptions}
-                        onValueChange={setProductCategoryFilter}
-                      />
-                    </GridItem>
-                    <GridItem minW={0}>
-                      <AppSearchableSelect
-                        label="Supplier"
-                        value={productSupplierFilter}
-                        options={supplierOptions}
-                        onValueChange={setProductSupplierFilter}
-                      />
-                    </GridItem>
-                    <GridItem minW={0}>
-                      <FormControl>
-                        <FormLabel>Rows per page</FormLabel>
-                        <Select
-                          value={productLimit}
-                          onChange={(event) => setProductLimit(Number((event.target as HTMLSelectElement).value))}
-                          bg="white"
-                          borderColor="rgba(193, 14, 14, 0.18)"
-                          focusBorderColor="brand.400"
-                        >
-                          <option value={5}>5</option>
-                          <option value={10}>10</option>
-                          <option value={20}>20</option>
-                        </Select>
-                      </FormControl>
-                    </GridItem>
-                  </SimpleGrid>
-
-                  <SimpleGrid mt={4} minChildWidth={{ base: "150px", md: "180px", xl: "200px" }} spacing={3}>
-                    <AppCard p={3}><Text fontSize="xs" color="#7B645B">Total Products</Text><Text fontSize="xl" fontWeight={900}>{productStats.totalProducts}</Text></AppCard>
-                    <AppCard p={3}><Text fontSize="xs" color="#7B645B">Low Stock</Text><Text fontSize="xl" fontWeight={900} color="#B91C1C">{productStats.lowStockProducts}</Text></AppCard>
-                    <AppCard p={3}><Text fontSize="xs" color="#7B645B">Stock Valuation</Text><Text fontSize="xl" fontWeight={900}>{formatCurrency(productStats.stockValuation)}</Text></AppCard>
-                    <AppCard p={3}><Text fontSize="xs" color="#7B645B">Sold Qty</Text><Text fontSize="xl" fontWeight={900}>{productStats.totalSoldQuantity}</Text></AppCard>
-                    <AppCard p={3}><Text fontSize="xs" color="#7B645B">Sold Amount</Text><Text fontSize="xl" fontWeight={900}>{formatCurrency(productStats.totalSoldAmount)}</Text></AppCard>
-                  </SimpleGrid>
-
-                  <AppCard mt={4} p={4}>
-                    <Text fontWeight={800} mb={3}>
-                      Top Purchased Products
-                    </Text>
-                    {productStats.topPurchasedProducts.length ? (
-                      <SimpleGrid columns={{ base: 1, md: 2, xl: 3 }} spacing={3}>
-                        {productStats.topPurchasedProducts.map((entry) => (
-                          <Box
-                            key={entry.productId}
-                            border="1px solid"
-                            borderColor="rgba(133, 78, 48, 0.22)"
-                            borderRadius="12px"
-                            p={3}
+              <Tabs variant="soft-rounded" colorScheme="brand" mt={4}>
+                <TabList gap={3} flexWrap="wrap">
+                  <Tab>Products</Tab>
+                  <Tab>Stocks Overview</Tab>
+                </TabList>
+                <TabPanels pt={4}>
+                  <TabPanel px={0}>
+                    <SimpleGrid columns={{ base: 1, md: 2, "2xl": 4 }} spacing={3} alignItems="end" minW={0}>
+                      <GridItem minW={0}>
+                        <AppInput
+                          label="Search Product"
+                          placeholder="Search name, sku, pack size"
+                          value={productSearch}
+                          onChange={(event) => setProductSearch((event.target as HTMLInputElement).value)}
+                        />
+                      </GridItem>
+                      <GridItem minW={0}>
+                        <AppSearchableSelect
+                          label="Category"
+                          value={productCategoryFilter}
+                          options={categoryFilterOptions}
+                          onValueChange={setProductCategoryFilter}
+                        />
+                      </GridItem>
+                      <GridItem minW={0}>
+                        <AppSearchableSelect
+                          label="Supplier"
+                          value={productSupplierFilter}
+                          options={supplierOptions}
+                          onValueChange={setProductSupplierFilter}
+                        />
+                      </GridItem>
+                      <GridItem minW={0}>
+                        <FormControl>
+                          <FormLabel>Rows per page</FormLabel>
+                          <Select
+                            value={productLimit}
+                            onChange={(event) => setProductLimit(Number((event.target as HTMLSelectElement).value))}
                             bg="white"
+                            borderColor="rgba(193, 14, 14, 0.18)"
+                            focusBorderColor="brand.400"
                           >
-                            <Text fontWeight={800}>{entry.name}</Text>
-                            <Text fontSize="sm" color="#7A6359">
-                              {entry.quantity} {entry.unit}
-                            </Text>
-                          </Box>
-                        ))}
-                      </SimpleGrid>
-                    ) : (
-                      <Text color="#7A6359">No purchase movement yet.</Text>
-                    )}
-                  </AppCard>
+                            <option value={5}>5</option>
+                            <option value={10}>10</option>
+                            <option value={20}>20</option>
+                          </Select>
+                        </FormControl>
+                      </GridItem>
+                    </SimpleGrid>
 
-                  <AppCard mt={4} p={4}>
-                    <Text fontWeight={800} mb={3}>
-                      Top Sold Products
-                    </Text>
-                    {productStats.topSoldProducts.length ? (
-                      <SimpleGrid columns={{ base: 1, md: 2, xl: 3 }} spacing={3}>
-                        {productStats.topSoldProducts.map((entry) => (
-                          <Box
-                            key={`sold-${entry.productId}`}
-                            border="1px solid"
-                            borderColor="rgba(133, 78, 48, 0.22)"
-                            borderRadius="12px"
-                            p={3}
-                            bg="white"
-                          >
-                            <Text fontWeight={800}>{entry.name}</Text>
-                            <Text fontSize="sm" color="#7A6359">
-                              {entry.quantity} {entry.unit}
-                            </Text>
-                          </Box>
-                        ))}
-                      </SimpleGrid>
-                    ) : (
-                      <Text color="#7A6359">No sales movement yet.</Text>
-                    )}
-                  </AppCard>
+                    <SimpleGrid mt={4} minChildWidth={{ base: "150px", md: "180px", xl: "200px" }} spacing={3}>
+                      <AppCard p={3}><Text fontSize="xs" color="#7B645B">Total Products</Text><Text fontSize="xl" fontWeight={900}>{productStats.totalProducts}</Text></AppCard>
+                      <AppCard p={3}><Text fontSize="xs" color="#7B645B">Low Stock</Text><Text fontSize="xl" fontWeight={900} color="#B91C1C">{productStats.lowStockProducts}</Text></AppCard>
+                      <AppCard p={3}><Text fontSize="xs" color="#7B645B">Stock Valuation</Text><Text fontSize="xl" fontWeight={900}>{formatCurrency(productStats.stockValuation)}</Text></AppCard>
+                      <AppCard p={3}><Text fontSize="xs" color="#7B645B">Sold Qty</Text><Text fontSize="xl" fontWeight={900}>{productStats.totalSoldQuantity}</Text></AppCard>
+                      <AppCard p={3}><Text fontSize="xs" color="#7B645B">Sold Amount</Text><Text fontSize="xl" fontWeight={900}>{formatCurrency(productStats.totalSoldAmount)}</Text></AppCard>
+                    </SimpleGrid>
 
-                  <Box mt={4}>
-                    {productsLoading ? (
-                      <SkeletonTable rows={5} />
-                    ) : (
-                      <DataTable
-                        columns={[
-                          {
-                            key: "name",
-                            header: "Product",
-                        render: (row: ProductListItem) => (
-                          <Box>
-                            <Text fontWeight={800} color={row.expiryStatus === "EXPIRED" ? "red.700" : "#2D1D17"}>
-                              {row.name}
-                            </Text>
-                            <Text fontSize="sm" color="#7A6359">
-                              {row.sku || "-"}
-                              {row.packSize ? ` | ${row.packSize}` : ""}
-                            </Text>
-                          </Box>
-                        )
-                      },
-                      { key: "category", header: "Category", render: (row: ProductListItem) => row.category },
-                      {
-                        key: "section",
-                        header: "Section",
-                        render: (row: ProductListItem) => formatTargetSectionLabel(row.targetSection)
-                      },
-                      { key: "stock", header: "Stock", render: (row: ProductListItem) => `${row.currentStock} ${row.unit}` },
-                      {
-                        key: "assignedSplit",
-                        header: "Assigned Split",
-                        render: (row: ProductListItem) => (
-                          <Box>
-                            <Text fontSize="sm">Dip: {row.dipAndDashAssignedStock}</Text>
-                            <Text fontSize="sm">Snooker: {row.gamingAssignedStock}</Text>
-                          </Box>
-                        )
-                      },
-                      { key: "minStock", header: "Min Stock", render: (row: ProductListItem) => `${row.minStock} ${row.unit}` },
-                      {
-                        key: "purchasePrice",
-                        header: "Purchase Price",
-                        render: (row: ProductListItem) => formatCurrency(row.purchaseUnitPrice)
-                      },
-                      {
-                        key: "sellingPrice",
-                        header: "Selling Price",
-                        render: (row: ProductListItem) => formatCurrency(row.sellingPrice)
-                      },
-                      {
-                        key: "soldQuantity",
-                        header: "Sold Qty",
-                        render: (row: ProductListItem) => `${row.soldQuantity} ${row.unit}`
-                      },
-                      {
-                        key: "soldAmount",
-                        header: "Sold Amount",
-                        render: (row: ProductListItem) => formatCurrency(row.soldAmount)
-                      },
-                      {
-                        key: "profit",
-                        header: "Est. Profit",
-                        render: (row: ProductListItem) => formatCurrency(row.estimatedProfit)
-                      },
-                      { key: "valuation", header: "Valuation", render: (row: ProductListItem) => formatCurrency(row.valuation) },
-                      {
-                        key: "ageing",
-                        header: "Ageing",
-                        render: (row: ProductListItem) => {
-                          const badge = getExpiryBadge(row);
-                          const bgByTone = {
-                            red: "red.100",
-                            orange: "orange.100",
-                            green: "green.100",
-                            neutral: "gray.100"
-                          } as const;
-                          const colorByTone = {
-                            red: "red.700",
-                            orange: "orange.700",
-                            green: "green.700",
-                            neutral: "gray.700"
-                          } as const;
-                          return (
-                            <Box>
-                              <Box
-                                px={3}
-                                py={1}
-                                borderRadius="full"
-                                bg={bgByTone[badge.tone]}
-                                color={colorByTone[badge.tone]}
-                                fontSize="xs"
-                                fontWeight={700}
-                                w="fit-content"
-                              >
-                                {badge.label}
-                              </Box>
-                              {row.nextExpiryDate || row.latestExpiryDate ? (
-                                <Text mt={1} fontSize="xs" color="#7A6359">
-                                  {formatDate(row.nextExpiryDate ?? row.latestExpiryDate ?? "")}
-                                </Text>
-                              ) : null}
+                    <AppCard mt={4} p={4}>
+                      <Text fontWeight={800} mb={3}>
+                        Top Purchased Products
+                      </Text>
+                      {productStats.topPurchasedProducts.length ? (
+                        <SimpleGrid columns={{ base: 1, md: 2, xl: 3 }} spacing={3}>
+                          {productStats.topPurchasedProducts.map((entry) => (
+                            <Box
+                              key={entry.productId}
+                              border="1px solid"
+                              borderColor="rgba(133, 78, 48, 0.22)"
+                              borderRadius="12px"
+                              p={3}
+                              bg="white"
+                            >
+                              <Text fontWeight={800}>{entry.name}</Text>
+                              <Text fontSize="sm" color="#7A6359">
+                                {entry.quantity} {entry.unit}
+                              </Text>
                             </Box>
-                          );
-                        }
-                      },
-                      { key: "status", header: "Status", render: (row: ProductListItem) => <Box px={3} py={1} borderRadius="full" bg={row.stockStatus === "LOW_STOCK" ? "red.100" : "green.100"} color={row.stockStatus === "LOW_STOCK" ? "red.700" : "green.700"} fontSize="xs" fontWeight={700} w="fit-content">{row.stockStatus === "LOW_STOCK" ? "Low Stock" : "Healthy"}</Box> },
-                      { key: "actions", header: "Actions", render: (row: ProductListItem) => <HStack spacing={2}><ActionIconButton aria-label="Edit product" tooltip="Edit product" icon={<Edit2 size={16} />} variant="outline" onClick={() => openEditProduct(row)} /><ActionIconButton aria-label="Delete product" tooltip="Delete product" icon={<Trash2 size={16} />} variant="outline" colorScheme="accentRed" onClick={() => openDeleteProduct(row)} /></HStack> }
-                        ]}
-                        rows={productRows}
-                        emptyState={<EmptyState title="No products found" description="Add products like 7up, chocolate, tin items and track stock." />}
-                      />
-                    )}
-                  </Box>
+                          ))}
+                        </SimpleGrid>
+                      ) : (
+                        <Text color="#7A6359">No purchase movement yet.</Text>
+                      )}
+                    </AppCard>
 
-                  <HStack justify="space-between" mt={4} flexWrap="wrap" gap={3}>
-                    <Text color="#6F594F" fontSize="sm">Showing {productRows.length} of {productPagination.total} records</Text>
-                    <HStack flexWrap="wrap">
-                      <AppButton variant="outline" isDisabled={productPage <= 1} onClick={() => setProductPage((prev) => prev - 1)}>Previous</AppButton>
-                      <Text fontWeight={700}>Page {productPagination.page} of {productPagination.totalPages}</Text>
-                      <AppButton variant="outline" isDisabled={productPagination.page >= productPagination.totalPages} onClick={() => setProductPage((prev) => prev + 1)}>Next</AppButton>
+                    <AppCard mt={4} p={4}>
+                      <Text fontWeight={800} mb={3}>
+                        Top Sold Products
+                      </Text>
+                      {productStats.topSoldProducts.length ? (
+                        <SimpleGrid columns={{ base: 1, md: 2, xl: 3 }} spacing={3}>
+                          {productStats.topSoldProducts.map((entry) => (
+                            <Box
+                              key={`sold-${entry.productId}`}
+                              border="1px solid"
+                              borderColor="rgba(133, 78, 48, 0.22)"
+                              borderRadius="12px"
+                              p={3}
+                              bg="white"
+                            >
+                              <Text fontWeight={800}>{entry.name}</Text>
+                              <Text fontSize="sm" color="#7A6359">
+                                {entry.quantity} {entry.unit}
+                              </Text>
+                            </Box>
+                          ))}
+                        </SimpleGrid>
+                      ) : (
+                        <Text color="#7A6359">No sales movement yet.</Text>
+                      )}
+                    </AppCard>
+
+                    <Box mt={4}>
+                      {productsLoading ? (
+                        <SkeletonTable rows={5} />
+                      ) : (
+                        <DataTable
+                          columns={[
+                            {
+                              key: "name",
+                              header: "Product",
+                          render: (row: ProductListItem) => (
+                            <Box>
+                              <Text fontWeight={800} color={row.expiryStatus === "EXPIRED" ? "red.700" : "#2D1D17"}>
+                                {row.name}
+                              </Text>
+                              <Text fontSize="sm" color="#7A6359">
+                                {row.sku || "-"}
+                                {row.packSize ? ` | ${row.packSize}` : ""}
+                              </Text>
+                            </Box>
+                          )
+                        },
+                        { key: "category", header: "Category", render: (row: ProductListItem) => row.category },
+                        {
+                          key: "section",
+                          header: "Section",
+                          render: (row: ProductListItem) => formatTargetSectionLabel(row.targetSection)
+                        },
+                        { key: "stock", header: "Stock", render: (row: ProductListItem) => `${row.currentStock} ${row.unit}` },
+                        {
+                          key: "assignedSplit",
+                          header: "Assigned Split",
+                          render: (row: ProductListItem) => (
+                            <Box>
+                              <Text fontSize="sm">Dip: {row.dipAndDashAssignedStock}</Text>
+                              <Text fontSize="sm">Snooker: {row.gamingAssignedStock}</Text>
+                            </Box>
+                          )
+                        },
+                        { key: "minStock", header: "Min Stock", render: (row: ProductListItem) => `${row.minStock} ${row.unit}` },
+                        {
+                          key: "purchasePrice",
+                          header: "Purchase Price",
+                          render: (row: ProductListItem) => formatCurrency(row.purchaseUnitPrice)
+                        },
+                        {
+                          key: "sellingPrice",
+                          header: "Selling Price",
+                          render: (row: ProductListItem) => formatCurrency(row.sellingPrice)
+                        },
+                        {
+                          key: "soldQuantity",
+                          header: "Sold Qty",
+                          render: (row: ProductListItem) => `${row.soldQuantity} ${row.unit}`
+                        },
+                        {
+                          key: "soldAmount",
+                          header: "Sold Amount",
+                          render: (row: ProductListItem) => formatCurrency(row.soldAmount)
+                        },
+                        {
+                          key: "profit",
+                          header: "Est. Profit",
+                          render: (row: ProductListItem) => formatCurrency(row.estimatedProfit)
+                        },
+                        { key: "valuation", header: "Valuation", render: (row: ProductListItem) => formatCurrency(row.valuation) },
+                        {
+                          key: "ageing",
+                          header: "Ageing",
+                          render: (row: ProductListItem) => {
+                            const badge = getExpiryBadge(row);
+                            const bgByTone = {
+                              red: "red.100",
+                              orange: "orange.100",
+                              green: "green.100",
+                              neutral: "gray.100"
+                            } as const;
+                            const colorByTone = {
+                              red: "red.700",
+                              orange: "orange.700",
+                              green: "green.700",
+                              neutral: "gray.700"
+                            } as const;
+                            return (
+                              <Box>
+                                <Box
+                                  px={3}
+                                  py={1}
+                                  borderRadius="full"
+                                  bg={bgByTone[badge.tone]}
+                                  color={colorByTone[badge.tone]}
+                                  fontSize="xs"
+                                  fontWeight={700}
+                                  w="fit-content"
+                                >
+                                  {badge.label}
+                                </Box>
+                                {row.nextExpiryDate || row.latestExpiryDate ? (
+                                  <Text mt={1} fontSize="xs" color="#7A6359">
+                                    {formatDate(row.nextExpiryDate ?? row.latestExpiryDate ?? "")}
+                                  </Text>
+                                ) : null}
+                              </Box>
+                            );
+                          }
+                        },
+                        { key: "status", header: "Status", render: (row: ProductListItem) => <Box px={3} py={1} borderRadius="full" bg={row.stockStatus === "LOW_STOCK" ? "red.100" : "green.100"} color={row.stockStatus === "LOW_STOCK" ? "red.700" : "green.700"} fontSize="xs" fontWeight={700} w="fit-content">{row.stockStatus === "LOW_STOCK" ? "Low Stock" : "Healthy"}</Box> },
+                        { key: "actions", header: "Actions", render: (row: ProductListItem) => <HStack spacing={2}><ActionIconButton aria-label="Edit product" tooltip="Edit product" icon={<Edit2 size={16} />} variant="outline" onClick={() => openEditProduct(row)} /><ActionIconButton aria-label="Delete product" tooltip="Delete product" icon={<Trash2 size={16} />} variant="outline" colorScheme="accentRed" onClick={() => openDeleteProduct(row)} /></HStack> }
+                          ]}
+                          rows={productRows}
+                          emptyState={<EmptyState title="No products found" description="Add products like 7up, chocolate, tin items and track stock." />}
+                        />
+                      )}
+                    </Box>
+
+                    <HStack justify="space-between" mt={4} flexWrap="wrap" gap={3}>
+                      <Text color="#6F594F" fontSize="sm">Showing {productRows.length} of {productPagination.total} records</Text>
+                      <HStack flexWrap="wrap">
+                        <AppButton variant="outline" isDisabled={productPage <= 1} onClick={() => setProductPage((prev) => prev - 1)}>Previous</AppButton>
+                        <Text fontWeight={700}>Page {productPagination.page} of {productPagination.totalPages}</Text>
+                        <AppButton variant="outline" isDisabled={productPagination.page >= productPagination.totalPages} onClick={() => setProductPage((prev) => prev + 1)}>Next</AppButton>
+                      </HStack>
                     </HStack>
-                  </HStack>
-                </>
-              ) : null}
+                  </TabPanel>
+                  <TabPanel px={0}>
+                    {stockOverviewSection}
+                  </TabPanel>
+                </TabPanels>
+              </Tabs>
             </AppCard>
           </TabPanel>
         </TabPanels>
@@ -3143,6 +3338,22 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
           setLedgerRowToReset(null);
         }}
         onConfirm={() => void handleResetLedgerRecord()}
+        isLoading={mutationLoading}
+      />
+
+      <ConfirmDialog
+        isOpen={deleteLedgerDialog.isOpen}
+        title="Delete this ledger row?"
+        description={
+          ledgerRowToDelete
+            ? `Delete only ${ledgerRowToDelete.productName} on ${ledgerRowToDelete.date}? This will not remove the full product history.`
+            : "Are you sure you want to delete this ledger row?"
+        }
+        onClose={() => {
+          deleteLedgerDialog.onClose();
+          setLedgerRowToDelete(null);
+        }}
+        onConfirm={() => void handleDeleteLedgerRow()}
         isLoading={mutationLoading}
       />
 

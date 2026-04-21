@@ -278,6 +278,13 @@ export const procurementService = {
     return response.data;
   },
 
+  removeProductLedgerRow: async (productId: string, date: string) => {
+    const response = await apiClient.delete<ApiSuccess<{ productId: string; date: string; deleted: boolean }>>(
+      `/procurement/products/ledger/${productId}/${date}/row`
+    );
+    return response.data;
+  },
+
   getUnits: async () => {
     const response = await apiClient.get<ApiSuccess<ProcurementUnitsResponse>>("/procurement/units");
     return response.data;

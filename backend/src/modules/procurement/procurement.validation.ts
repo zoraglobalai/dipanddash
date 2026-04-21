@@ -119,6 +119,10 @@ export const deleteProductLedgerRecordSchema = z.object({
   params: productLedgerRecordParamsSchema
 });
 
+export const removeProductLedgerRowSchema = z.object({
+  params: productLedgerRecordParamsSchema
+});
+
 export const createProductSchema = z.object({
   body: productBodySchema
 });

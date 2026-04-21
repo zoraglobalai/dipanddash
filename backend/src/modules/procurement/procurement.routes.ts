@@ -16,6 +16,7 @@ import {
   deleteProductSchema,
   deleteSupplierSchema,
   getProductSchema,
+  removeProductLedgerRowSchema,
   productLedgerSchema,
   productListSchema,
   procurementMetaSchema,
@@ -106,6 +107,12 @@ router.delete(
   authorizeAssetsOrPurchaseModule,
   validateRequest(deleteProductLedgerRecordSchema),
   asyncHandler(procurementController.deleteProductLedgerRecord)
+);
+router.delete(
+  "/products/ledger/:productId/:date/row",
+  authorizeAssetsOrPurchaseModule,
+  validateRequest(removeProductLedgerRowSchema),
+  asyncHandler(procurementController.removeProductLedgerRow)
 );
 router.get(
   "/products/bulk/template",

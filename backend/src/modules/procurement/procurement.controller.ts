@@ -171,6 +171,11 @@ export class ProcurementController {
     return sendSuccess(res, StatusCodes.OK, "Product ledger record reset successfully", data);
   };
 
+  removeProductLedgerRow = async (req: Request, res: Response): Promise<Response> => {
+    const data = await this.procurementService.removeProductDayLedgerRow(req.params.productId, req.params.date);
+    return sendSuccess(res, StatusCodes.OK, "Product ledger row deleted successfully", data);
+  };
+
   createProduct = async (req: Request, res: Response): Promise<Response> => {
     const product = await this.procurementService.createProduct(req.body);
     return sendSuccess(res, StatusCodes.CREATED, "Product created successfully", { product });
