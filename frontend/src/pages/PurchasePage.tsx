@@ -28,7 +28,7 @@ import {
   VStack,
   useDisclosure
 } from "@chakra-ui/react";
-import { Download, Edit2, Eye, Plus, Trash2, Upload } from "lucide-react";
+import { Download, Edit2, Eye, Plus, RotateCcw, Trash2, Upload } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
@@ -1800,10 +1800,17 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
 
   const openResetLedgerRecord = useCallback(
     (row: ProductLedgerRow) => {
+      if (!row.isAdjusted) {
+        toast.info(
+          "No manual adjustment found",
+          "This row comes from purchase/sales history. Only manual edits can be reset."
+        );
+        return;
+      }
       setLedgerRowToReset(row);
       resetLedgerDialog.onOpen();
     },
-    [resetLedgerDialog]
+    [resetLedgerDialog, toast]
   );
 
   const openViewOrder = useCallback(
@@ -2096,8 +2103,15 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
     }
     setMutationLoading(true);
     try {
-      await procurementService.deleteProductLedgerRecord(ledgerRowToReset.productId, ledgerRowToReset.date);
-      toast.success("Ledger record reset successfully");
+      const response = await procurementService.deleteProductLedgerRecord(ledgerRowToReset.productId, ledgerRowToReset.date);
+      if (response.data.deleted) {
+        toast.success("Ledger record reset successfully");
+      } else {
+        toast.info(
+          "No manual adjustment found",
+          "This row has no custom override to reset."
+        );
+      }
       resetLedgerDialog.onClose();
       setLedgerRowToReset(null);
       await Promise.all([loadProductLedger(), loadProducts(), loadStats(), loadMeta(meta?.date)]);
@@ -2114,7 +2128,10 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
     }
     setMutationLoading(true);
     try {
-      await procurementService.deleteProduct(selectedProductToDelete.id);
+      const deletedProductId = selectedProductToDelete.id;
+      await procurementService.deleteProduct(deletedProductId);
+      setProductRows((previous) => previous.filter((row) => row.id !== deletedProductId));
+      setProductLedgerRows((previous) => previous.filter((row) => row.productId !== deletedProductId));
       toast.success("Product deleted successfully");
       deleteProductDialog.onClose();
       setSelectedProductToDelete(null);
@@ -2651,12 +2668,25 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
                                 onClick={() => openEditProductFromLedger(row)}
                               />
                               <ActionIconButton
-                                aria-label="Reset ledger record"
-                                tooltip="Reset ledger record"
+                                aria-label="Reset manual ledger override"
+                                tooltip={row.isAdjusted ? "Reset manual adjustment" : "No manual adjustment"}
+                                icon={<RotateCcw size={16} />}
+                                variant="outline"
+                                isDisabled={!row.isAdjusted}
+                                onClick={() => openResetLedgerRecord(row)}
+                              />
+                              <ActionIconButton
+                                aria-label="Delete product"
+                                tooltip="Delete product permanently"
                                 icon={<Trash2 size={16} />}
                                 variant="outline"
                                 colorScheme="accentRed"
-                                onClick={() => openResetLedgerRecord(row)}
+                                onClick={() =>
+                                  openDeleteProduct({
+                                    id: row.productId,
+                                    name: row.productName
+                                  })
+                                }
                               />
                             </HStack>
                           )
@@ -3105,7 +3135,7 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
         title="Reset ledger record?"
         description={
           ledgerRowToReset
-            ? `Reset manual changes for ${ledgerRowToReset.productName} on ${ledgerRowToReset.date}?`
+            ? `Reset manual changes for ${ledgerRowToReset.productName} on ${ledgerRowToReset.date}? Purchase and sales history will remain as-is.`
             : "Are you sure you want to reset this ledger record?"
         }
         onClose={() => {
@@ -3120,7 +3150,9 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
         isOpen={deleteProductDialog.isOpen}
         title="Delete product?"
         description={
-          selectedProductToDelete ? `Are you sure you want to delete ${selectedProductToDelete.name}?` : "Are you sure?"
+          selectedProductToDelete
+            ? `Delete ${selectedProductToDelete.name} completely? This removes the product from all product tables and ledger rows.`
+            : "Are you sure?"
         }
         onClose={() => {
           deleteProductDialog.onClose();
