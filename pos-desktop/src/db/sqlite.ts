@@ -540,6 +540,7 @@ class PosStorage {
         return null;
       }
       const customerSnapshot = row.customer_snapshot_json ? JSON.parse(row.customer_snapshot_json) : null;
+      const totals = JSON.parse(row.totals_json) as PosOrder["totals"];
       return {
         localOrderId: row.local_order_id,
         serverInvoiceId: row.server_invoice_id,
@@ -565,9 +566,9 @@ class PosStorage {
           : null,
         lines: JSON.parse(row.lines_json),
         appliedOffer: row.offer_json ? JSON.parse(row.offer_json) : null,
-        manualDiscountAmount: 0,
+        manualDiscountAmount: Number(totals.manualDiscountAmount ?? 0),
         notes: row.notes,
-        totals: JSON.parse(row.totals_json),
+        totals,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
         syncStatus: row.sync_status
@@ -576,6 +577,141 @@ class PosStorage {
 
     const row = this.state.orders.find((entry) => entry.localOrderId === localOrderId);
     return row ? normalizeOrderRow(row) : null;
+  }
+
+  async getOrderByInvoiceNumber(invoiceNumber: string) {
+    await this.ensureInitialized();
+    const normalizedInvoiceNumber = invoiceNumber.trim();
+    if (!normalizedInvoiceNumber) {
+      return null;
+    }
+
+    if (this.db) {
+      const rows = await this.db.select<{
+        local_order_id: string;
+        server_invoice_id: string | null;
+        invoice_number: string;
+        status: PosOrder["status"];
+        order_type: PosOrder["orderType"];
+        order_channel: PosOrder["orderChannel"];
+        table_label: string | null;
+        kitchen_status: PosOrder["kitchenStatus"];
+        customer_snapshot_json: string | null;
+        lines_json: string;
+        offer_json: string | null;
+        notes: string | null;
+        totals_json: string;
+        payment_json: string | null;
+        sync_status: PosOrder["syncStatus"];
+        created_at: string;
+        updated_at: string;
+      }>(
+        "SELECT * FROM orders_local WHERE invoice_number = ? ORDER BY updated_at DESC LIMIT 1",
+        [normalizedInvoiceNumber]
+      );
+
+      const row = rows[0];
+      if (!row) {
+        return null;
+      }
+      const customerSnapshot = row.customer_snapshot_json ? JSON.parse(row.customer_snapshot_json) : null;
+      const totals = JSON.parse(row.totals_json) as PosOrder["totals"];
+      return {
+        localOrderId: row.local_order_id,
+        serverInvoiceId: row.server_invoice_id,
+        invoiceNumber: row.invoice_number,
+        status: row.status,
+        orderType: row.order_type,
+        orderChannel: ORDER_CHANNELS.has(row.order_channel ?? null) ? (row.order_channel ?? null) : null,
+        tableLabel: row.table_label,
+        kitchenStatus: row.kitchen_status ?? "not_sent",
+        paymentMode: this.parseOrderPaymentMode(row.payment_json),
+        customer: customerSnapshot
+          ? ({
+              localId: customerSnapshot.localId,
+              serverId: customerSnapshot.serverId,
+              name: customerSnapshot.name,
+              phone: customerSnapshot.phone,
+              email: null,
+              notes: null,
+              syncStatus: "synced",
+              createdAt: row.created_at,
+              updatedAt: row.updated_at
+            } satisfies CustomerRecord)
+          : null,
+        lines: JSON.parse(row.lines_json),
+        appliedOffer: row.offer_json ? JSON.parse(row.offer_json) : null,
+        manualDiscountAmount: Number(totals.manualDiscountAmount ?? 0),
+        notes: row.notes,
+        totals,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        syncStatus: row.sync_status
+      } satisfies PosOrder;
+    }
+
+    const row = this.state.orders.find((entry) => entry.invoiceNumber === normalizedInvoiceNumber);
+    return row ? normalizeOrderRow(row) : null;
+  }
+
+  async listOrdersForSync(limit = 2000) {
+    await this.ensureInitialized();
+
+    if (this.db) {
+      const rows = await this.db.select<{
+        local_order_id: string;
+        server_invoice_id: string | null;
+        invoice_number: string;
+        sync_status: PosOrder["syncStatus"];
+        status: PosOrder["status"];
+        updated_at: string;
+      }>(
+        "SELECT local_order_id, server_invoice_id, invoice_number, sync_status, status, updated_at FROM orders_local ORDER BY updated_at DESC LIMIT ?",
+        [limit]
+      );
+
+      return rows.map((row) => ({
+        localOrderId: row.local_order_id,
+        serverInvoiceId: row.server_invoice_id,
+        invoiceNumber: row.invoice_number,
+        syncStatus: row.sync_status,
+        status: row.status,
+        updatedAt: row.updated_at
+      }));
+    }
+
+    return [...this.state.orders]
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .slice(0, limit)
+      .map((row) => ({
+        localOrderId: row.localOrderId,
+        serverInvoiceId: row.serverInvoiceId,
+        invoiceNumber: row.invoiceNumber,
+        syncStatus: row.syncStatus,
+        status: row.status,
+        updatedAt: row.updatedAt
+      }));
+  }
+
+  async removeOrders(localOrderIds: string[]) {
+    await this.ensureInitialized();
+    const ids = [...new Set(localOrderIds.filter((value) => typeof value === "string" && value.trim().length > 0))];
+    if (!ids.length) {
+      return;
+    }
+
+    if (this.db) {
+      for (const localOrderId of ids) {
+        await this.db.execute("DELETE FROM orders_local WHERE local_order_id = ?", [localOrderId]);
+        await this.db.execute("DELETE FROM pending_bills WHERE local_order_id = ?", [localOrderId]);
+      }
+      return;
+    }
+
+    const idSet = new Set(ids);
+    this.state.orders = this.state.orders.filter((entry) => !idSet.has(entry.localOrderId));
+    this.state.pendingBills = this.state.pendingBills.filter((entry) => !idSet.has(entry.localOrderId));
+    this.persistBrowserState();
   }
 
   async listPendingBills() {
@@ -805,6 +941,7 @@ class PosStorage {
 
       return rows.map((row) => {
         const customerSnapshot = row.customer_snapshot_json ? JSON.parse(row.customer_snapshot_json) : null;
+        const totals = JSON.parse(row.totals_json) as PosOrder["totals"];
         return {
           localOrderId: row.local_order_id,
           serverInvoiceId: row.server_invoice_id,
@@ -830,9 +967,9 @@ class PosStorage {
             : null,
           lines: JSON.parse(row.lines_json),
           appliedOffer: row.offer_json ? JSON.parse(row.offer_json) : null,
-          manualDiscountAmount: 0,
+          manualDiscountAmount: Number(totals.manualDiscountAmount ?? 0),
           notes: row.notes,
-          totals: JSON.parse(row.totals_json),
+          totals,
           createdAt: row.created_at,
           updatedAt: row.updated_at,
           syncStatus: row.sync_status

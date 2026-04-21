@@ -43,8 +43,10 @@ export type DesktopInvoiceDetailsResponse = {
   invoice: {
     id: string;
     invoiceNumber: string;
+    orderReference?: string | null;
     orderType: "takeaway" | "dine_in" | "delivery" | "snooker";
     tableLabel: string | null;
+    kitchenStatus?: "not_sent" | "queued" | "preparing" | "ready" | "served";
     status: "pending" | "paid" | "cancelled" | "refunded";
     paymentMode: "cash" | "card" | "upi" | "mixed";
     subtotal: number;
@@ -55,6 +57,7 @@ export type DesktopInvoiceDetailsResponse = {
     totalAmount: number;
     notes: string | null;
     customerSnapshot: Record<string, unknown> | null;
+    linesSnapshot?: Record<string, unknown> | null;
     sourceCreatedAt: string | null;
     createdAt: string;
     updatedAt: string;
@@ -90,6 +93,8 @@ export const invoicesService = {
   async list(params: {
     search?: string;
     status?: "pending" | "paid" | "cancelled" | "refunded";
+    statuses?: string;
+    kitchenStatus?: "not_sent" | "queued" | "preparing" | "ready" | "served";
     paymentMode?: "cash" | "card" | "upi" | "mixed";
     orderType?: "takeaway" | "dine_in" | "delivery" | "snooker";
     excludeOrderType?: "takeaway" | "dine_in" | "delivery" | "snooker";
@@ -107,4 +112,3 @@ export const invoicesService = {
     return response.data;
   }
 };
-

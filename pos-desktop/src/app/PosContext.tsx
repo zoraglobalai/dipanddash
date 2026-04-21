@@ -13,6 +13,7 @@ import { closingService } from "@/services/closing.service";
 import { attendanceService } from "@/services/attendance.service";
 import { customersService } from "@/services/customers.service";
 import { posBillingService } from "@/services/invoice-builder.service";
+import { ordersSyncService } from "@/services/orders-sync.service";
 import { ordersRepository } from "@/db/repositories/orders.repository";
 import { syncQueueRepository } from "@/db/repositories/sync-queue.repository";
 import { settingsRepository } from "@/db/repositories/settings.repository";
@@ -209,21 +210,41 @@ export const PosProvider = ({ children }: PropsWithChildren) => {
   const [isPunchedIn, setIsPunchedIn] = useState<boolean | null>(null);
 
   const refreshPendingBills = useCallback(async () => {
+    try {
+      await ordersSyncService.pullFromServer(true);
+    } catch {
+      // no-op: keep local snapshot in offline mode.
+    }
     const pending = await ordersRepository.listPendingBills();
     setPendingBills(pending);
   }, []);
 
   const refreshRecentBills = useCallback(async () => {
+    try {
+      await ordersSyncService.pullFromServer(true);
+    } catch {
+      // no-op: keep local snapshot in offline mode.
+    }
     const recent = await ordersRepository.listRecentBills(5);
     setRecentBills(recent);
   }, []);
 
   const refreshCompletedBills = useCallback(async () => {
+    try {
+      await ordersSyncService.pullFromServer(true);
+    } catch {
+      // no-op: keep local snapshot in offline mode.
+    }
     const completed = await ordersRepository.listCompletedBills(500);
     setCompletedBills(completed);
   }, []);
 
   const refreshKitchenOrders = useCallback(async () => {
+    try {
+      await ordersSyncService.pullFromServer(true);
+    } catch {
+      // no-op: keep local snapshot in offline mode.
+    }
     const rows = await ordersRepository.listKitchenOrders(500);
     setKitchenOrders(rows);
   }, []);

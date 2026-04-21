@@ -1,6 +1,8 @@
+import { ordersRepository } from "@/db/repositories/orders.repository";
 import { syncQueueRepository } from "@/db/repositories/sync-queue.repository";
+import { ordersSyncService } from "@/services/orders-sync.service";
 import { posSyncApiService } from "@/services/pos-sync-api.service";
-import type { SyncQueueRow } from "@/types/pos";
+import type { SyncQueueEvent, SyncQueueRow } from "@/types/pos";
 
 type SyncListener = (state: {
   isSyncing: boolean;
@@ -73,6 +75,11 @@ class SyncEngine {
     try {
       const queueRows = await syncQueueRepository.listPending(40);
       if (!queueRows.length) {
+        try {
+          await ordersSyncService.pullFromServer(false);
+        } catch {
+          // no-op: keep local snapshot when server pull fails.
+        }
         this.lastError = null;
         this.lastSyncedAt = new Date().toISOString();
         return;
@@ -88,6 +95,21 @@ class SyncEngine {
         }
 
         if (result.success) {
+          if (row.eventType === "invoice_upsert") {
+            const payload = row.payload as Extract<SyncQueueEvent, { eventType: "invoice_upsert" }>;
+            const invoiceNumber =
+              typeof payload.payload.invoiceNumber === "string" ? payload.payload.invoiceNumber.trim() : "";
+            if (invoiceNumber.length) {
+              const localOrder = await ordersRepository.getByInvoiceNumber(invoiceNumber);
+              if (localOrder) {
+                await ordersRepository.save({
+                  ...localOrder,
+                  serverInvoiceId: result.entityId ?? localOrder.serverInvoiceId,
+                  syncStatus: "synced"
+                });
+              }
+            }
+          }
           await syncQueueRepository.remove(row.id);
           continue;
         }
@@ -105,6 +127,11 @@ class SyncEngine {
 
       this.lastError = null;
       this.lastSyncedAt = new Date().toISOString();
+      try {
+        await ordersSyncService.pullFromServer(true);
+      } catch {
+        // no-op: push succeeded; pull can retry in next cycle.
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unable to sync right now";
       this.lastError = message;
@@ -148,4 +175,3 @@ class SyncEngine {
 }
 
 export const syncEngine = new SyncEngine();
-
