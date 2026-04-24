@@ -29,6 +29,7 @@ const schema = z.object({
   name: z.string().trim().min(2, "Ingredient name must be at least 2 characters").max(120),
   categoryId: z.string().uuid("Please select a valid category"),
   unit: z.string().min(1, "Unit is required"),
+  perUnitPrice: z.coerce.number().min(0, "Per unit price cannot be negative"),
   minStock: z.coerce.number().min(0, "Minimum stock cannot be negative")
 });
 
@@ -36,6 +37,7 @@ type IngredientFormValues = {
   name: string;
   categoryId: string;
   unit: IngredientUnit;
+  perUnitPrice: number;
   minStock: number;
 };
 
@@ -46,6 +48,7 @@ type IngredientFormModalProps = {
     name: string;
     categoryId: string;
     unit: IngredientUnit;
+    perUnitPrice: number;
     minStock: number;
   }) => Promise<void>;
   loading?: boolean;
@@ -75,6 +78,7 @@ export const IngredientFormModal = ({
       name: "",
       categoryId: "",
       unit: "g",
+      perUnitPrice: 0,
       minStock: 0
     }
   });
@@ -89,6 +93,7 @@ export const IngredientFormModal = ({
         name: "",
         categoryId: categories[0]?.id ?? "",
         unit: "g",
+        perUnitPrice: 0,
         minStock: 0
       });
       return;
@@ -98,6 +103,7 @@ export const IngredientFormModal = ({
       name: initialData.name,
       categoryId: initialData.categoryId,
       unit: initialData.unit,
+      perUnitPrice: initialData.perUnitPrice,
       minStock: initialData.minStock
     });
   }, [categories, initialData, isOpen, reset]);
@@ -167,6 +173,14 @@ export const IngredientFormModal = ({
                   error={errors.unit?.message}
                 />
               )}
+            />
+            <AppInput
+              label="Per Unit Price"
+              type="number"
+              step="0.001"
+              min={0}
+              error={errors.perUnitPrice?.message}
+              {...register("perUnitPrice")}
             />
             <AppInput
               label="Minimum Stock"

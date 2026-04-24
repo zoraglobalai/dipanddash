@@ -175,6 +175,13 @@ const stockHealthBadge = (status: "HEALTHY" | "LOW_STOCK") => (
   </Box>
 );
 
+const formatCurrency = (value: number) =>
+  new Intl.NumberFormat("en-IN", {
+    style: "currency",
+    currency: "INR",
+    maximumFractionDigits: 2
+  }).format(value);
+
 type IngredientEntryPageProps = {
   mode?: IngredientCategoryKind;
 };
@@ -448,6 +455,7 @@ export const IngredientEntryPage = ({ mode = "core" }: IngredientEntryPageProps)
       name: string;
       categoryId: string;
       unit: IngredientUnit;
+      perUnitPrice: number;
       minStock: number;
     }) => {
       setIngredientMutationLoading(true);
@@ -705,6 +713,11 @@ export const IngredientEntryPage = ({ mode = "core" }: IngredientEntryPageProps)
           key: "totalStock",
           header: "Total Stock",
           render: (row: IngredientListItem) => formatQuantityWithUnit(row.totalStock, row.unit)
+        },
+        {
+          key: "perUnitPrice",
+          header: "Per Unit Price",
+          render: (row: IngredientListItem) => formatCurrency(row.perUnitPrice)
         },
         {
           key: "minStock",

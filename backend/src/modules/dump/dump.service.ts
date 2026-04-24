@@ -10,6 +10,7 @@ import { IngredientStockLogType } from "../ingredients/ingredients.constants";
 import { Item } from "../items/item.entity";
 import { ItemIngredient } from "../items/item-ingredient.entity";
 import { Product } from "../procurement/product.entity";
+import { getLatestIngredientPurchasePriceMap } from "../procurement/ingredient-costing";
 import { type DumpEntryType, type DumpIngredientImpact } from "./dump.constants";
 import { DumpEntry } from "./dump.entity";
 
@@ -323,6 +324,30 @@ export class DumpService {
       ? await this.ingredientStockRepository.find({ where: { ingredientId: In(ingredientIds) } })
       : [];
     const stockMap = new Map(ingredientStocks.map((row) => [row.ingredientId, toQuantity(toNumber(row.totalStock))]));
+    const fallbackIngredientPriceMap = new Map(
+      ingredients.map((ingredient) => [ingredient.id, toNumber(ingredient.perUnitPrice)])
+    );
+    const latestIngredientPriceMap = await getLatestIngredientPurchasePriceMap(
+      ingredientIds,
+      fallbackIngredientPriceMap
+    );
+
+    const itemIds = items.map((item) => item.id);
+    const itemRecipes = itemIds.length
+      ? await AppDataSource.getRepository(ItemIngredient).find({
+          where: { itemId: In(itemIds) }
+        })
+      : [];
+    const itemEstimatedCostMap = new Map<string, number>();
+
+    itemRecipes.forEach((recipe) => {
+      const current = itemEstimatedCostMap.get(recipe.itemId) ?? 0;
+      const unitPrice = toNumber(
+        latestIngredientPriceMap.get(recipe.ingredientId) ?? fallbackIngredientPriceMap.get(recipe.ingredientId) ?? 0
+      );
+      const contribution = toNumber(recipe.normalizedQuantity) * unitPrice;
+      itemEstimatedCostMap.set(recipe.itemId, toMoney(current + contribution));
+    });
 
     return {
       ingredients: ingredients.map((ingredient) => {
@@ -334,7 +359,9 @@ export class DumpService {
           baseUnit,
           unitOptions: resolveUnitOptions(baseUnit),
           currentStock: stockMap.get(ingredient.id) ?? 0,
-          perUnitPrice: toMoney(toNumber(ingredient.perUnitPrice))
+          perUnitPrice: toMoney(
+            toNumber(latestIngredientPriceMap.get(ingredient.id) ?? fallbackIngredientPriceMap.get(ingredient.id) ?? 0)
+          )
         };
       }),
       items: items.map((item) => ({
@@ -342,7 +369,7 @@ export class DumpService {
         name: item.name,
         baseUnit: "item",
         unitOptions: ["item"],
-        estimatedIngredientCost: toMoney(toNumber(item.estimatedIngredientCost))
+        estimatedIngredientCost: toMoney(itemEstimatedCostMap.get(item.id) ?? toNumber(item.estimatedIngredientCost))
       })),
       products: products.map((product) => {
         const baseUnit = normalizeUnit(product.unit);
@@ -413,7 +440,14 @@ export class DumpService {
           note: `Dump/Wastage deduction (${enteredQuantity} ${enteredUnit} => ${convertedBaseQuantity} ${baseUnit})`
         });
 
-        const unitPrice = toMoney(toNumber(ingredient.perUnitPrice));
+        const ingredientFallbackPriceMap = new Map([[ingredient.id, toNumber(ingredient.perUnitPrice)]]);
+        const latestIngredientPriceMap = await getLatestIngredientPurchasePriceMap(
+          [ingredient.id],
+          ingredientFallbackPriceMap
+        );
+        const unitPrice = toMoney(
+          toNumber(latestIngredientPriceMap.get(ingredient.id) ?? ingredientFallbackPriceMap.get(ingredient.id) ?? 0)
+        );
         const impactLoss = toMoney(convertedBaseQuantity * unitPrice);
         ingredientImpacts = [
           {
@@ -471,6 +505,15 @@ export class DumpService {
           throw new AppError(422, "No active ingredient recipe rows found for this item.");
         }
 
+        const plannedIngredientIds = planned.map((row) => row.ingredient.id);
+        const itemFallbackPriceMap = new Map(
+          planned.map((row) => [row.ingredient.id, toNumber(row.ingredient.perUnitPrice)])
+        );
+        const latestIngredientPriceMap = await getLatestIngredientPurchasePriceMap(
+          plannedIngredientIds,
+          itemFallbackPriceMap
+        );
+
         for (const row of planned) {
           const currentStock = toQuantity(toNumber(row.stock.totalStock));
           this.assertHasStockOrThrow(currentStock, row.requiredQuantity, row.ingredient.name, normalizeUnit(row.ingredient.unit));
@@ -490,7 +533,11 @@ export class DumpService {
             note: `Dump/Wastage from item ${item.name} (${enteredQuantity} item)`
           });
 
-          const unitPrice = toMoney(toNumber(row.ingredient.perUnitPrice));
+          const unitPrice = toMoney(
+            toNumber(
+              latestIngredientPriceMap.get(row.ingredient.id) ?? itemFallbackPriceMap.get(row.ingredient.id) ?? 0
+            )
+          );
           const ingredientLoss = toMoney(row.requiredQuantity * unitPrice);
           runningLoss = toMoney(runningLoss + ingredientLoss);
           impacts.push({

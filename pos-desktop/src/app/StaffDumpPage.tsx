@@ -43,6 +43,31 @@ type PendingWastageEntry = {
   note: string | null;
 };
 
+type SelectedDumpSource =
+  | {
+      sourceName: string;
+      baseUnit: string;
+      unitOptions: string[];
+      currentStock: number;
+      unitPrice: number;
+      type: "ingredient";
+    }
+  | {
+      sourceName: string;
+      baseUnit: string;
+      unitOptions: string[];
+      estimatedIngredientCost: number;
+      type: "item";
+    }
+  | {
+      sourceName: string;
+      baseUnit: string;
+      unitOptions: string[];
+      currentStock: number;
+      unitPrice: number;
+      type: "product";
+    };
+
 const ENTRY_TYPE_LABEL: Record<DumpEntryType, string> = {
   ingredient: "Ingredient",
   item: "Item",
@@ -105,6 +130,58 @@ const formatCurrency = (value: number) =>
 const formatQuantity = (value: number) => Number(value.toFixed(3));
 const getTodayDate = () => new Date().toISOString().slice(0, 10);
 
+const resolveSelectedSource = (
+  options: DumpEntryOptions | null,
+  entryType: DumpEntryType,
+  sourceId: string
+): SelectedDumpSource | null => {
+  if (!sourceId || !options) {
+    return null;
+  }
+
+  if (entryType === "ingredient") {
+    const row = options.ingredients.find((item) => item.id === sourceId);
+    if (!row) {
+      return null;
+    }
+    return {
+      sourceName: row.name,
+      baseUnit: row.baseUnit,
+      unitOptions: row.unitOptions,
+      currentStock: row.currentStock,
+      unitPrice: row.perUnitPrice,
+      type: "ingredient" as const
+    };
+  }
+
+  if (entryType === "item") {
+    const row = options.items.find((item) => item.id === sourceId);
+    if (!row) {
+      return null;
+    }
+    return {
+      sourceName: row.name,
+      baseUnit: row.baseUnit,
+      unitOptions: row.unitOptions,
+      estimatedIngredientCost: row.estimatedIngredientCost,
+      type: "item" as const
+    };
+  }
+
+  const row = options.products.find((item) => item.id === sourceId);
+  if (!row) {
+    return null;
+  }
+  return {
+    sourceName: row.name,
+    baseUnit: row.baseUnit,
+    unitOptions: row.unitOptions,
+    currentStock: row.currentStock,
+    unitPrice: row.purchaseUnitPrice,
+    type: "product" as const
+  };
+};
+
 export const StaffDumpPage = () => {
   const toast = useToast();
   const {
@@ -160,48 +237,7 @@ export const StaffDumpPage = () => {
   }, [entryType, options]);
 
   const selectedSource = useMemo(() => {
-    if (!sourceId || !options) {
-      return null;
-    }
-    if (entryType === "ingredient") {
-      const row = options.ingredients.find((item) => item.id === sourceId);
-      if (!row) {
-        return null;
-      }
-      return {
-        sourceName: row.name,
-        baseUnit: row.baseUnit,
-        unitOptions: row.unitOptions,
-        currentStock: row.currentStock,
-        unitPrice: row.perUnitPrice,
-        type: "ingredient" as const
-      };
-    }
-    if (entryType === "item") {
-      const row = options.items.find((item) => item.id === sourceId);
-      if (!row) {
-        return null;
-      }
-      return {
-        sourceName: row.name,
-        baseUnit: row.baseUnit,
-        unitOptions: row.unitOptions,
-        estimatedIngredientCost: row.estimatedIngredientCost,
-        type: "item" as const
-      };
-    }
-    const row = options.products.find((item) => item.id === sourceId);
-    if (!row) {
-      return null;
-    }
-    return {
-      sourceName: row.name,
-      baseUnit: row.baseUnit,
-      unitOptions: row.unitOptions,
-      currentStock: row.currentStock,
-      unitPrice: row.purchaseUnitPrice,
-      type: "product" as const
-    };
+    return resolveSelectedSource(options, entryType, sourceId);
   }, [entryType, options, sourceId]);
 
   useEffect(() => {
@@ -217,9 +253,10 @@ export const StaffDumpPage = () => {
     [pendingEntries]
   );
 
-  const getDraftEntry = useCallback(() => {
+  const getDraftEntry = useCallback((sourceOverride?: SelectedDumpSource | null) => {
     const parsedQuantity = Number(quantity);
-    if (!selectedSource) {
+    const activeSource = sourceOverride ?? selectedSource;
+    if (!activeSource) {
       return { error: "Select an item to mark as wastage." };
     }
     if (!quantityUnit) {
@@ -229,43 +266,48 @@ export const StaffDumpPage = () => {
       return { error: "Quantity must be greater than zero." };
     }
 
-    const convertedBaseQuantity = convertQuantityUnit(parsedQuantity, quantityUnit, selectedSource.baseUnit);
+    const convertedBaseQuantity = convertQuantityUnit(parsedQuantity, quantityUnit, activeSource.baseUnit);
     if (convertedBaseQuantity === null || convertedBaseQuantity <= 0) {
       return { error: "Selected unit cannot be converted to base unit." };
     }
 
     let estimatedLoss = 0;
-    if (selectedSource.type === "item") {
-      estimatedLoss = Number((convertedBaseQuantity * selectedSource.estimatedIngredientCost).toFixed(2));
+    if (activeSource.type === "item") {
+      estimatedLoss = Number((convertedBaseQuantity * activeSource.estimatedIngredientCost).toFixed(2));
     } else {
       const queuedBaseQuantity = pendingEntries
         .filter((row) => row.entryType === entryType && row.sourceId === sourceId)
         .reduce((sum, row) => sum + row.baseQuantity, 0);
-      const availableStock = Number((selectedSource.currentStock - queuedBaseQuantity).toFixed(3));
+      const availableStock = Number((activeSource.currentStock - queuedBaseQuantity).toFixed(3));
       if (availableStock < convertedBaseQuantity) {
         return {
-          error: `Not enough stock. Available ${formatQuantity(Math.max(0, availableStock))} ${selectedSource.baseUnit}.`
+          error: `Not enough stock. Available ${formatQuantity(Math.max(0, availableStock))} ${activeSource.baseUnit}.`
         };
       }
-      estimatedLoss = Number((convertedBaseQuantity * selectedSource.unitPrice).toFixed(2));
+      estimatedLoss = Number((convertedBaseQuantity * activeSource.unitPrice).toFixed(2));
     }
 
     const draft: PendingWastageEntry = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       entryType,
       sourceId,
-      sourceName: selectedSource.sourceName,
+      sourceName: activeSource.sourceName,
       enteredQuantity: formatQuantity(parsedQuantity),
       enteredUnit: normalizeUnit(quantityUnit),
       baseQuantity: convertedBaseQuantity,
-      baseUnit: normalizeUnit(selectedSource.baseUnit),
+      baseUnit: normalizeUnit(activeSource.baseUnit),
       estimatedLoss,
       note: note.trim() || null
     };
     return { draft };
   }, [entryType, note, pendingEntries, quantity, quantityUnit, selectedSource, sourceId]);
 
-  const handleAddEntry = () => {
+  const estimatedLossPreview = useMemo(() => {
+    const result = getDraftEntry();
+    return result.draft ? result.draft.estimatedLoss : null;
+  }, [getDraftEntry]);
+
+  const handleAddEntry = async () => {
     if (!sourceId) {
       toast({
         status: "warning",
@@ -274,7 +316,27 @@ export const StaffDumpPage = () => {
       return;
     }
 
-    const result = getDraftEntry();
+    let result = getDraftEntry();
+    if (
+      result.draft &&
+      result.draft.estimatedLoss <= 0 &&
+      (result.draft.entryType === "ingredient" || result.draft.entryType === "product")
+    ) {
+      try {
+        const freshOptions = await dumpService.getEntryOptions();
+        setOptions(freshOptions);
+        const refreshedSource = resolveSelectedSource(freshOptions, entryType, sourceId);
+        if (refreshedSource) {
+          const refreshedResult = getDraftEntry(refreshedSource);
+          if (refreshedResult.draft) {
+            result = refreshedResult;
+          }
+        }
+      } catch {
+        // keep existing draft and let user proceed with current estimate.
+      }
+    }
+
     if (!result.draft) {
       toast({
         status: "warning",
@@ -455,6 +517,17 @@ export const StaffDumpPage = () => {
                 ? ` | Current Stock: ${formatQuantity(selectedSource.currentStock)} ${selectedSource.baseUnit}`
                 : ""}
             </Text>
+            <Text fontSize="sm" color="#705B52" mt={1}>
+              {selectedSource.type === "item"
+                ? `Estimated Cost / Item: ${formatCurrency(selectedSource.estimatedIngredientCost)}`
+                : `Per Unit Cost: ${formatCurrency(selectedSource.unitPrice)}`}
+              {estimatedLossPreview !== null ? ` | Estimated Loss Preview: ${formatCurrency(estimatedLossPreview)}` : ""}
+            </Text>
+            {selectedSource.type !== "item" && selectedSource.unitPrice <= 0 ? (
+              <Text mt={1} fontSize="xs" color="#B91C1C" fontWeight={700}>
+                Cost is currently zero. Click Refresh Stock and re-check before adding wastage.
+              </Text>
+            ) : null}
           </Box>
         ) : null}
 
@@ -473,7 +546,7 @@ export const StaffDumpPage = () => {
             color="white"
             bgGradient="linear(95deg, #8E0909 0%, #BE3329 46%, #D3A23D 100%)"
             _hover={{ bgGradient: "linear(95deg, #7A0707 0%, #A12822 46%, #BA8A34 100%)" }}
-            onClick={handleAddEntry}
+            onClick={() => void handleAddEntry()}
           >
             Add Wastage
           </Button>

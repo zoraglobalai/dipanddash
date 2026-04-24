@@ -108,6 +108,7 @@ const toNumber = (value: unknown) => {
 const toMoney = (value: unknown) => Number(toNumber(value).toFixed(2));
 const toQty = (value: unknown) => Number(toNumber(value).toFixed(3));
 const toPercent = (value: unknown) => Number(toNumber(value).toFixed(2));
+const IST_TIMEZONE = "Asia/Kolkata";
 
 const pad2 = (value: number) => String(value).padStart(2, "0");
 
@@ -124,6 +125,52 @@ const endOfDay = (value: Date) => {
 };
 
 const formatDate = (value: Date) => `${value.getFullYear()}-${pad2(value.getMonth() + 1)}-${pad2(value.getDate())}`;
+
+const istDatePartsFormatter = new Intl.DateTimeFormat("en-IN", {
+  timeZone: IST_TIMEZONE,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit"
+});
+
+const istDateLabelFormatter = new Intl.DateTimeFormat("en-IN", {
+  timeZone: IST_TIMEZONE,
+  day: "2-digit",
+  month: "short",
+  year: "numeric"
+});
+
+const istMonthLabelFormatter = new Intl.DateTimeFormat("en-IN", {
+  timeZone: IST_TIMEZONE,
+  month: "long",
+  year: "numeric"
+});
+
+const istTimeFormatter = new Intl.DateTimeFormat("en-IN", {
+  timeZone: IST_TIMEZONE,
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: true
+});
+
+const getIstDateKey = (value: Date) => {
+  const parts = istDatePartsFormatter.formatToParts(value);
+  const year = parts.find((part) => part.type === "year")?.value ?? "0000";
+  const month = parts.find((part) => part.type === "month")?.value ?? "00";
+  const day = parts.find((part) => part.type === "day")?.value ?? "00";
+  return `${year}-${month}-${day}`;
+};
+
+const formatIstDateLabel = (value: Date) => istDateLabelFormatter.format(value);
+const formatIstMonthLabel = (value: Date) => istMonthLabelFormatter.format(value);
+const formatIstTimeLabel = (value: Date) => `${istTimeFormatter.format(value)} IST`;
+
+const formatDurationFromMinutes = (value: number) => {
+  const safeMinutes = Math.max(0, Math.floor(value));
+  const hours = Math.floor(safeMinutes / 60);
+  const minutes = safeMinutes % 60;
+  return `${hours}h ${pad2(minutes)}m`;
+};
 
 const parseDateInput = (value: string) => {
   const trimmed = value.trim();
@@ -2133,27 +2180,45 @@ export class ReportsService {
     const rows = await this.gamingRepository
       .createQueryBuilder("booking")
       .leftJoinAndSelect("booking.staff", "staff")
-      .where("booking.createdAt >= :from AND booking.createdAt <= :to", { from, to })
-      .orderBy("booking.createdAt", "DESC")
+      .where("booking.checkInAt >= :from AND booking.checkInAt <= :to", { from, to })
+      .orderBy("booking.checkInAt", "ASC")
       .getMany();
 
-    const parsedRows = rows.map((row) => ({
-      bookingNumber: row.bookingNumber,
-      bookingType: row.bookingType,
-      resource: row.resourceCodes?.length ? row.resourceCodes.join(", ") : row.resourceLabel,
-      players: row.customerGroup?.length || 0,
-      status: row.status,
-      paymentStatus: row.paymentStatus,
-      paymentMode: row.paymentMode ?? "-",
-      hourlyRate: toMoney(row.hourlyRate),
-      finalAmount: toMoney(row.finalAmount),
-      foodAndBeverageAmount: toMoney(row.foodAndBeverageAmount),
-      totalAmount: toMoney(toNumber(row.finalAmount) + toNumber(row.foodAndBeverageAmount)),
-      staff: row.staff?.fullName ?? "-",
-      checkInAt: row.checkInAt.toISOString(),
-      checkOutAt: toIso(row.checkOutAt),
-      createdAt: row.createdAt.toISOString()
-    }));
+    const parsedRows = rows
+      .map((row) => {
+        const checkInAt = row.checkInAt;
+        const checkOutAt = row.checkOutAt;
+        const hasCheckOut = Boolean(checkOutAt);
+        const checkInDateKey = getIstDateKey(checkInAt);
+        const checkOutDateKey = checkOutAt ? getIstDateKey(checkOutAt) : null;
+        const isOvernight = Boolean(checkOutDateKey && checkOutDateKey !== checkInDateKey);
+        const totalMinutes = checkOutAt ? minutesBetween(checkInAt, checkOutAt) : 0;
+
+        return {
+          bookingNumber: row.bookingNumber,
+          month: formatIstMonthLabel(checkInAt),
+          inDate: formatIstDateLabel(checkInAt),
+          inTime: formatIstTimeLabel(checkInAt),
+          outDate: checkOutAt ? formatIstDateLabel(checkOutAt) : "-",
+          outTime: checkOutAt ? formatIstTimeLabel(checkOutAt) : "-",
+          overnightSession: isOvernight ? "Yes - Overnight Session" : "No",
+          totalPlayingHours: hasCheckOut ? formatDurationFromMinutes(totalMinutes) : "-",
+          bookingType: row.bookingType,
+          resource: row.resourceCodes?.length ? row.resourceCodes.join(", ") : row.resourceLabel,
+          players: row.customerGroup?.length || 0,
+          status: row.status,
+          paymentStatus: row.paymentStatus,
+          paymentMode: row.paymentMode ?? "-",
+          hourlyRate: toMoney(row.hourlyRate),
+          finalAmount: toMoney(row.finalAmount),
+          foodAndBeverageAmount: toMoney(row.foodAndBeverageAmount),
+          totalAmount: toMoney(toNumber(row.finalAmount) + toNumber(row.foodAndBeverageAmount)),
+          staff: row.staff?.fullName ?? "-",
+          _checkInSortTime: checkInAt.getTime()
+        } satisfies ReportRow;
+      })
+      .sort((left, right) => toNumber(left._checkInSortTime) - toNumber(right._checkInSortTime))
+      .map(({ _checkInSortTime, ...row }) => row);
 
     return {
       stats: [
@@ -2163,6 +2228,13 @@ export class ReportsService {
       ],
       columns: [
         { key: "bookingNumber", label: "Booking" },
+        { key: "month", label: "Month" },
+        { key: "inDate", label: "In Date" },
+        { key: "inTime", label: "In Time (IST)" },
+        { key: "outDate", label: "Out Date" },
+        { key: "outTime", label: "Out Time (IST)" },
+        { key: "overnightSession", label: "Overnight" },
+        { key: "totalPlayingHours", label: "Total Playing Hours" },
         { key: "bookingType", label: "Type" },
         { key: "resource", label: "Resource" },
         { key: "players", label: "Players" },
@@ -2173,10 +2245,7 @@ export class ReportsService {
         { key: "finalAmount", label: "Session Amount" },
         { key: "foodAndBeverageAmount", label: "F&B Amount" },
         { key: "totalAmount", label: "Total" },
-        { key: "staff", label: "Staff" },
-        { key: "checkInAt", label: "Check In" },
-        { key: "checkOutAt", label: "Check Out" },
-        { key: "createdAt", label: "Created At" }
+        { key: "staff", label: "Staff" }
       ],
       rows: parsedRows
     };

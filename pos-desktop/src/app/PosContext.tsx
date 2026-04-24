@@ -19,6 +19,7 @@ import { syncQueueRepository } from "@/db/repositories/sync-queue.repository";
 import { settingsRepository } from "@/db/repositories/settings.repository";
 import { env } from "@/config/env";
 import { makeId, makeInvoiceNumber } from "@/utils/idempotency";
+import { getClosingLockMessage } from "@/utils/closing-lock-message";
 import { formatQuantityWithUnit } from "@/utils/quantity";
 import type {
   CartLine,
@@ -328,7 +329,7 @@ export const PosProvider = ({ children }: PropsWithChildren) => {
       if (closingStatus && !closingStatus.canTakeOrders) {
         return {
           ok: false as const,
-          message: closingStatus.reason || "Order taking is locked until closing is completed."
+          message: getClosingLockMessage(closingStatus) || "Order taking is locked until closing is completed."
         };
       }
 

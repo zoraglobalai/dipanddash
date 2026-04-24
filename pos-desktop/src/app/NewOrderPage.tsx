@@ -40,6 +40,7 @@ import {
   getLineBaseTotal,
   openBillInPrintFrame
 } from "@/utils/bill-print";
+import { getClosingLockMessage } from "@/utils/closing-lock-message";
 
 type NewOrderPageProps = {
   channel?: "dine-in" | "take-away" | "swiggy" | "zomato";
@@ -212,6 +213,7 @@ export const NewOrderPage = ({ channel }: NewOrderPageProps) => {
       : currentOrder.orderType === "delivery"
         ? "Delivery"
       : "Takeaway";
+  const closingLockMessage = useMemo(() => getClosingLockMessage(closingStatus), [closingStatus]);
 
   useEffect(() => {
     if (!allocationWarning) {
@@ -239,7 +241,7 @@ export const NewOrderPage = ({ channel }: NewOrderPageProps) => {
       toast({
         status: "warning",
         title: "Order taking is locked",
-        description: closingStatus.reason || "Complete required closing before taking new orders."
+        description: closingLockMessage || "Complete required closing before taking new orders."
       });
       return;
     }
@@ -275,6 +277,7 @@ export const NewOrderPage = ({ channel }: NewOrderPageProps) => {
   }, [
     catalog,
     clearOrder,
+    closingLockMessage,
     closingStatus,
     currentOrder.orderChannel,
     currentOrder.orderType,
@@ -473,11 +476,11 @@ export const NewOrderPage = ({ channel }: NewOrderPageProps) => {
         borderRadius="12px"
         bg="white"
         justify="space-between"
-        align="center"
+        align={{ base: "stretch", md: "flex-start" }}
         flexWrap="wrap"
         gap={3}
       >
-        <HStack spacing={4} align="center" flexWrap="wrap">
+        <HStack spacing={4} align="center" flexWrap="wrap" flex="1" minW={{ base: "full", md: "380px" }}>
           <Text fontWeight={700}>Order Type:</Text>
           {currentOrder.orderType === "snooker" ? (
             <Box
@@ -532,23 +535,37 @@ export const NewOrderPage = ({ channel }: NewOrderPageProps) => {
             </>
           )}
         </HStack>
-        <VStack align={{ base: "start", md: "end" }} spacing={0} w={{ base: "full", md: "auto" }}>
-          <Button size="xs" variant="outline" mb={1} isLoading={isRefreshingStock} onClick={() => void handleRefreshStock()}>
-            Refresh Stock
-          </Button>
-          <Text color="#6D584E" fontSize="sm">
+        <VStack
+          align={{ base: "start", md: "end" }}
+          spacing={1}
+          w={{ base: "full", md: "auto" }}
+          minW={{ base: "full", md: "320px" }}
+          flexShrink={0}
+        >
+          <HStack w="full" justify={{ base: "flex-start", md: "flex-end" }}>
+            <Button size="xs" variant="outline" isLoading={isRefreshingStock} onClick={() => void handleRefreshStock()}>
+              Refresh Stock
+            </Button>
+          </HStack>
+          <Text color="#6D584E" fontSize="sm" textAlign={{ base: "left", md: "right" }}>
             Invoice: {currentOrder.invoiceNumber}
           </Text>
           {isPunchedIn !== true ? (
-            <Text fontSize="xs" color="#B91C1C" fontWeight={700}>
+            <Text fontSize="xs" color="#B91C1C" fontWeight={700} textAlign={{ base: "left", md: "right" }}>
               {isPunchedIn === false
-                ? "Punch in required to take orders"
-                : "Attendance status not verified. Refresh Attendance"}
+                ? "Punch in from Attendance to start billing."
+                : "Attendance status is not verified. Refresh Attendance."}
             </Text>
           ) : null}
-          {closingStatus && !closingStatus.canTakeOrders ? (
-            <Text fontSize="xs" color="#B91C1C" fontWeight={700}>
-              {closingStatus.reason}
+          {closingLockMessage ? (
+            <Text
+              fontSize="xs"
+              color="#B91C1C"
+              fontWeight={700}
+              maxW="560px"
+              textAlign={{ base: "left", md: "right" }}
+            >
+              {closingLockMessage}
             </Text>
           ) : null}
         </VStack>

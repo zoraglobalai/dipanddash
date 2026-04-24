@@ -1,4 +1,5 @@
 import {
+  Box,
   Grid,
   HStack,
   Select,
@@ -178,11 +179,30 @@ export const ReportsPage = () => {
     return reportData.columns.map((column) => ({
       key: column.key,
       header: column.label,
-      render: (row: ReportRow) => (
-        <Text>{formatCellValue(column.key, row[column.key] ?? null)}</Text>
-      )
+      render: (row: ReportRow) => {
+        if (selectedReportKey === "gaming_report" && column.key === "overnightSession") {
+          const raw = String(row[column.key] ?? "");
+          const isOvernight = raw.toLowerCase().startsWith("yes");
+          return (
+            <Box
+              px={3}
+              py={1}
+              borderRadius="full"
+              fontSize="xs"
+              fontWeight={700}
+              bg={isOvernight ? "red.100" : "green.100"}
+              color={isOvernight ? "red.700" : "green.700"}
+              w="fit-content"
+            >
+              {raw || "No"}
+            </Box>
+          );
+        }
+
+        return <Text>{formatCellValue(column.key, row[column.key] ?? null)}</Text>;
+      }
     }));
-  }, [reportData?.columns]);
+  }, [reportData?.columns, selectedReportKey]);
 
   const reportOptions = useMemo(
     () =>

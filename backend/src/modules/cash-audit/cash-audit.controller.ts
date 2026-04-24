@@ -46,6 +46,16 @@ export class CashAuditController {
     return sendSuccess(res, StatusCodes.OK, "Cash audit stats fetched successfully.", data);
   };
 
+  updateAdminRecord = async (req: Request, res: Response): Promise<Response> => {
+    const record = await this.cashAuditService.updateAdminRecord(req.params.id, req.body);
+    return sendSuccess(res, StatusCodes.OK, "Cash audit record updated successfully.", { record });
+  };
+
+  deleteAdminRecord = async (req: Request, res: Response): Promise<Response> => {
+    const deletedRecord = await this.cashAuditService.deleteAdminRecord(req.params.id);
+    return sendSuccess(res, StatusCodes.OK, "Cash audit record deleted successfully.", { deletedRecord });
+  };
+
   getStaffLastAuditInfo = async (_req: Request, res: Response): Promise<Response> => {
     const data = await this.cashAuditService.getStaffLastAuditInfo();
     return sendSuccess(res, StatusCodes.OK, "Last cash audit status fetched successfully.", data);

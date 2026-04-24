@@ -53,6 +53,10 @@ export const getLatestIngredientPurchasePriceMap = async (
     }
 
     const lineTotal = toNumber(row.lineTotal);
+    if (lineTotal <= 0) {
+      // Ignore zero/negative priced rows and keep searching older valid purchase cost.
+      continue;
+    }
     latestPriceMap.set(ingredientId, toFixed(lineTotal / stockAdded, 3));
   }
 
@@ -118,4 +122,3 @@ export const getIngredientValuationMapFromCurrentStock = async (input: {
 
   return valuationMap;
 };
-

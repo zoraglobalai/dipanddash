@@ -19,6 +19,13 @@ type CreateCashAuditEntryInput = {
   adminPassword?: string;
 };
 
+type UpdateAdminRecordInput = {
+  auditDate?: string;
+  denominationCounts?: Record<string, number>;
+  staffCashTakenAmount?: number;
+  note?: string | null;
+};
+
 type CashAuditSection = "dip_and_dash" | "gaming";
 
 type AdminListFilters = {
@@ -127,6 +134,22 @@ const normalizeText = (value: string | undefined | null) => {
   return trimmed ? trimmed : null;
 };
 
+const buildFinalNote = (baseNote: string | null, excessAmount: number) => {
+  if (excessAmount <= 0) {
+    return baseNote;
+  }
+
+  const excessPrefix = `Excess Amount: ${excessAmount.toFixed(2)}`;
+  const hasPrefix = baseNote ? baseNote.toLowerCase().includes("excess amount") : false;
+  const finalNote = hasPrefix ? baseNote : [excessPrefix, baseNote].filter(Boolean).join(" | ");
+
+  if (finalNote && finalNote.length > 500) {
+    throw new AppError(422, "Note is too long.");
+  }
+
+  return finalNote;
+};
+
 const parseAuditDateOrThrow = (value: string | undefined) => {
   const resolved = value ?? todayDateString();
   const parsed = new Date(`${resolved}T00:00:00.000Z`);
@@ -154,6 +177,22 @@ export class CashAuditService {
   private readonly invoiceRepository = AppDataSource.getRepository(Invoice);
   private readonly invoicePaymentRepository = AppDataSource.getRepository(InvoicePayment);
   private readonly gamingBookingRepository = AppDataSource.getRepository(GamingBooking);
+
+  private async getAuditRecordOrFail(id: string) {
+    const record = await this.cashAuditRepository.findOne({
+      where: { id },
+      relations: {
+        createdByUser: true,
+        approvedByAdmin: true
+      }
+    });
+
+    if (!record) {
+      throw new AppError(404, "Cash audit record not found.");
+    }
+
+    return record;
+  }
 
   private async isCashAuditStorageReady() {
     if (!AppDataSource.isInitialized || !AppDataSource.hasMetadata(CashAudit)) {
@@ -493,17 +532,7 @@ export class CashAuditService {
     });
 
     const normalizedNote = normalizeText(payload.note);
-
-    let finalNote = normalizedNote;
-    if (enriched.excessAmount > 0) {
-      const excessPrefix = `Excess Amount: ${enriched.excessAmount.toFixed(2)}`;
-      const hasPrefix = normalizedNote ? normalizedNote.toLowerCase().includes("excess amount") : false;
-      finalNote = hasPrefix ? normalizedNote : [excessPrefix, normalizedNote].filter(Boolean).join(" | ");
-    }
-
-    if (finalNote && finalNote.length > 500) {
-      throw new AppError(422, "Note is too long.");
-    }
+    const finalNote = buildFinalNote(normalizedNote, enriched.excessAmount);
 
     const entry = this.cashAuditRepository.create({
       auditDate,
@@ -545,6 +574,90 @@ export class CashAuditService {
       : toFixedAmount(toNumber(hydrated.countedAmount));
 
     return this.mapRecord(hydrated, differenceFromPrevious);
+  }
+
+  async updateAdminRecord(id: string, payload: UpdateAdminRecordInput) {
+    const storageReady = await this.isCashAuditStorageReady();
+    if (!storageReady) {
+      throw new AppError(
+        503,
+        "Cash audit storage is not initialized yet. Please restart backend and run database sync/migration."
+      );
+    }
+
+    const record = await this.getAuditRecordOrFail(id);
+    const nextAuditDate = parseAuditDateOrThrow(payload.auditDate ?? record.auditDate);
+    const denominationCounts = payload.denominationCounts
+      ? this.normalizeDenominationCounts(payload.denominationCounts)
+      : this.normalizeDenominationCounts(record.denominationCounts ?? {});
+    const countedAmount = this.calculateCountedAmount(denominationCounts);
+    const staffCashTakenAmount =
+      payload.staffCashTakenAmount !== undefined
+        ? toFixedAmount(toNumber(payload.staffCashTakenAmount))
+        : toFixedAmount(toNumber(record.staffCashTakenAmount));
+
+    const section = resolveActorSection(record.createdByUser?.role ?? UserRole.STAFF);
+    const expected = await this.getExpectedBreakdownForSectionDate(section, nextAuditDate);
+    const enteredCardAmount = toFixedAmount(expected.card);
+    const enteredUpiAmount = toFixedAmount(expected.upi);
+    const enriched = this.buildEnrichedRecordValues({
+      countedAmount,
+      staffCashTakenAmount,
+      enteredCardAmount,
+      enteredUpiAmount,
+      expectedCashAmount: expected.cash,
+      expectedCardAmount: expected.card,
+      expectedUpiAmount: expected.upi
+    });
+
+    const normalizedNote =
+      payload.note === undefined ? normalizeText(record.note) : normalizeText(payload.note);
+    const finalNote = buildFinalNote(normalizedNote, enriched.excessAmount);
+
+    record.auditDate = nextAuditDate;
+    record.denominationCounts = denominationCounts;
+    record.countedAmount = countedAmount;
+    record.staffCashTakenAmount = staffCashTakenAmount;
+    record.enteredCardAmount = enteredCardAmount;
+    record.enteredUpiAmount = enteredUpiAmount;
+    record.expectedCashAmount = expected.cash;
+    record.expectedCardAmount = expected.card;
+    record.expectedUpiAmount = expected.upi;
+    record.note = finalNote;
+
+    const saved = await this.cashAuditRepository.save(record);
+
+    const previousRecord = await this.cashAuditRepository
+      .createQueryBuilder("cashAudit")
+      .where("cashAudit.createdAt < :createdAt", { createdAt: saved.createdAt })
+      .orderBy("cashAudit.createdAt", "DESC")
+      .getOne();
+
+    const previousAmount = previousRecord ? toNumber(previousRecord.countedAmount) : 0;
+    const differenceFromPrevious = previousRecord
+      ? toFixedAmount(toNumber(saved.countedAmount) - previousAmount)
+      : toFixedAmount(toNumber(saved.countedAmount));
+
+    return this.mapRecord(saved, differenceFromPrevious);
+  }
+
+  async deleteAdminRecord(id: string) {
+    const storageReady = await this.isCashAuditStorageReady();
+    if (!storageReady) {
+      throw new AppError(
+        503,
+        "Cash audit storage is not initialized yet. Please restart backend and run database sync/migration."
+      );
+    }
+
+    const record = await this.getAuditRecordOrFail(id);
+    await this.cashAuditRepository.remove(record);
+
+    return {
+      id: record.id,
+      auditDate: record.auditDate,
+      deletedAt: new Date().toISOString()
+    };
   }
 
   async listAdminRecords(filters: AdminListFilters) {

@@ -7,8 +7,10 @@ import { authorizeAnyModuleAccess, authorizeModuleAccess } from "../../middlewar
 import { validateRequest } from "../../middlewares/validate.middleware";
 import { CashAuditController } from "./cash-audit.controller";
 import {
+  cashAuditAdminDeleteSchema,
   cashAuditAdminListSchema,
   cashAuditAdminStatsSchema,
+  cashAuditAdminUpdateSchema,
   cashAuditStaffExpectedSchema,
   cashAuditStaffLastSchema,
   createCashAuditEntrySchema
@@ -46,6 +48,22 @@ router.get(
   authorizeModuleAccess("cash-audit"),
   validateRequest(cashAuditAdminListSchema),
   asyncHandler(cashAuditController.listAdminRecords)
+);
+
+router.patch(
+  "/admin/records/:id",
+  authorizeRoles(UserRole.ADMIN),
+  authorizeModuleAccess("cash-audit"),
+  validateRequest(cashAuditAdminUpdateSchema),
+  asyncHandler(cashAuditController.updateAdminRecord)
+);
+
+router.delete(
+  "/admin/records/:id",
+  authorizeRoles(UserRole.ADMIN),
+  authorizeModuleAccess("cash-audit"),
+  validateRequest(cashAuditAdminDeleteSchema),
+  asyncHandler(cashAuditController.deleteAdminRecord)
 );
 
 router.get(

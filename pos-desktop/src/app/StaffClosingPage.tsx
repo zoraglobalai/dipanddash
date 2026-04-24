@@ -19,6 +19,7 @@ import { PosDataTable, type PosTableColumn } from "@/components/common/PosDataTa
 import { closingService } from "@/services/closing.service";
 import type { ClosingReportSummary } from "@/types/pos";
 import { extractApiErrorMessage } from "@/utils/api-error";
+import { formatPendingCloseDate, getClosingLockMessage } from "@/utils/closing-lock-message";
 import { formatQuantityWithUnit } from "@/utils/quantity";
 
 export const StaffClosingPage = () => {
@@ -37,6 +38,8 @@ export const StaffClosingPage = () => {
   const [historyTotalPages, setHistoryTotalPages] = useState(1);
 
   const pendingCloseDate = closingStatus?.pendingCloseDate ?? null;
+  const pendingCloseDateLabel = useMemo(() => formatPendingCloseDate(pendingCloseDate), [pendingCloseDate]);
+  const closingLockMessage = useMemo(() => getClosingLockMessage(closingStatus), [closingStatus]);
   const todayDate = useMemo(() => {
     const now = new Date();
     const year = now.getFullYear();
@@ -255,7 +258,7 @@ export const StaffClosingPage = () => {
             Pending Close Date
           </Text>
           <Text mt={1} fontWeight={900} fontSize="xl">
-            {pendingCloseDate ?? "None"}
+            {pendingCloseDateLabel ?? "None"}
           </Text>
         </Box>
         <Box p={4} bg="white" borderRadius="14px" border="1px solid rgba(132, 79, 52, 0.2)">
@@ -334,10 +337,10 @@ export const StaffClosingPage = () => {
           </SimpleGrid>
         </HStack>
 
-        {!closingStatus?.canTakeOrders && closingStatus?.reason ? (
+        {closingLockMessage ? (
           <Box mb={3} px={3} py={2.5} borderRadius="10px" bg="red.50" border="1px solid" borderColor="red.200">
             <Text color="red.700" fontWeight={700} fontSize="sm">
-              {closingStatus.reason}
+              {closingLockMessage}
             </Text>
           </Box>
         ) : null}
@@ -412,7 +415,7 @@ export const StaffClosingPage = () => {
               isLoading={isSubmitting}
               onClick={() => void handleSubmit()}
             >
-              Submit Closing ({pendingCloseDate ?? "No pending date"})
+              Submit Closing ({pendingCloseDateLabel ?? "No pending date"})
             </Button>
             {!canSubmitWithShift ? (
               <Text fontSize="xs" color="#7A6258">

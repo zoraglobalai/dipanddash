@@ -48,6 +48,29 @@ export const cashAuditAdminStatsSchema = z.object({
   })
 });
 
+export const cashAuditAdminUpdateSchema = z.object({
+  params: z.object({
+    id: z.string().uuid("Invalid cash audit id")
+  }),
+  body: z
+    .object({
+      auditDate: z.string().regex(datePattern, "Date must be in YYYY-MM-DD format").optional(),
+      denominationCounts: denominationCountsSchema.optional(),
+      staffCashTakenAmount: z.coerce.number().min(0, "Staff cash taken cannot be negative").optional(),
+      note: z.string().trim().max(500, "Note is too long").nullable().optional()
+    })
+    .refine((value) => Object.keys(value).length > 0, "At least one field must be provided"),
+  query: z.object({}).optional()
+});
+
+export const cashAuditAdminDeleteSchema = z.object({
+  params: z.object({
+    id: z.string().uuid("Invalid cash audit id")
+  }),
+  body: z.object({}).optional(),
+  query: z.object({}).optional()
+});
+
 export const cashAuditStaffLastSchema = z.object({
   query: z.object({}).optional()
 });
