@@ -4,6 +4,7 @@ import { PurchaseOrderLine } from "./purchase-order-line.entity";
 type IngredientPurchaseRow = {
   ingredientId: string;
   stockAdded: string;
+  unitPrice: string;
   lineTotal: string;
 };
 
@@ -24,6 +25,7 @@ const getIngredientPurchaseRows = async (ingredientIds: string[]) => {
     .leftJoin("line.purchaseOrder", "purchaseOrder")
     .select("line.ingredientId", "ingredientId")
     .addSelect("line.stockAdded", "stockAdded")
+    .addSelect("line.unitPrice", "unitPrice")
     .addSelect("line.lineTotal", "lineTotal")
     .where("line.lineType = :lineType", { lineType: "ingredient" })
     .andWhere("line.ingredientId IN (:...ingredientIds)", { ingredientIds })
@@ -53,11 +55,14 @@ export const getLatestIngredientPurchasePriceMap = async (
     }
 
     const lineTotal = toNumber(row.lineTotal);
-    if (lineTotal <= 0) {
+    const unitPrice = toNumber(row.unitPrice);
+    const resolvedPrice =
+      lineTotal > 0 ? toFixed(lineTotal / stockAdded, 3) : unitPrice > 0 ? toFixed(unitPrice, 3) : 0;
+    if (resolvedPrice <= 0) {
       // Ignore zero/negative priced rows and keep searching older valid purchase cost.
       continue;
     }
-    latestPriceMap.set(ingredientId, toFixed(lineTotal / stockAdded, 3));
+    latestPriceMap.set(ingredientId, resolvedPrice);
   }
 
   for (const ingredientId of ingredientIds) {

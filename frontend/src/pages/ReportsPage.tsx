@@ -106,6 +106,7 @@ export const ReportsPage = () => {
     [catalog, selectedReportKey]
   );
   const isStockConsumptionReport = selectedReportKey === "stock_consumption_report";
+  const isSnookerStockSnapshotReport = selectedReportKey === "stock_report_snooker";
 
   const fetchCatalog = useCallback(async () => {
     setLoading(true);
@@ -171,6 +172,15 @@ export const ReportsPage = () => {
     void loadReport(page, limit, search);
   }, [hasGenerated, limit, loadReport, page, search]);
 
+  useEffect(() => {
+    if (!isSnookerStockSnapshotReport) {
+      return;
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    setDateFrom(today);
+    setDateTo(today);
+  }, [isSnookerStockSnapshotReport]);
+
   const tableColumns = useMemo(() => {
     if (!reportData?.columns.length) {
       return [];
@@ -195,6 +205,30 @@ export const ReportsPage = () => {
               w="fit-content"
             >
               {raw || "No"}
+            </Box>
+          );
+        }
+
+        if (selectedReportKey === "stock_report_snooker" && column.key === "expiryAlert") {
+          const raw = String(row[column.key] ?? "").trim() || "-";
+          const lowered = raw.toLowerCase();
+          const isExpired = lowered === "expired";
+          const isExpiringSoon = lowered === "expiring soon";
+          const bg = isExpired ? "red.100" : isExpiringSoon ? "orange.100" : "green.100";
+          const color = isExpired ? "red.700" : isExpiringSoon ? "orange.700" : "green.700";
+
+          return (
+            <Box
+              px={3}
+              py={1}
+              borderRadius="full"
+              fontSize="xs"
+              fontWeight={700}
+              bg={bg}
+              color={color}
+              w="fit-content"
+            >
+              {raw}
             </Box>
           );
         }
@@ -386,12 +420,14 @@ export const ReportsPage = () => {
               label="Date From"
               type="date"
               value={dateFrom}
+              isDisabled={isSnookerStockSnapshotReport}
               onChange={(event) => setDateFrom((event.target as HTMLInputElement).value)}
             />
             <AppInput
               label="Date To"
               type="date"
               value={dateTo}
+              isDisabled={isSnookerStockSnapshotReport}
               onChange={(event) => setDateTo((event.target as HTMLInputElement).value)}
             />
             <AppInput

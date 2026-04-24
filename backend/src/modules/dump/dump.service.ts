@@ -30,6 +30,8 @@ type CreateDumpEntryInput = {
   note?: string;
 };
 
+type UpdateDumpEntryInput = CreateDumpEntryInput;
+
 type DumpAdminListFilters = {
   dateFrom?: string;
   dateTo?: string;
@@ -50,6 +52,9 @@ type DumpRecordDto = {
   id: string;
   entryDate: string;
   entryType: DumpEntryType;
+  ingredientId: string | null;
+  itemId: string | null;
+  productId: string | null;
   sourceName: string;
   quantity: number;
   unit: string;
@@ -261,6 +266,9 @@ export class DumpService {
       id: entry.id,
       entryDate: entry.entryDate,
       entryType: entry.entryType,
+      ingredientId: entry.ingredientId,
+      itemId: entry.itemId,
+      productId: entry.productId,
       sourceName: entry.sourceName,
       quantity: toQuantity(toNumber(entry.quantity)),
       unit: normalizeUnit(entry.unit),
@@ -386,221 +394,301 @@ export class DumpService {
     };
   }
 
+  private assertAdminOnly(actor: DumpUserContext) {
+    if (actor.role !== UserRole.ADMIN) {
+      throw new AppError(403, "Only admin can edit or delete dump entries.");
+    }
+  }
+
+  private async applyEntryImpact(
+    manager: EntityManager,
+    payload: Pick<CreateDumpEntryInput, "entryType" | "sourceId" | "quantity" | "quantityUnit">
+  ) {
+    const enteredQuantity = toQuantity(toNumber(payload.quantity));
+    if (enteredQuantity <= 0) {
+      throw new AppError(422, "Quantity must be greater than zero.");
+    }
+
+    let sourceName = "";
+    let unit = "";
+    let baseQuantity = enteredQuantity;
+    let baseUnit = "";
+    let lossAmount = 0;
+    let ingredientImpacts: DumpIngredientImpact[] = [];
+    let ingredientId: string | null = null;
+    let itemId: string | null = null;
+    let productId: string | null = null;
+
+    if (payload.entryType === "ingredient") {
+      const ingredient = await manager.findOne(Ingredient, {
+        where: { id: payload.sourceId, isActive: true }
+      });
+      if (!ingredient) {
+        throw new AppError(404, "Ingredient not found.");
+      }
+
+      baseUnit = normalizeUnit(ingredient.unit);
+      const enteredUnit = normalizeUnit(payload.quantityUnit) || baseUnit;
+      const allowedUnits = resolveUnitOptions(baseUnit);
+      if (!allowedUnits.includes(enteredUnit)) {
+        throw new AppError(422, `Selected quantity unit is not valid for ${ingredient.name}.`);
+      }
+      const convertedBaseQuantity = convertQuantityUnit(enteredQuantity, enteredUnit, baseUnit);
+      if (convertedBaseQuantity === null || convertedBaseQuantity <= 0) {
+        throw new AppError(422, "Unable to convert entered quantity to ingredient base unit.");
+      }
+
+      const stock = await this.getOrCreateIngredientStock(manager, ingredient.id);
+      const currentStock = toQuantity(toNumber(stock.totalStock));
+      this.assertHasStockOrThrow(currentStock, convertedBaseQuantity, ingredient.name, baseUnit);
+
+      stock.totalStock = toQuantity(currentStock - convertedBaseQuantity);
+      stock.lastUpdatedAt = new Date();
+      await manager.save(IngredientStock, stock);
+      await this.createIngredientStockLog(manager, {
+        ingredientId: ingredient.id,
+        quantity: convertedBaseQuantity,
+        note: `Dump/Wastage deduction (${enteredQuantity} ${enteredUnit} => ${convertedBaseQuantity} ${baseUnit})`
+      });
+
+      const ingredientFallbackPriceMap = new Map([[ingredient.id, toNumber(ingredient.perUnitPrice)]]);
+      const latestIngredientPriceMap = await getLatestIngredientPurchasePriceMap([ingredient.id], ingredientFallbackPriceMap);
+      const unitPrice = toMoney(
+        toNumber(latestIngredientPriceMap.get(ingredient.id) ?? ingredientFallbackPriceMap.get(ingredient.id) ?? 0)
+      );
+      const impactLoss = toMoney(convertedBaseQuantity * unitPrice);
+      ingredientImpacts = [
+        {
+          ingredientId: ingredient.id,
+          ingredientName: ingredient.name,
+          quantity: convertedBaseQuantity,
+          unit: baseUnit,
+          unitPrice,
+          lossAmount: impactLoss
+        }
+      ];
+
+      sourceName = ingredient.name;
+      unit = enteredUnit;
+      baseQuantity = convertedBaseQuantity;
+      lossAmount = impactLoss;
+      ingredientId = ingredient.id;
+    }
+
+    if (payload.entryType === "item") {
+      const item = await manager.findOne(Item, { where: { id: payload.sourceId, isActive: true } });
+      if (!item) {
+        throw new AppError(404, "Item not found.");
+      }
+
+      baseUnit = "item";
+      const enteredUnit = normalizeUnit(payload.quantityUnit) || "item";
+      if (enteredUnit !== "item") {
+        throw new AppError(422, "Item wastage quantity unit must be in item count.");
+      }
+
+      const recipes = await manager.find(ItemIngredient, {
+        where: { itemId: item.id },
+        relations: { ingredient: true }
+      });
+      if (!recipes.length) {
+        throw new AppError(422, "This item has no ingredient recipe mapping.");
+      }
+
+      const planned = [];
+      for (const recipe of recipes) {
+        const ingredient = recipe.ingredient;
+        if (!ingredient?.id || !ingredient.isActive) {
+          continue;
+        }
+        const requiredQuantity = toQuantity(toNumber(recipe.normalizedQuantity) * enteredQuantity);
+        if (requiredQuantity <= 0) {
+          continue;
+        }
+        const stock = await this.getOrCreateIngredientStock(manager, ingredient.id);
+        planned.push({ ingredient, stock, requiredQuantity });
+      }
+
+      if (!planned.length) {
+        throw new AppError(422, "No active ingredient recipe rows found for this item.");
+      }
+
+      const plannedIngredientIds = planned.map((row) => row.ingredient.id);
+      const itemFallbackPriceMap = new Map(planned.map((row) => [row.ingredient.id, toNumber(row.ingredient.perUnitPrice)]));
+      const latestIngredientPriceMap = await getLatestIngredientPurchasePriceMap(plannedIngredientIds, itemFallbackPriceMap);
+
+      for (const row of planned) {
+        const currentStock = toQuantity(toNumber(row.stock.totalStock));
+        this.assertHasStockOrThrow(currentStock, row.requiredQuantity, row.ingredient.name, normalizeUnit(row.ingredient.unit));
+      }
+
+      let runningLoss = 0;
+      const impacts: DumpIngredientImpact[] = [];
+      for (const row of planned) {
+        const ingredientBaseUnit = normalizeUnit(row.ingredient.unit);
+        const currentStock = toQuantity(toNumber(row.stock.totalStock));
+        row.stock.totalStock = toQuantity(currentStock - row.requiredQuantity);
+        row.stock.lastUpdatedAt = new Date();
+        await manager.save(IngredientStock, row.stock);
+        await this.createIngredientStockLog(manager, {
+          ingredientId: row.ingredient.id,
+          quantity: row.requiredQuantity,
+          note: `Dump/Wastage from item ${item.name} (${enteredQuantity} item)`
+        });
+
+        const unitPrice = toMoney(
+          toNumber(latestIngredientPriceMap.get(row.ingredient.id) ?? itemFallbackPriceMap.get(row.ingredient.id) ?? 0)
+        );
+        const ingredientLoss = toMoney(row.requiredQuantity * unitPrice);
+        runningLoss = toMoney(runningLoss + ingredientLoss);
+        impacts.push({
+          ingredientId: row.ingredient.id,
+          ingredientName: row.ingredient.name,
+          quantity: row.requiredQuantity,
+          unit: ingredientBaseUnit,
+          unitPrice,
+          lossAmount: ingredientLoss
+        });
+      }
+
+      sourceName = item.name;
+      unit = "item";
+      baseQuantity = enteredQuantity;
+      lossAmount = runningLoss;
+      ingredientImpacts = impacts;
+      itemId = item.id;
+    }
+
+    if (payload.entryType === "product") {
+      const product = await manager.findOne(Product, { where: { id: payload.sourceId, isActive: true } });
+      if (!product) {
+        throw new AppError(404, "Product not found.");
+      }
+
+      baseUnit = normalizeUnit(product.unit);
+      const enteredUnit = normalizeUnit(payload.quantityUnit) || baseUnit;
+      const allowedUnits = resolveUnitOptions(baseUnit);
+      if (!allowedUnits.includes(enteredUnit)) {
+        throw new AppError(422, `Selected quantity unit is not valid for ${product.name}.`);
+      }
+
+      const convertedBaseQuantity = convertQuantityUnit(enteredQuantity, enteredUnit, baseUnit);
+      if (convertedBaseQuantity === null || convertedBaseQuantity <= 0) {
+        throw new AppError(422, "Unable to convert entered quantity to product base unit.");
+      }
+
+      const currentStock = toQuantity(toNumber(product.currentStock));
+      this.assertHasStockOrThrow(currentStock, convertedBaseQuantity, product.name, baseUnit);
+      product.currentStock = toQuantity(currentStock - convertedBaseQuantity);
+      await manager.save(Product, product);
+
+      sourceName = product.name;
+      unit = enteredUnit;
+      baseQuantity = convertedBaseQuantity;
+      lossAmount = toMoney(convertedBaseQuantity * toNumber(product.purchaseUnitPrice));
+      productId = product.id;
+    }
+
+    return {
+      sourceName,
+      unit,
+      enteredQuantity,
+      baseQuantity,
+      baseUnit,
+      lossAmount,
+      ingredientImpacts,
+      ingredientId,
+      itemId,
+      productId
+    };
+  }
+
+  private async reverseEntryImpact(manager: EntityManager, entry: DumpEntry, reason: "edit" | "delete") {
+    const sourceLabel = `${entry.sourceName} (${entry.entryType})`;
+    if (entry.entryType === "ingredient") {
+      if (!entry.ingredientId) {
+        throw new AppError(409, "Ingredient reference is missing for this dump entry.");
+      }
+      const ingredient = await manager.findOne(Ingredient, { where: { id: entry.ingredientId } });
+      if (!ingredient) {
+        throw new AppError(409, `Cannot restock deleted ingredient for ${sourceLabel}.`);
+      }
+
+      const stock = await this.getOrCreateIngredientStock(manager, ingredient.id);
+      const currentStock = toQuantity(toNumber(stock.totalStock));
+      const restoreQuantity = toQuantity(toNumber(entry.baseQuantity));
+      stock.totalStock = toQuantity(currentStock + restoreQuantity);
+      stock.lastUpdatedAt = new Date();
+      await manager.save(IngredientStock, stock);
+      await this.createIngredientStockLog(manager, {
+        ingredientId: ingredient.id,
+        quantity: restoreQuantity,
+        note: `Dump/Wastage restock on ${reason} (${sourceLabel})`
+      });
+      return;
+    }
+
+    if (entry.entryType === "item") {
+      const impacts = this.normalizeIngredientImpacts(entry.ingredientImpacts);
+      if (!impacts.length) {
+        throw new AppError(409, `Ingredient impact rows are missing for ${sourceLabel}.`);
+      }
+
+      for (const impact of impacts) {
+        const ingredient = await manager.findOne(Ingredient, { where: { id: impact.ingredientId } });
+        if (!ingredient) {
+          throw new AppError(409, `Cannot restock deleted ingredient ${impact.ingredientName}.`);
+        }
+        const stock = await this.getOrCreateIngredientStock(manager, ingredient.id);
+        const currentStock = toQuantity(toNumber(stock.totalStock));
+        const restoreQuantity = toQuantity(toNumber(impact.quantity));
+        stock.totalStock = toQuantity(currentStock + restoreQuantity);
+        stock.lastUpdatedAt = new Date();
+        await manager.save(IngredientStock, stock);
+        await this.createIngredientStockLog(manager, {
+          ingredientId: ingredient.id,
+          quantity: restoreQuantity,
+          note: `Dump/Wastage restock on ${reason} (${sourceLabel})`
+        });
+      }
+      return;
+    }
+
+    if (!entry.productId) {
+      throw new AppError(409, "Product reference is missing for this dump entry.");
+    }
+    const product = await manager.findOne(Product, { where: { id: entry.productId } });
+    if (!product) {
+      throw new AppError(409, `Cannot restock deleted product for ${sourceLabel}.`);
+    }
+    const restoreQuantity = toQuantity(toNumber(entry.baseQuantity));
+    const currentStock = toQuantity(toNumber(product.currentStock));
+    product.currentStock = toQuantity(currentStock + restoreQuantity);
+    await manager.save(Product, product);
+  }
+
   async createEntry(actor: DumpUserContext, payload: CreateDumpEntryInput) {
     if (![UserRole.ADMIN, UserRole.STAFF].includes(actor.role)) {
       throw new AppError(403, "Only Dip & Dash staff/admin can submit dump entry.");
     }
 
     const entryDate = parseEntryDateOrThrow(payload.entryDate);
-    const enteredQuantity = toQuantity(toNumber(payload.quantity));
-    if (enteredQuantity <= 0) {
-      throw new AppError(422, "Quantity must be greater than zero.");
-    }
-
     const savedId = await AppDataSource.transaction(async (manager) => {
-      let sourceName = "";
-      let unit = "";
-      let baseQuantity = enteredQuantity;
-      let baseUnit = "";
-      let lossAmount = 0;
-      let ingredientImpacts: DumpIngredientImpact[] = [];
-      let ingredientId: string | null = null;
-      let itemId: string | null = null;
-      let productId: string | null = null;
-
-      if (payload.entryType === "ingredient") {
-        const ingredient = await manager.findOne(Ingredient, {
-          where: { id: payload.sourceId, isActive: true }
-        });
-        if (!ingredient) {
-          throw new AppError(404, "Ingredient not found.");
-        }
-
-        baseUnit = normalizeUnit(ingredient.unit);
-        const enteredUnit = normalizeUnit(payload.quantityUnit) || baseUnit;
-        const allowedUnits = resolveUnitOptions(baseUnit);
-        if (!allowedUnits.includes(enteredUnit)) {
-          throw new AppError(422, `Selected quantity unit is not valid for ${ingredient.name}.`);
-        }
-        const convertedBaseQuantity = convertQuantityUnit(enteredQuantity, enteredUnit, baseUnit);
-        if (convertedBaseQuantity === null || convertedBaseQuantity <= 0) {
-          throw new AppError(422, "Unable to convert entered quantity to ingredient base unit.");
-        }
-
-        const stock = await this.getOrCreateIngredientStock(manager, ingredient.id);
-        const currentStock = toQuantity(toNumber(stock.totalStock));
-        this.assertHasStockOrThrow(currentStock, convertedBaseQuantity, ingredient.name, baseUnit);
-
-        stock.totalStock = toQuantity(currentStock - convertedBaseQuantity);
-        stock.lastUpdatedAt = new Date();
-        await manager.save(IngredientStock, stock);
-        await this.createIngredientStockLog(manager, {
-          ingredientId: ingredient.id,
-          quantity: convertedBaseQuantity,
-          note: `Dump/Wastage deduction (${enteredQuantity} ${enteredUnit} => ${convertedBaseQuantity} ${baseUnit})`
-        });
-
-        const ingredientFallbackPriceMap = new Map([[ingredient.id, toNumber(ingredient.perUnitPrice)]]);
-        const latestIngredientPriceMap = await getLatestIngredientPurchasePriceMap(
-          [ingredient.id],
-          ingredientFallbackPriceMap
-        );
-        const unitPrice = toMoney(
-          toNumber(latestIngredientPriceMap.get(ingredient.id) ?? ingredientFallbackPriceMap.get(ingredient.id) ?? 0)
-        );
-        const impactLoss = toMoney(convertedBaseQuantity * unitPrice);
-        ingredientImpacts = [
-          {
-            ingredientId: ingredient.id,
-            ingredientName: ingredient.name,
-            quantity: convertedBaseQuantity,
-            unit: baseUnit,
-            unitPrice,
-            lossAmount: impactLoss
-          }
-        ];
-
-        sourceName = ingredient.name;
-        unit = enteredUnit;
-        baseQuantity = convertedBaseQuantity;
-        lossAmount = impactLoss;
-        ingredientId = ingredient.id;
-      }
-
-      if (payload.entryType === "item") {
-        const item = await manager.findOne(Item, { where: { id: payload.sourceId, isActive: true } });
-        if (!item) {
-          throw new AppError(404, "Item not found.");
-        }
-
-        baseUnit = "item";
-        const enteredUnit = normalizeUnit(payload.quantityUnit) || "item";
-        if (enteredUnit !== "item") {
-          throw new AppError(422, "Item wastage quantity unit must be in item count.");
-        }
-
-        const recipes = await manager.find(ItemIngredient, {
-          where: { itemId: item.id },
-          relations: { ingredient: true }
-        });
-        if (!recipes.length) {
-          throw new AppError(422, "This item has no ingredient recipe mapping.");
-        }
-
-        const planned = [];
-        for (const recipe of recipes) {
-          const ingredient = recipe.ingredient;
-          if (!ingredient?.id || !ingredient.isActive) {
-            continue;
-          }
-          const requiredQuantity = toQuantity(toNumber(recipe.normalizedQuantity) * enteredQuantity);
-          if (requiredQuantity <= 0) {
-            continue;
-          }
-          const stock = await this.getOrCreateIngredientStock(manager, ingredient.id);
-          planned.push({ ingredient, stock, requiredQuantity });
-        }
-
-        if (!planned.length) {
-          throw new AppError(422, "No active ingredient recipe rows found for this item.");
-        }
-
-        const plannedIngredientIds = planned.map((row) => row.ingredient.id);
-        const itemFallbackPriceMap = new Map(
-          planned.map((row) => [row.ingredient.id, toNumber(row.ingredient.perUnitPrice)])
-        );
-        const latestIngredientPriceMap = await getLatestIngredientPurchasePriceMap(
-          plannedIngredientIds,
-          itemFallbackPriceMap
-        );
-
-        for (const row of planned) {
-          const currentStock = toQuantity(toNumber(row.stock.totalStock));
-          this.assertHasStockOrThrow(currentStock, row.requiredQuantity, row.ingredient.name, normalizeUnit(row.ingredient.unit));
-        }
-
-        let runningLoss = 0;
-        const impacts: DumpIngredientImpact[] = [];
-        for (const row of planned) {
-          const ingredientBaseUnit = normalizeUnit(row.ingredient.unit);
-          const currentStock = toQuantity(toNumber(row.stock.totalStock));
-          row.stock.totalStock = toQuantity(currentStock - row.requiredQuantity);
-          row.stock.lastUpdatedAt = new Date();
-          await manager.save(IngredientStock, row.stock);
-          await this.createIngredientStockLog(manager, {
-            ingredientId: row.ingredient.id,
-            quantity: row.requiredQuantity,
-            note: `Dump/Wastage from item ${item.name} (${enteredQuantity} item)`
-          });
-
-          const unitPrice = toMoney(
-            toNumber(
-              latestIngredientPriceMap.get(row.ingredient.id) ?? itemFallbackPriceMap.get(row.ingredient.id) ?? 0
-            )
-          );
-          const ingredientLoss = toMoney(row.requiredQuantity * unitPrice);
-          runningLoss = toMoney(runningLoss + ingredientLoss);
-          impacts.push({
-            ingredientId: row.ingredient.id,
-            ingredientName: row.ingredient.name,
-            quantity: row.requiredQuantity,
-            unit: ingredientBaseUnit,
-            unitPrice,
-            lossAmount: ingredientLoss
-          });
-        }
-
-        sourceName = item.name;
-        unit = "item";
-        baseQuantity = enteredQuantity;
-        lossAmount = runningLoss;
-        ingredientImpacts = impacts;
-        itemId = item.id;
-      }
-
-      if (payload.entryType === "product") {
-        const product = await manager.findOne(Product, { where: { id: payload.sourceId, isActive: true } });
-        if (!product) {
-          throw new AppError(404, "Product not found.");
-        }
-
-        baseUnit = normalizeUnit(product.unit);
-        const enteredUnit = normalizeUnit(payload.quantityUnit) || baseUnit;
-        const allowedUnits = resolveUnitOptions(baseUnit);
-        if (!allowedUnits.includes(enteredUnit)) {
-          throw new AppError(422, `Selected quantity unit is not valid for ${product.name}.`);
-        }
-
-        const convertedBaseQuantity = convertQuantityUnit(enteredQuantity, enteredUnit, baseUnit);
-        if (convertedBaseQuantity === null || convertedBaseQuantity <= 0) {
-          throw new AppError(422, "Unable to convert entered quantity to product base unit.");
-        }
-
-        const currentStock = toQuantity(toNumber(product.currentStock));
-        this.assertHasStockOrThrow(currentStock, convertedBaseQuantity, product.name, baseUnit);
-        product.currentStock = toQuantity(currentStock - convertedBaseQuantity);
-        await manager.save(Product, product);
-
-        sourceName = product.name;
-        unit = enteredUnit;
-        baseQuantity = convertedBaseQuantity;
-        lossAmount = toMoney(convertedBaseQuantity * toMoney(toNumber(product.purchaseUnitPrice)));
-        productId = product.id;
-      }
+      const computed = await this.applyEntryImpact(manager, payload);
 
       const entry = manager.create(DumpEntry, {
         entryDate,
         entryType: payload.entryType,
-        ingredientId,
-        itemId,
-        productId,
-        sourceName,
-        quantity: enteredQuantity,
-        unit,
-        baseQuantity,
-        baseUnit,
-        lossAmount,
-        ingredientImpacts,
+        ingredientId: computed.ingredientId,
+        itemId: computed.itemId,
+        productId: computed.productId,
+        sourceName: computed.sourceName,
+        quantity: computed.enteredQuantity,
+        unit: computed.unit,
+        baseQuantity: computed.baseQuantity,
+        baseUnit: computed.baseUnit,
+        lossAmount: computed.lossAmount,
+        ingredientImpacts: computed.ingredientImpacts,
         note: cleanText(payload.note),
         createdByUserId: actor.id
       });
@@ -619,6 +707,63 @@ export class DumpService {
     }
 
     return this.mapRecord(hydrated);
+  }
+
+  async updateAdminEntry(actor: DumpUserContext, entryId: string, payload: UpdateDumpEntryInput) {
+    this.assertAdminOnly(actor);
+    const entryDate = parseEntryDateOrThrow(payload.entryDate);
+
+    const savedId = await AppDataSource.transaction(async (manager) => {
+      const existing = await manager.findOne(DumpEntry, { where: { id: entryId } });
+      if (!existing) {
+        throw new AppError(404, "Dump entry not found.");
+      }
+
+      await this.reverseEntryImpact(manager, existing, "edit");
+      const computed = await this.applyEntryImpact(manager, payload);
+
+      existing.entryDate = entryDate;
+      existing.entryType = payload.entryType;
+      existing.ingredientId = computed.ingredientId;
+      existing.itemId = computed.itemId;
+      existing.productId = computed.productId;
+      existing.sourceName = computed.sourceName;
+      existing.quantity = computed.enteredQuantity;
+      existing.unit = computed.unit;
+      existing.baseQuantity = computed.baseQuantity;
+      existing.baseUnit = computed.baseUnit;
+      existing.lossAmount = computed.lossAmount;
+      existing.ingredientImpacts = computed.ingredientImpacts;
+      existing.note = cleanText(payload.note);
+
+      const saved = await manager.save(DumpEntry, existing);
+      return saved.id;
+    });
+
+    const hydrated = await this.dumpRepository.findOne({
+      where: { id: savedId },
+      relations: { createdByUser: true }
+    });
+    if (!hydrated) {
+      throw new AppError(500, "Dump entry updated but failed to load.");
+    }
+    return this.mapRecord(hydrated);
+  }
+
+  async deleteAdminEntry(actor: DumpUserContext, entryId: string) {
+    this.assertAdminOnly(actor);
+
+    await AppDataSource.transaction(async (manager) => {
+      const existing = await manager.findOne(DumpEntry, { where: { id: entryId } });
+      if (!existing) {
+        throw new AppError(404, "Dump entry not found.");
+      }
+
+      await this.reverseEntryImpact(manager, existing, "delete");
+      await manager.delete(DumpEntry, { id: existing.id });
+    });
+
+    return { id: entryId, deleted: true };
   }
 
   async listAdminRecords(filters: DumpAdminListFilters) {

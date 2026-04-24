@@ -16,6 +16,26 @@ export const createDumpEntrySchema = z.object({
   })
 });
 
+export const updateDumpEntrySchema = z.object({
+  params: z.object({
+    id: z.string().uuid("Invalid dump entry id")
+  }),
+  body: z.object({
+    entryDate: z.string().regex(datePattern, "Date must be in YYYY-MM-DD format").optional(),
+    entryType: entryTypeSchema,
+    sourceId: z.string().uuid("Invalid source id"),
+    quantity: z.coerce.number().positive("Quantity must be greater than zero"),
+    quantityUnit: z.string().trim().min(1).max(24).optional(),
+    note: z.string().trim().max(500, "Note is too long").optional()
+  })
+});
+
+export const deleteDumpEntrySchema = z.object({
+  params: z.object({
+    id: z.string().uuid("Invalid dump entry id")
+  })
+});
+
 export const dumpAdminRecordsSchema = z.object({
   query: z.object({
     dateFrom: z.string().regex(datePattern, "Date must be in YYYY-MM-DD format").optional(),

@@ -13,6 +13,9 @@ export type DumpRecord = {
   id: string;
   entryDate: string;
   entryType: DumpEntryType;
+  ingredientId: string | null;
+  itemId: string | null;
+  productId: string | null;
   sourceName: string;
   quantity: number;
   unit: string;

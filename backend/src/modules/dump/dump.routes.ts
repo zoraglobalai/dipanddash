@@ -6,7 +6,13 @@ import { authenticate, authorizeRoles } from "../../middlewares/auth.middleware"
 import { authorizeAnyModuleAccess, authorizeScopedAdminModuleAccess } from "../../middlewares/module-access.middleware";
 import { validateRequest } from "../../middlewares/validate.middleware";
 import { DumpController } from "./dump.controller";
-import { createDumpEntrySchema, dumpAdminRecordsSchema, dumpAdminStatsSchema } from "./dump.validation";
+import {
+  createDumpEntrySchema,
+  deleteDumpEntrySchema,
+  dumpAdminRecordsSchema,
+  dumpAdminStatsSchema,
+  updateDumpEntrySchema
+} from "./dump.validation";
 
 const router = Router();
 const dumpController = new DumpController();
@@ -25,6 +31,20 @@ router.post(
   authorizeRoles(UserRole.ADMIN, UserRole.STAFF),
   validateRequest(createDumpEntrySchema),
   asyncHandler(dumpController.createEntry)
+);
+
+router.patch(
+  "/admin/records/:id",
+  authorizeRoles(UserRole.ADMIN),
+  validateRequest(updateDumpEntrySchema),
+  asyncHandler(dumpController.updateAdminEntry)
+);
+
+router.delete(
+  "/admin/records/:id",
+  authorizeRoles(UserRole.ADMIN),
+  validateRequest(deleteDumpEntrySchema),
+  asyncHandler(dumpController.deleteAdminEntry)
 );
 
 router.get(

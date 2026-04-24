@@ -1,6 +1,7 @@
 export const REPORT_KEYS = [
   "daily_sales_report",
   "product_wise_sales_report",
+  "product_wise_sales_report_snooker",
   "payment_method_report",
   "discount_report",
   "cancelled_void_report",
@@ -9,6 +10,7 @@ export const REPORT_KEYS = [
   "purchase_report",
   "supplier_wise_report",
   "stock_report",
+  "stock_report_snooker",
   "low_stock_report",
   "ingredient_report",
   "menu_report",
@@ -44,8 +46,14 @@ export const REPORT_CATALOG: ReportCatalogItem[] = [
   },
   {
     key: "product_wise_sales_report",
-    title: "Product Wise Sales Report",
-    description: "Item/add-on/combo level quantities and billed amount.",
+    title: "Product Wise Sales Report (Dip & Dash)",
+    description: "Dip & Dash item/add-on/combo quantities and billed amount.",
+    category: "Sales"
+  },
+  {
+    key: "product_wise_sales_report_snooker",
+    title: "Product Wise Sales Report (Snooker)",
+    description: "Snooker invoice line quantities and billed amount.",
     category: "Sales"
   },
   {
@@ -92,8 +100,14 @@ export const REPORT_CATALOG: ReportCatalogItem[] = [
   },
   {
     key: "stock_report",
-    title: "Stock Report (Date Range)",
-    description: "Ingredient stock, allocation and consumption summary.",
+    title: "Stock Report (Dip & Dash)",
+    description: "Dip & Dash ingredient stock, allocation and consumption summary.",
+    category: "Inventory"
+  },
+  {
+    key: "stock_report_snooker",
+    title: "Stock Report (Snooker)",
+    description: "Snooker stock snapshot with purchase, consumption, current stock, expiry date and aging status.",
     category: "Inventory"
   },
   {

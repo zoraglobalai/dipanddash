@@ -14,6 +14,7 @@ import { AddOn } from "../items/add-on.entity";
 import { Combo } from "../items/combo.entity";
 import { Item } from "../items/item.entity";
 import { Outlet } from "../outlets/outlet.entity";
+import { ProcurementService } from "../procurement/procurement.service";
 import { Product } from "../procurement/product.entity";
 import { PurchaseOrder } from "../procurement/purchase-order.entity";
 import { Supplier } from "../procurement/supplier.entity";
@@ -262,6 +263,7 @@ export class ReportsService {
   private readonly outletRepository = AppDataSource.getRepository(Outlet);
   private readonly gamingRepository = AppDataSource.getRepository(GamingBooking);
   private readonly cashAuditRepository = AppDataSource.getRepository(CashAudit);
+  private readonly procurementService = new ProcurementService();
 
   private async getUserReportAccess(userId: string): Promise<{
     role: UserRole;
@@ -378,7 +380,12 @@ export class ReportsService {
       throw new AppError(404, "Report definition not found");
     }
 
-    const { from, to } = getDateRange(input.dateFrom, input.dateTo);
+    let { from, to } = getDateRange(input.dateFrom, input.dateTo);
+    if (input.reportKey === "stock_report_snooker") {
+      const now = new Date();
+      from = startOfDay(now);
+      to = endOfDay(now);
+    }
     const payload = await this.dispatchGenerateReport(input.reportKey, from, to, {
       outletId: input.outletId
     });
@@ -510,43 +517,69 @@ export class ReportsService {
     };
   }
 
-  private async generateProductWiseSalesReport(from: Date, to: Date): Promise<ReportPayload> {
-    const rows = await this.invoiceLineRepository
+  private async generateProductWiseSalesReport(
+    from: Date,
+    to: Date,
+    scope: "dip_and_dash" | "snooker"
+  ): Promise<ReportPayload> {
+    const query = this.invoiceLineRepository
       .createQueryBuilder("line")
       .leftJoin(Invoice, "invoice", "invoice.id = line.invoiceId")
       .where("invoice.status = 'paid'")
       .andWhere("invoice.createdAt >= :from AND invoice.createdAt <= :to", { from, to })
-      .select("line.nameSnapshot", "name")
-      .addSelect("line.lineType", "lineType")
+      .select("DATE(invoice.createdAt AT TIME ZONE 'Asia/Kolkata')", "salesDate")
+      .addSelect("line.nameSnapshot", "name")
       .addSelect("COALESCE(SUM(line.quantity),0)", "quantity")
       .addSelect("COALESCE(SUM(line.lineTotal),0)", "total")
-      .addSelect("COALESCE(AVG(line.unitPrice),0)", "avgPrice")
-      .groupBy("line.nameSnapshot")
-      .addGroupBy("line.lineType")
-      .orderBy("COALESCE(SUM(line.lineTotal),0)", "DESC")
-      .getRawMany<{ name: string; lineType: string; quantity: string; total: string; avgPrice: string }>();
+      .addSelect("COALESCE(AVG(line.unitPrice),0)", "avgPrice");
 
-    const parsedRows = rows.map((row) => ({
-      name: row.name,
-      type: row.lineType,
-      quantity: toQty(row.quantity),
-      totalSales: toMoney(row.total),
-      averageUnitPrice: toMoney(row.avgPrice)
-    }));
+    if (scope === "snooker") {
+      query.andWhere("invoice.orderType = :snookerOrderType", { snookerOrderType: "snooker" });
+    } else {
+      query.andWhere("invoice.orderType != :snookerOrderType", { snookerOrderType: "snooker" });
+    }
+
+    const rows = await query
+      .groupBy("DATE(invoice.createdAt AT TIME ZONE 'Asia/Kolkata')")
+      .addGroupBy("line.nameSnapshot")
+      .orderBy("DATE(invoice.createdAt AT TIME ZONE 'Asia/Kolkata')", "ASC")
+      .addOrderBy("COALESCE(SUM(line.lineTotal),0)", "DESC")
+      .getRawMany<{ salesDate: unknown; name: string; quantity: string; total: string; avgPrice: string }>();
+
+    const parsedRows = rows.map((row) => {
+      const dateKey = normalizeMovementDate(row.salesDate);
+      const parsedDate = dateKey ? new Date(`${dateKey}T00:00:00+05:30`) : new Date(Number.NaN);
+      const isValidDate = !Number.isNaN(parsedDate.getTime());
+      return {
+        date: isValidDate ? formatIstDateLabel(parsedDate) : dateKey || "-",
+        name: row.name || "-",
+        quantity: toQty(row.quantity),
+        totalSales: toMoney(row.total),
+        averageUnitPrice: toMoney(row.avgPrice)
+      };
+    });
+
+    const productTotals = new Map<string, number>();
+    parsedRows.forEach((row) => {
+      productTotals.set(row.name, toMoney((productTotals.get(row.name) ?? 0) + row.totalSales));
+    });
+    const topSellerEntry = Array.from(productTotals.entries()).sort((a, b) => b[1] - a[1])[0];
+    const scopeLabel = scope === "snooker" ? "Snooker" : "Dip & Dash";
 
     return {
       stats: [
+        { label: "Scope", value: scopeLabel },
         { label: "Lines", value: parsedRows.length },
         { label: "Total Product Sales", value: toMoney(parsedRows.reduce((sum, row) => sum + row.totalSales, 0)) },
         {
           label: "Top Seller",
-          value: parsedRows[0]?.name ?? "-",
-          hint: parsedRows[0] ? `Sales ${parsedRows[0].totalSales}` : undefined
+          value: topSellerEntry?.[0] ?? "-",
+          hint: topSellerEntry ? `Sales ${toMoney(topSellerEntry[1])}` : undefined
         }
       ],
       columns: [
         { key: "name", label: "Name" },
-        { key: "type", label: "Type" },
+        { key: "date", label: "Date" },
         { key: "quantity", label: "Quantity" },
         { key: "averageUnitPrice", label: "Avg Price" },
         { key: "totalSales", label: "Total Sales" }
@@ -954,6 +987,96 @@ export class ReportsService {
         { key: "minStock", label: "Min Stock" },
         { key: "valuation", label: "Valuation" },
         { key: "status", label: "Status" }
+      ],
+      rows
+    };
+  }
+
+  private async generateSnookerStockReport(from: Date, to: Date): Promise<ReportPayload> {
+    const dateLabel = formatIstDateLabel(to);
+    const sourceRows: Array<{
+      productName: string;
+      date: string;
+      overallPurchase: string;
+      overallConsumption: string;
+      currentStock: string;
+      expiryDate: string;
+      aging: string;
+      expiryAlert: string;
+    }> = [];
+
+    for (const targetSection of ["gaming", "both"] as const) {
+      let page = 1;
+      let totalPages = 1;
+      do {
+        const productResult = await this.procurementService.listProducts({
+          targetSection,
+          includeInactive: true,
+          page,
+          limit: 200
+        });
+        const products = Array.isArray(productResult.products) ? productResult.products : [];
+        products.forEach((product) => {
+          const purchasedQuantity = toQty((product as { purchasedQuantity?: unknown }).purchasedQuantity ?? 0);
+          const soldQuantity = toQty((product as { soldQuantity?: unknown }).soldQuantity ?? 0);
+          const unit = String((product as { unit?: unknown }).unit ?? "unit");
+          const currentStock = toQty(Math.max(0, purchasedQuantity - soldQuantity));
+          const nextExpiryDate = String((product as { nextExpiryDate?: unknown }).nextExpiryDate ?? "").trim();
+          const latestExpiryDate = String((product as { latestExpiryDate?: unknown }).latestExpiryDate ?? "").trim();
+          const expiryStatus = String((product as { expiryStatus?: unknown }).expiryStatus ?? "NO_EXPIRY").toUpperCase();
+          const ageingDays = Number((product as { ageingDays?: unknown }).ageingDays);
+          const expiryDate = nextExpiryDate || latestExpiryDate || "-";
+
+          let aging = "-";
+          if (Number.isFinite(ageingDays)) {
+            const safeDays = Math.max(0, Math.floor(ageingDays));
+            aging = expiryStatus === "EXPIRED" ? `${safeDays} day(s) overdue` : `${safeDays} day(s) left`;
+          }
+
+          let expiryAlert = "Valid";
+          if (expiryStatus === "EXPIRED") {
+            expiryAlert = "Expired";
+          } else if (expiryStatus === "EXPIRING_SOON") {
+            expiryAlert = "Expiring Soon";
+          } else if (expiryDate === "-") {
+            expiryAlert = "No Expiry";
+          }
+
+          sourceRows.push({
+            productName: String((product as { name?: unknown }).name ?? "-"),
+            date: dateLabel,
+            overallPurchase: `${purchasedQuantity} ${unit}`,
+            overallConsumption: `${soldQuantity} ${unit}`,
+            currentStock: `${currentStock} ${unit}`,
+            expiryDate,
+            aging,
+            expiryAlert
+          });
+        });
+
+        totalPages = Math.max(1, Number(productResult.pagination?.totalPages ?? 1));
+        page += 1;
+      } while (page <= totalPages);
+    }
+
+    const rows = sourceRows.sort((left, right) => left.productName.localeCompare(right.productName));
+
+    return {
+      stats: [
+        { label: "Snapshot Date", value: dateLabel },
+        { label: "Products", value: new Set(rows.map((row) => row.productName)).size },
+        { label: "Expired", value: rows.filter((row) => row.expiryAlert === "Expired").length },
+        { label: "Rows", value: rows.length }
+      ],
+      columns: [
+        { key: "productName", label: "Product Name" },
+        { key: "date", label: "Date" },
+        { key: "overallPurchase", label: "Overall Purchase" },
+        { key: "overallConsumption", label: "Overall Consumption" },
+        { key: "currentStock", label: "Current Stock" },
+        { key: "expiryDate", label: "Expiry Date" },
+        { key: "aging", label: "Aging" },
+        { key: "expiryAlert", label: "Expiry Alert" }
       ],
       rows
     };
@@ -2316,7 +2439,9 @@ export class ReportsService {
       case "daily_sales_report":
         return this.generateDailySalesReport(from, to);
       case "product_wise_sales_report":
-        return this.generateProductWiseSalesReport(from, to);
+        return this.generateProductWiseSalesReport(from, to, "dip_and_dash");
+      case "product_wise_sales_report_snooker":
+        return this.generateProductWiseSalesReport(from, to, "snooker");
       case "payment_method_report":
         return this.generatePaymentMethodReport(from, to);
       case "discount_report":
@@ -2333,6 +2458,8 @@ export class ReportsService {
         return this.generateSupplierWiseReport(from, to);
       case "stock_report":
         return this.generateStockReport(from, to);
+      case "stock_report_snooker":
+        return this.generateSnookerStockReport(from, to);
       case "low_stock_report":
         return this.generateLowStockReport();
       case "ingredient_report":

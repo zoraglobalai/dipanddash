@@ -26,5 +26,26 @@ export const dumpService = {
   }) => {
     const response = await apiClient.get<ApiSuccess<DumpStatsResponse>>("/dump/admin/stats", { params });
     return response.data;
+  },
+  updateAdminRecord: async (
+    id: string,
+    payload: {
+      entryDate?: string;
+      entryType: "ingredient" | "item" | "product";
+      sourceId: string;
+      quantity: number;
+      quantityUnit?: string;
+      note?: string;
+    }
+  ) => {
+    const response = await apiClient.patch<ApiSuccess<{ entry: DumpRecordsResponse["records"][number] }>>(
+      `/dump/admin/records/${id}`,
+      payload
+    );
+    return response.data;
+  },
+  deleteAdminRecord: async (id: string) => {
+    const response = await apiClient.delete<ApiSuccess<{ id: string; deleted: boolean }>>(`/dump/admin/records/${id}`);
+    return response.data;
   }
 };

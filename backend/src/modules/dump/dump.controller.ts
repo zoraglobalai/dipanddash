@@ -27,6 +27,22 @@ export class DumpController {
     return sendSuccess(res, StatusCodes.CREATED, "Dump entry saved successfully.", { entry });
   };
 
+  updateAdminEntry = async (req: Request, res: Response): Promise<Response> => {
+    if (!req.user) {
+      throw new AppError(StatusCodes.UNAUTHORIZED, AUTH_MESSAGES.UNAUTHORIZED);
+    }
+    const entry = await this.dumpService.updateAdminEntry(req.user, req.params.id, req.body);
+    return sendSuccess(res, StatusCodes.OK, "Dump entry updated and stock restocked successfully.", { entry });
+  };
+
+  deleteAdminEntry = async (req: Request, res: Response): Promise<Response> => {
+    if (!req.user) {
+      throw new AppError(StatusCodes.UNAUTHORIZED, AUTH_MESSAGES.UNAUTHORIZED);
+    }
+    const data = await this.dumpService.deleteAdminEntry(req.user, req.params.id);
+    return sendSuccess(res, StatusCodes.OK, "Dump entry deleted and stock restocked successfully.", data);
+  };
+
   listAdminRecords = async (req: Request, res: Response): Promise<Response> => {
     const data = await this.dumpService.listAdminRecords({
       dateFrom: typeof req.query.dateFrom === "string" ? req.query.dateFrom : undefined,

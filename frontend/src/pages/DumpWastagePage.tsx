@@ -1,5 +1,12 @@
 import {
+  AlertDialog,
+  AlertDialogBody,
+  AlertDialogContent,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogOverlay,
   Box,
+  Button,
   HStack,
   Modal,
   ModalBody,
@@ -14,7 +21,7 @@ import {
   VStack,
   useDisclosure
 } from "@chakra-ui/react";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { EmptyState } from "@/components/common/EmptyState";
 import { PageHeader } from "@/components/common/PageHeader";
@@ -56,6 +63,57 @@ const ENTRY_TYPE_LABEL: Record<DumpEntryType, string> = {
   product: "Product"
 };
 
+type UnitMeta = {
+  group: string;
+  factorToBase: number;
+};
+
+const UNIT_META: Record<string, UnitMeta> = {
+  mcg: { group: "weight", factorToBase: 0.000001 },
+  mg: { group: "weight", factorToBase: 0.001 },
+  g: { group: "weight", factorToBase: 1 },
+  kg: { group: "weight", factorToBase: 1000 },
+  quintal: { group: "weight", factorToBase: 100000 },
+  ton: { group: "weight", factorToBase: 1000000 },
+  ml: { group: "volume", factorToBase: 1 },
+  cl: { group: "volume", factorToBase: 10 },
+  dl: { group: "volume", factorToBase: 100 },
+  l: { group: "volume", factorToBase: 1000 },
+  gallon: { group: "volume", factorToBase: 3785.411784 },
+  teaspoon: { group: "volume", factorToBase: 5 },
+  tablespoon: { group: "volume", factorToBase: 15 },
+  cup: { group: "volume", factorToBase: 240 },
+  pcs: { group: "count", factorToBase: 1 },
+  piece: { group: "count", factorToBase: 1 },
+  count: { group: "count", factorToBase: 1 },
+  unit: { group: "count", factorToBase: 1 },
+  units: { group: "count", factorToBase: 1 },
+  pair: { group: "count", factorToBase: 2 },
+  dozen: { group: "count", factorToBase: 12 },
+  tray: { group: "count", factorToBase: 1 },
+  tin: { group: "count", factorToBase: 1 },
+  item: { group: "item", factorToBase: 1 }
+};
+
+const normalizeUnit = (value?: string | null) => value?.trim().toLowerCase() ?? "";
+
+const convertQuantityUnit = (quantity: number, fromUnit: string, toUnit: string) => {
+  const from = normalizeUnit(fromUnit);
+  const to = normalizeUnit(toUnit);
+  if (!from || !to) {
+    return null;
+  }
+  if (from === to) {
+    return Number(quantity.toFixed(3));
+  }
+  const fromMeta = UNIT_META[from];
+  const toMeta = UNIT_META[to];
+  if (!fromMeta || !toMeta || fromMeta.group !== toMeta.group) {
+    return null;
+  }
+  return Number(((quantity * fromMeta.factorToBase) / toMeta.factorToBase).toFixed(3));
+};
+
 const StatCard = ({ label, value, helper }: { label: string; value: string; helper?: string }) => (
   <AppCard minH="120px">
     <Text color="#7A6258" fontSize="sm" fontWeight={700}>
@@ -75,10 +133,23 @@ const StatCard = ({ label, value, helper }: { label: string; value: string; help
 export const DumpWastagePage = () => {
   const toast = useAppToast();
   const detailModal = useDisclosure();
+  const editModal = useDisclosure();
+  const deleteDialog = useDisclosure();
+  const deleteCancelRef = useRef<HTMLButtonElement | null>(null);
 
   const [stats, setStats] = useState<DumpStatsResponse | null>(null);
   const [records, setRecords] = useState<DumpRecord[]>([]);
   const [selectedRecord, setSelectedRecord] = useState<DumpRecord | null>(null);
+  const [editingRecord, setEditingRecord] = useState<DumpRecord | null>(null);
+  const [editDate, setEditDate] = useState("");
+  const [editQuantity, setEditQuantity] = useState("");
+  const [editNote, setEditNote] = useState("");
+  const [deletingRecord, setDeletingRecord] = useState<DumpRecord | null>(null);
+  const [entryOptions, setEntryOptions] = useState<{
+    ingredients: Array<{ id: string; baseUnit: string; perUnitPrice: number }>;
+    items: Array<{ id: string; estimatedIngredientCost: number }>;
+    products: Array<{ id: string; baseUnit: string; purchaseUnitPrice: number }>;
+  } | null>(null);
   const [pagination, setPagination] = useState<DumpRecordsResponse["pagination"]>({
     page: 1,
     limit: 10,
@@ -90,6 +161,8 @@ export const DumpWastagePage = () => {
   const [entryType, setEntryType] = useState<"" | DumpEntryType>("");
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const fetchData = useCallback(
     async (nextPage: number, nextLimit: number) => {
@@ -123,6 +196,176 @@ export const DumpWastagePage = () => {
     },
     [dateFrom, dateTo, entryType, search, toast]
   );
+
+  const getRecordSourceId = useCallback((record: DumpRecord) => {
+    if (record.entryType === "ingredient") {
+      return record.ingredientId;
+    }
+    if (record.entryType === "item") {
+      return record.itemId;
+    }
+    return record.productId;
+  }, []);
+
+  const loadEntryOptions = useCallback(async () => {
+    if (entryOptions) {
+      return entryOptions;
+    }
+    const response = await dumpService.getEntryOptions();
+    const options = response.data;
+    setEntryOptions(options);
+    return options;
+  }, [entryOptions]);
+
+  const openEditModal = useCallback(
+    async (record: DumpRecord) => {
+      const sourceId = getRecordSourceId(record);
+      if (!sourceId) {
+        toast.error("This record cannot be edited because source reference is missing.");
+        return;
+      }
+
+      try {
+        await loadEntryOptions();
+      } catch (error) {
+        toast.error(extractErrorMessage(error, "Unable to load entry options for edit."));
+        return;
+      }
+
+      setEditingRecord(record);
+      setEditDate(record.entryDate);
+      setEditQuantity(String(record.quantity));
+      setEditNote(record.note ?? "");
+      editModal.onOpen();
+    },
+    [editModal, getRecordSourceId, loadEntryOptions, toast]
+  );
+
+  const estimatedLossPreview = useMemo(() => {
+    if (!editingRecord || !entryOptions) {
+      return null;
+    }
+    const quantity = Number(editQuantity);
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      return null;
+    }
+
+    if (editingRecord.entryType === "item") {
+      const source = entryOptions.items.find((row) => row.id === editingRecord.itemId);
+      if (!source) {
+        return null;
+      }
+      return Number((quantity * source.estimatedIngredientCost).toFixed(2));
+    }
+
+    if (editingRecord.entryType === "ingredient") {
+      const source = entryOptions.ingredients.find((row) => row.id === editingRecord.ingredientId);
+      if (!source) {
+        return null;
+      }
+      const converted = convertQuantityUnit(quantity, editingRecord.unit, source.baseUnit);
+      if (converted === null) {
+        return null;
+      }
+      return Number((converted * source.perUnitPrice).toFixed(2));
+    }
+
+    const source = entryOptions.products.find((row) => row.id === editingRecord.productId);
+    if (!source) {
+      return null;
+    }
+    const converted = convertQuantityUnit(quantity, editingRecord.unit, source.baseUnit);
+    if (converted === null) {
+      return null;
+    }
+    return Number((converted * source.purchaseUnitPrice).toFixed(2));
+  }, [editQuantity, editingRecord, entryOptions]);
+
+  const submitEdit = useCallback(async () => {
+    if (!editingRecord) {
+      return;
+    }
+
+    const sourceId = getRecordSourceId(editingRecord);
+    if (!sourceId) {
+      toast.error("Unable to update. Source reference is missing.");
+      return;
+    }
+
+    const quantity = Number(editQuantity);
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      toast.error("Quantity must be greater than zero.");
+      return;
+    }
+
+    setSavingEdit(true);
+    try {
+      const response = await dumpService.updateAdminRecord(editingRecord.id, {
+        entryDate: editDate || undefined,
+        entryType: editingRecord.entryType,
+        sourceId,
+        quantity,
+        quantityUnit: editingRecord.unit,
+        note: editNote.trim() || undefined
+      });
+
+      toast.success("Dump entry updated. Stock restocked and recalculated successfully.");
+      editModal.onClose();
+      setEditingRecord(null);
+
+      if (selectedRecord?.id === editingRecord.id) {
+        setSelectedRecord(response.data.entry);
+      }
+
+      await fetchData(pagination.page, pagination.limit);
+    } catch (error) {
+      toast.error(extractErrorMessage(error, "Unable to update dump entry."));
+    } finally {
+      setSavingEdit(false);
+    }
+  }, [
+    editDate,
+    editModal,
+    editNote,
+    editQuantity,
+    editingRecord,
+    fetchData,
+    getRecordSourceId,
+    pagination.limit,
+    pagination.page,
+    selectedRecord?.id,
+    toast
+  ]);
+
+  const openDeleteDialog = useCallback((record: DumpRecord) => {
+    setDeletingRecord(record);
+    deleteDialog.onOpen();
+  }, [deleteDialog]);
+
+  const confirmDelete = useCallback(async () => {
+    if (!deletingRecord) {
+      return;
+    }
+
+    setDeleting(true);
+    try {
+      await dumpService.deleteAdminRecord(deletingRecord.id);
+      toast.success("Dump entry deleted and stock restocked successfully.");
+      deleteDialog.onClose();
+
+      if (selectedRecord?.id === deletingRecord.id) {
+        detailModal.onClose();
+        setSelectedRecord(null);
+      }
+
+      setDeletingRecord(null);
+      await fetchData(1, pagination.limit);
+    } catch (error) {
+      toast.error(extractErrorMessage(error, "Unable to delete dump entry."));
+    } finally {
+      setDeleting(false);
+    }
+  }, [deleteDialog, deletingRecord, detailModal, fetchData, pagination.limit, selectedRecord?.id, toast]);
 
   useEffect(() => {
     void fetchData(pagination.page, pagination.limit);
@@ -192,15 +435,23 @@ export const DumpWastagePage = () => {
           key: "actions",
           header: "Actions",
           render: (row: DumpRecord) => (
-            <AppButton
-              variant="outline"
-              onClick={() => {
-                setSelectedRecord(row);
-                detailModal.onOpen();
-              }}
-            >
-              View
-            </AppButton>
+            <HStack spacing={2}>
+              <AppButton
+                variant="outline"
+                onClick={() => {
+                  setSelectedRecord(row);
+                  detailModal.onOpen();
+                }}
+              >
+                View
+              </AppButton>
+              <AppButton variant="outline" onClick={() => void openEditModal(row)}>
+                Edit
+              </AppButton>
+              <AppButton variant="outline" onClick={() => openDeleteDialog(row)}>
+                Delete
+              </AppButton>
+            </HStack>
           )
         }
       ] as Array<{
@@ -208,7 +459,7 @@ export const DumpWastagePage = () => {
         header: string;
         render?: (row: DumpRecord) => ReactNode;
       }>,
-    [detailModal]
+    [detailModal, openDeleteDialog, openEditModal]
   );
 
   return (
@@ -324,6 +575,104 @@ export const DumpWastagePage = () => {
         )}
       </AppCard>
 
+      <Modal isOpen={editModal.isOpen} onClose={editModal.onClose} isCentered size="lg">
+        <ModalOverlay />
+        <ModalContent>
+          <ModalHeader>Edit Dump Entry</ModalHeader>
+          <ModalCloseButton />
+          <ModalBody>
+            {editingRecord ? (
+              <VStack align="stretch" spacing={3}>
+                <SimpleGrid columns={{ base: 1, md: 2 }} spacing={3}>
+                  <AppInput
+                    label="Entry Date"
+                    type="date"
+                    value={editDate}
+                    onChange={(event) => setEditDate((event.target as HTMLInputElement).value)}
+                  />
+                  <AppInput
+                    label={`Quantity (${editingRecord.unit})`}
+                    type="number"
+                    min={0}
+                    value={editQuantity}
+                    onChange={(event) => setEditQuantity((event.target as HTMLInputElement).value)}
+                  />
+                </SimpleGrid>
+                <AppInput
+                  label="Note"
+                  value={editNote}
+                  onChange={(event) => setEditNote((event.target as HTMLInputElement).value)}
+                  placeholder="Reason / correction note"
+                />
+                <Box p={3} border="1px solid rgba(132, 79, 52, 0.2)" borderRadius="12px" bg="#FFF9EE">
+                  <Text fontSize="sm" color="#705B52">
+                    Source: <Text as="span" fontWeight={700}>{editingRecord.sourceName}</Text> (
+                    {ENTRY_TYPE_LABEL[editingRecord.entryType]})
+                  </Text>
+                  <Text fontSize="sm" color="#705B52" mt={1}>
+                    Current Saved Loss: <Text as="span" fontWeight={800}>{formatCurrency(editingRecord.lossAmount)}</Text>
+                  </Text>
+                  <Text fontSize="sm" color="#705B52" mt={1}>
+                    Estimated Loss After Update:{" "}
+                    <Text as="span" fontWeight={800} color="#A32626">
+                      {estimatedLossPreview !== null ? formatCurrency(estimatedLossPreview) : "-"}
+                    </Text>
+                  </Text>
+                  <Text mt={1} fontSize="xs" color="#705B52">
+                    Saving will automatically restock old wastage and apply the updated quantity.
+                  </Text>
+                </Box>
+              </VStack>
+            ) : (
+              <Text color="#705B52">No dump entry selected.</Text>
+            )}
+          </ModalBody>
+          <ModalFooter>
+            <HStack>
+              <AppButton variant="outline" onClick={editModal.onClose}>
+                Cancel
+              </AppButton>
+              <AppButton onClick={() => void submitEdit()} isLoading={savingEdit}>
+                Save Changes
+              </AppButton>
+            </HStack>
+          </ModalFooter>
+        </ModalContent>
+      </Modal>
+
+      <AlertDialog
+        isOpen={deleteDialog.isOpen}
+        leastDestructiveRef={deleteCancelRef}
+        onClose={deleteDialog.onClose}
+        isCentered
+      >
+        <AlertDialogOverlay>
+          <AlertDialogContent>
+            <AlertDialogHeader fontSize="lg" fontWeight={800}>
+              Delete Dump Entry
+            </AlertDialogHeader>
+            <AlertDialogBody>
+              {deletingRecord ? (
+                <Text>
+                  Delete <Text as="span" fontWeight={800}>{deletingRecord.sourceName}</Text> ({ENTRY_TYPE_LABEL[deletingRecord.entryType]})?
+                  Stock will be restocked automatically.
+                </Text>
+              ) : (
+                <Text>Delete selected dump entry?</Text>
+              )}
+            </AlertDialogBody>
+            <AlertDialogFooter>
+              <Button ref={deleteCancelRef} onClick={deleteDialog.onClose}>
+                Cancel
+              </Button>
+              <Button ml={3} colorScheme="red" onClick={() => void confirmDelete()} isLoading={deleting}>
+                Delete
+              </Button>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialogOverlay>
+      </AlertDialog>
+
       <Modal isOpen={detailModal.isOpen} onClose={detailModal.onClose} size="3xl" isCentered scrollBehavior="inside">
         <ModalOverlay />
         <ModalContent>
@@ -351,6 +700,11 @@ export const DumpWastagePage = () => {
                     <Text mt={1} fontSize="xl" fontWeight={900} color="#A32626">
                       {formatCurrency(selectedRecord.lossAmount)}
                     </Text>
+                    {selectedRecord.lossAmount <= 0 ? (
+                      <Text mt={1} fontSize="xs" color="#B91C1C" fontWeight={700}>
+                        Loss is zero. Use Edit and save once to recalculate with latest source cost.
+                      </Text>
+                    ) : null}
                   </Box>
                 </SimpleGrid>
 
