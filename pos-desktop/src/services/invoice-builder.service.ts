@@ -219,7 +219,10 @@ export const posBillingService = {
       tableLabel: order.tableLabel,
       kitchenStatus: order.kitchenStatus,
       status,
-      paymentMode: payments.length > 1 ? "mixed" : payments[0]?.mode ?? "cash",
+      paymentMode:
+        payments.length > 1
+          ? "mixed"
+          : payments[0]?.mode ?? (status === "pending" ? (order.paymentMode ?? "cash") : "cash"),
       subtotal: order.totals.subtotal,
       itemDiscountAmount: order.totals.itemDiscountAmount,
       couponDiscountAmount: order.totals.couponDiscountAmount,

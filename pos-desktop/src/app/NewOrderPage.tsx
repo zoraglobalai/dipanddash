@@ -688,6 +688,20 @@ export const NewOrderPage = ({ channel }: NewOrderPageProps) => {
         totalAmount={currentOrder.totals.totalAmount}
         onClose={paymentModal.onClose}
         onConfirm={async (input) => {
+          if (input.paymentStatus === "pending") {
+            await saveAsPending({
+              moveToCollections: true,
+              paymentMode: input.mode
+            });
+            setIsOrderFlowActive(false);
+            toast({
+              status: "success",
+              title: "Bill moved to pending",
+              description: "Order saved as pending and queued for sync."
+            });
+            return;
+          }
+
           await completePayment(input);
           setIsOrderFlowActive(false);
           toast({

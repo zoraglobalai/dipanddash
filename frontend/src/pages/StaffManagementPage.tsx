@@ -13,7 +13,7 @@ import {
   VStack,
   useBoolean
 } from "@chakra-ui/react";
-import { Edit2, KeyRound, UserPlus } from "lucide-react";
+import { Edit2, KeyRound, Trash2, UserPlus } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { PageHeader } from "@/components/common/PageHeader";
@@ -49,7 +49,8 @@ export const StaffManagementPage = () => {
     createStaff,
     updateStaff,
     updateStatus,
-    resetPassword
+    resetPassword,
+    deleteStaff
   } = useStaffManagement();
 
   const [activeSearch, setActiveSearch] = useState("");
@@ -59,11 +60,13 @@ export const StaffManagementPage = () => {
   const [resetPasswordValue, setResetPasswordValue] = useState("");
   const [isStatusChanging, setIsStatusChanging] = useBoolean(false);
   const [isResettingPassword, setIsResettingPassword] = useBoolean(false);
+  const [isDeletingStaff, setIsDeletingStaff] = useBoolean(false);
   const [pendingStatus, setPendingStatus] = useState<boolean>(false);
 
   const modalState = useDisclosure();
   const confirmState = useDisclosure();
   const resetPasswordModal = useDisclosure();
+  const deleteConfirmState = useDisclosure();
 
   const refreshData = useCallback(
     async (search?: string) => {
@@ -191,6 +194,11 @@ export const StaffManagementPage = () => {
     resetPasswordModal.onOpen();
   }, [resetPasswordModal]);
 
+  const openDeleteStaff = useCallback((staffMember: Staff) => {
+    setSelected(staffMember);
+    deleteConfirmState.onOpen();
+  }, [deleteConfirmState]);
+
   const submitResetPassword = useCallback(async () => {
     if (!selected) {
       return;
@@ -225,6 +233,24 @@ export const StaffManagementPage = () => {
     setIsResettingPassword,
     toast
   ]);
+
+  const confirmDeleteStaff = useCallback(async () => {
+    if (!selected) {
+      return;
+    }
+
+    setIsDeletingStaff.on();
+    try {
+      const message = await deleteStaff(selected.id, { permanent: true });
+      toast.success(message ?? "Staff member and related records deleted successfully");
+      deleteConfirmState.onClose();
+      setSelected(null);
+    } catch (err) {
+      toast.error(extractErrorMessage(err, "Unable to delete staff member"));
+    } finally {
+      setIsDeletingStaff.off();
+    }
+  }, [deleteConfirmState, deleteStaff, selected, setIsDeletingStaff, toast]);
 
   const columns = useMemo(
     () => [
@@ -305,11 +331,20 @@ export const StaffManagementPage = () => {
               variant="outline"
               onClick={() => openResetPassword(row)}
             />
+            <ActionIconButton
+              aria-label={`Delete ${row.fullName}`}
+              tooltip="Delete staff"
+              icon={<Trash2 size={16} />}
+              size="sm"
+              variant="outline"
+              colorScheme="accentRed"
+              onClick={() => openDeleteStaff(row)}
+            />
           </HStack>
         )
       }
     ],
-    [openEdit, openResetPassword, triggerStatusChange]
+    [openDeleteStaff, openEdit, openResetPassword, triggerStatusChange]
   );
 
   if (error && !staff.length && !loading) {
@@ -378,6 +413,22 @@ export const StaffManagementPage = () => {
         }?`}
         onConfirm={() => void confirmStatusChange()}
         isLoading={isStatusChanging}
+      />
+
+      <ConfirmDialog
+        isOpen={deleteConfirmState.isOpen}
+        onClose={() => {
+          deleteConfirmState.onClose();
+          setSelected(null);
+        }}
+        title="Delete Staff?"
+        description={
+          selected
+            ? `Are you sure you want to permanently delete ${selected.fullName} and all related records? This action cannot be undone.`
+            : "Are you sure you want to delete this staff member?"
+        }
+        onConfirm={() => void confirmDeleteStaff()}
+        isLoading={isDeletingStaff}
       />
 
       <Modal

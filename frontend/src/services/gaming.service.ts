@@ -71,6 +71,11 @@ export const gamingService = {
       finalAmount?: number;
       paymentStatus?: "pending" | "paid";
       paymentMode?: GamingPaymentMode;
+      paymentBreakdown?: {
+        cash?: number;
+        card?: number;
+        upi?: number;
+      };
     }
   ) => {
     const response = await apiClient.patch<ApiSuccess<{ booking: GamingBookingRow }>>(
@@ -80,10 +85,19 @@ export const gamingService = {
     return response.data;
   },
 
-  updatePaymentStatus: async (id: string, paymentStatus: "pending" | "paid", paymentMode?: GamingPaymentMode) => {
+  updatePaymentStatus: async (
+    id: string,
+    paymentStatus: "pending" | "paid",
+    paymentMode?: GamingPaymentMode,
+    paymentBreakdown?: {
+      cash?: number;
+      card?: number;
+      upi?: number;
+    }
+  ) => {
     const response = await apiClient.patch<ApiSuccess<{ booking: GamingBookingRow }>>(
       `/gaming/bookings/${id}/payment-status`,
-      { paymentStatus, paymentMode }
+      { paymentStatus, paymentMode, paymentBreakdown }
     );
     return response.data;
   }

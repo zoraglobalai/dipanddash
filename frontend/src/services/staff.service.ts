@@ -28,5 +28,11 @@ export const staffService = {
       password
     });
     return response.data;
+  },
+  remove: async (id: string, options?: { permanent?: boolean }) => {
+    const response = await apiClient.delete<ApiSuccess<{ staff: Staff }>>(`/staff/${id}`, {
+      params: options?.permanent ? { permanent: "true" } : undefined
+    });
+    return response.data;
   }
 };

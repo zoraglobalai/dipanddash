@@ -10,6 +10,7 @@ import { IngredientStock } from "../ingredients/ingredient-stock.entity";
 import { PosBillingControl } from "../ingredients/pos-billing-control.entity";
 import { Product } from "../procurement/product.entity";
 import { User } from "../users/user.entity";
+import { PendingPaymentHistory } from "../pending/pending-payment-history.entity";
 import {
   type KitchenStatus,
   type InvoiceOrderType,
@@ -624,9 +625,69 @@ export class InvoicesService {
     }
 
     const [invoices, total] = await query.getManyAndCount();
+    const invoiceIds = invoices.map((invoice) => invoice.id);
+    const paymentRows = invoiceIds.length
+      ? await this.invoicePaymentRepository
+          .createQueryBuilder("payment")
+          .select("payment.\"invoiceId\"", "invoiceId")
+          .addSelect("payment.mode", "mode")
+          .addSelect("COALESCE(SUM(payment.amount), 0)", "amount")
+          .where("payment.\"invoiceId\" IN (:...invoiceIds)", { invoiceIds })
+          .andWhere("payment.status = :status", { status: "success" })
+          .groupBy("payment.\"invoiceId\"")
+          .addGroupBy("payment.mode")
+          .getRawMany<{ invoiceId: string; mode: string; amount: string }>()
+      : [];
+    const paymentMap = new Map<string, { cash: number; card: number; upi: number }>();
+    for (const row of paymentRows) {
+      const mode = row.mode === "cash" || row.mode === "card" || row.mode === "upi" ? row.mode : null;
+      if (!mode) {
+        continue;
+      }
+      const current = paymentMap.get(row.invoiceId) ?? { cash: 0, card: 0, upi: 0 };
+      current[mode] = toMoney(current[mode] + toMoney(row.amount));
+      paymentMap.set(row.invoiceId, current);
+    }
 
     return {
       invoices: invoices.map((invoice) => ({
+        ...((): {
+          paidCashAmount: number;
+          paidCardAmount: number;
+          paidUpiAmount: number;
+          paidTotalAmount: number;
+          pendingAmount: number;
+        } => {
+          const fromPaymentRows = paymentMap.get(invoice.id) ?? { cash: 0, card: 0, upi: 0 };
+          let paidCashAmount = toMoney(fromPaymentRows.cash);
+          let paidCardAmount = toMoney(fromPaymentRows.card);
+          let paidUpiAmount = toMoney(fromPaymentRows.upi);
+          let paidTotalAmount = toMoney(paidCashAmount + paidCardAmount + paidUpiAmount);
+
+          // Backward compatibility: paid invoices that do not have invoice_payments rows.
+          if (paidTotalAmount <= 0.001 && invoice.status === "paid") {
+            if (invoice.paymentMode === "cash") {
+              paidCashAmount = toMoney(invoice.totalAmount);
+            } else if (invoice.paymentMode === "card") {
+              paidCardAmount = toMoney(invoice.totalAmount);
+            } else if (invoice.paymentMode === "upi") {
+              paidUpiAmount = toMoney(invoice.totalAmount);
+            }
+            paidTotalAmount = toMoney(paidCashAmount + paidCardAmount + paidUpiAmount);
+            if (paidTotalAmount <= 0.001) {
+              paidTotalAmount = toMoney(invoice.totalAmount);
+            }
+          }
+
+          const pendingAmount = toMoney(Math.max(toMoney(invoice.totalAmount) - paidTotalAmount, 0));
+          return {
+            paidCashAmount,
+            paidCardAmount,
+            paidUpiAmount,
+            paidTotalAmount,
+            pendingAmount
+          };
+        })(),
         id: invoice.id,
         invoiceNumber: invoice.invoiceNumber,
         orderReference: invoice.orderReference,
@@ -1122,6 +1183,7 @@ export class InvoicesService {
       }
 
       await manager.delete(InvoiceUsageEvent, { invoiceId: invoice.id });
+      await manager.delete(PendingPaymentHistory, { sourceType: "invoice", sourceId: invoice.id });
       await manager.delete(Invoice, { id: invoice.id });
     });
 

@@ -104,6 +104,18 @@ const parseOptionalNumber = (value: string) => {
   return Number.isFinite(parsed) ? parsed : undefined;
 };
 
+const parsePaymentSplitAmount = (value: string) => {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return 0;
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed)) {
+    return 0;
+  }
+  return Math.max(0, Number(parsed.toFixed(2)));
+};
+
 const parseDraftProductQuantity = (value: string) => {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) {
@@ -120,15 +132,23 @@ const extractUpiReferenceFromNote = (value: string | null | undefined) => {
   if (!value) {
     return "";
   }
-  const match = value.match(/UPI Ref:\s*([^|]+)/i);
+  const match = value.match(/(?:UPI Ref|Txn Ref):\s*([^|]+)/i);
   return match?.[1]?.trim() ?? "";
 };
 const stripUpiReferenceFromNote = (value: string | null | undefined) => {
   if (!value) {
     return "";
   }
-  return value.replace(/\s*\|?\s*UPI Ref:\s*[^|]+/gi, "").trim();
+  return value.replace(/\s*\|?\s*(?:UPI Ref|Txn Ref):\s*[^|]+/gi, "").trim();
 };
+const stripPaymentSplitFromNote = (value: string | null | undefined) => {
+  if (!value) {
+    return "";
+  }
+  return value.replace(/\s*\|?\s*Payment Split:\s*[^|]+/gi, "").trim();
+};
+const stripPaymentMetaFromNote = (value: string | null | undefined) =>
+  stripPaymentSplitFromNote(stripUpiReferenceFromNote(value));
 
 const toLocalNow = () => {
   const now = new Date();
@@ -138,6 +158,20 @@ const toLocalNow = () => {
 const SNOOKER_INCLUDED_MEMBERS = 4;
 const EXTRA_MEMBER_CHARGE = 50;
 const AMOUNT_DIFF_THRESHOLD = 0.01;
+
+const resolvePayableAmountForForm = (input: {
+  status: GamingBookingStatus;
+  finalAmount: number | undefined;
+  systemAmount: number;
+}) => {
+  if (input.status === "completed") {
+    if ((input.finalAmount ?? 0) > AMOUNT_DIFF_THRESHOLD) {
+      return Number((input.finalAmount ?? 0).toFixed(2));
+    }
+    return Number(input.systemAmount.toFixed(2));
+  }
+  return Number(input.systemAmount.toFixed(2));
+};
 
 type BookingProductLineDraft = {
   id: string;
@@ -245,6 +279,9 @@ type BookingFormState = {
   status: GamingBookingStatus;
   paymentStatus: GamingPaymentStatus;
   paymentMode: GamingPaymentMode | "";
+  paymentSplitCash: string;
+  paymentSplitCard: string;
+  paymentSplitUpi: string;
   systemCalculatedAmount: string;
   finalAmount: string;
   amountOverrideReason: string;
@@ -271,6 +308,9 @@ const createDefaultFormState = (resources: GamingResourceAvailability[]): Bookin
     status: "ongoing",
     paymentStatus: "pending",
     paymentMode: "",
+    paymentSplitCash: "",
+    paymentSplitCard: "",
+    paymentSplitUpi: "",
     systemCalculatedAmount: "",
     finalAmount: "",
     amountOverrideReason: "",
@@ -297,12 +337,15 @@ const mapBookingToForm = (booking: GamingBookingRow): BookingFormState => ({
   status: booking.status,
   paymentStatus: booking.paymentStatus,
   paymentMode: booking.paymentMode ?? "",
+  paymentSplitCash: booking.paymentBreakdown?.cash ? String(booking.paymentBreakdown.cash) : "",
+  paymentSplitCard: booking.paymentBreakdown?.card ? String(booking.paymentBreakdown.card) : "",
+  paymentSplitUpi: booking.paymentBreakdown?.upi ? String(booking.paymentBreakdown.upi) : "",
   systemCalculatedAmount: String(booking.systemCalculatedAmount ?? 0),
   finalAmount: String(booking.finalAmount ?? 0),
   amountOverrideReason: booking.amountOverrideReason ?? "",
   paymentReference: extractUpiReferenceFromNote(booking.note),
   bookingChannel: booking.bookingChannel ?? "desktop",
-  note: stripUpiReferenceFromNote(booking.note)
+  note: stripPaymentMetaFromNote(booking.note)
 });
 
 const collectCustomersFromRows = (
@@ -518,19 +561,35 @@ export const GamingPage = () => {
       if (current.paymentStatus === "paid") {
         return current;
       }
-      if (!current.paymentMode) {
+      if (
+        !current.paymentMode &&
+        !current.paymentSplitCash &&
+        !current.paymentSplitCard &&
+        !current.paymentSplitUpi
+      ) {
         return current;
       }
       return {
         ...current,
-        paymentMode: ""
+        paymentMode: "",
+        paymentSplitCash: "",
+        paymentSplitCard: "",
+        paymentSplitUpi: ""
       };
     });
   }, [bookingForm.paymentStatus]);
 
   useEffect(() => {
     setBookingForm((current) => {
-      if (current.paymentStatus === "paid" && current.paymentMode === "upi") {
+      const splitCard = parsePaymentSplitAmount(current.paymentSplitCard);
+      const splitUpi = parsePaymentSplitAmount(current.paymentSplitUpi);
+      const needsDigitalReference =
+        current.paymentStatus === "paid" &&
+        (current.paymentMode === "upi" ||
+          current.paymentMode === "card" ||
+          (current.paymentMode === "mixed" &&
+            (splitCard > AMOUNT_DIFF_THRESHOLD || splitUpi > AMOUNT_DIFF_THRESHOLD)));
+      if (needsDigitalReference) {
         return current;
       }
       if (!current.paymentReference) {
@@ -542,6 +601,49 @@ export const GamingPage = () => {
       };
     });
   }, [bookingForm.paymentMode, bookingForm.paymentStatus]);
+
+  useEffect(() => {
+    setBookingForm((current) => {
+      if (current.paymentStatus !== "paid") {
+        return current;
+      }
+      if (!current.paymentMode || current.paymentMode === "mixed") {
+        return current;
+      }
+
+      const parsedFinalAmount = parsePaymentSplitAmount(current.finalAmount);
+      const parsedSystemAmount = parsePaymentSplitAmount(current.systemCalculatedAmount);
+      const total = resolvePayableAmountForForm({
+        status: current.status,
+        finalAmount: parsedFinalAmount > AMOUNT_DIFF_THRESHOLD ? parsedFinalAmount : undefined,
+        systemAmount: parsedSystemAmount
+      });
+      const nextCash = current.paymentMode === "cash" ? String(total) : "";
+      const nextCard = current.paymentMode === "card" ? String(total) : "";
+      const nextUpi = current.paymentMode === "upi" ? String(total) : "";
+
+      if (
+        current.paymentSplitCash === nextCash &&
+        current.paymentSplitCard === nextCard &&
+        current.paymentSplitUpi === nextUpi
+      ) {
+        return current;
+      }
+
+      return {
+        ...current,
+        paymentSplitCash: nextCash,
+        paymentSplitCard: nextCard,
+        paymentSplitUpi: nextUpi
+      };
+    });
+  }, [
+    bookingForm.finalAmount,
+    bookingForm.paymentMode,
+    bookingForm.paymentStatus,
+    bookingForm.status,
+    bookingForm.systemCalculatedAmount
+  ]);
 
   const formResourceOptions = useMemo(
     () => resources.filter((resource) => resource.bookingType === bookingForm.bookingType),
@@ -630,6 +732,42 @@ export const GamingPage = () => {
     () => Number((autoGameAmount + autoExtraCharge + bookingProductDraftTotal).toFixed(2)),
     [autoExtraCharge, autoGameAmount, bookingProductDraftTotal]
   );
+  const formPayableAmount = useMemo(
+    () =>
+      resolvePayableAmountForForm({
+        status: bookingForm.status,
+        finalAmount: parseOptionalNumber(bookingForm.finalAmount),
+        systemAmount: autoSystemAmount
+      }),
+    [autoSystemAmount, bookingForm.finalAmount, bookingForm.status]
+  );
+  const formPaymentSplit = useMemo(
+    () => ({
+      cash: parsePaymentSplitAmount(bookingForm.paymentSplitCash),
+      card: parsePaymentSplitAmount(bookingForm.paymentSplitCard),
+      upi: parsePaymentSplitAmount(bookingForm.paymentSplitUpi)
+    }),
+    [bookingForm.paymentSplitCard, bookingForm.paymentSplitCash, bookingForm.paymentSplitUpi]
+  );
+  const formPaymentSplitTotal = useMemo(
+    () => Number((formPaymentSplit.cash + formPaymentSplit.card + formPaymentSplit.upi).toFixed(2)),
+    [formPaymentSplit]
+  );
+  const requiresDigitalReference = useMemo(() => {
+    if (bookingForm.paymentStatus !== "paid") {
+      return false;
+    }
+    if (bookingForm.paymentMode === "upi" || bookingForm.paymentMode === "card") {
+      return true;
+    }
+    if (bookingForm.paymentMode === "mixed") {
+      return (
+        formPaymentSplit.card > AMOUNT_DIFF_THRESHOLD ||
+        formPaymentSplit.upi > AMOUNT_DIFF_THRESHOLD
+      );
+    }
+    return false;
+  }, [bookingForm.paymentMode, bookingForm.paymentStatus, formPaymentSplit.card, formPaymentSplit.upi]);
 
   useEffect(() => {
     if (!formResourceOptions.length) {
@@ -932,22 +1070,75 @@ export const GamingPage = () => {
     if (bookingForm.paymentStatus === "paid" && !bookingForm.paymentMode) {
       throw new Error("Select payment mode for paid bookings.");
     }
-    const upiReference =
-      bookingForm.paymentStatus === "paid" && bookingForm.paymentMode === "upi"
-        ? bookingForm.paymentReference.trim() || extractUpiReferenceFromNote(editingBooking?.note)
-        : "";
-    if (bookingForm.paymentStatus === "paid" && bookingForm.paymentMode === "upi" && !upiReference) {
-      throw new Error("UPI reference ID is required for paid UPI booking.");
-    }
     const finalAmount = parseOptionalNumber(bookingForm.finalAmount);
     const overrideReason = cleanText(bookingForm.amountOverrideReason);
     if (finalAmount !== undefined && Math.abs(finalAmount - autoSystemAmount) > AMOUNT_DIFF_THRESHOLD && !overrideReason) {
       throw new Error("Override reason is required when final amount differs from system amount.");
     }
 
-    const noteSegments = [cleanText(stripUpiReferenceFromNote(bookingForm.note))];
-    if (bookingForm.paymentStatus === "paid" && bookingForm.paymentMode === "upi" && upiReference) {
-      noteSegments.push(`UPI Ref: ${upiReference}`);
+    let paymentMode: GamingPaymentMode | undefined;
+    let paymentBreakdown: { cash: number; card: number; upi: number } | undefined;
+    let transactionReference = "";
+    let splitPaymentNote: string | undefined;
+
+    if (bookingForm.paymentStatus === "paid" && bookingForm.paymentMode) {
+      const payableAmount = resolvePayableAmountForForm({
+        status: bookingForm.status,
+        finalAmount,
+        systemAmount: autoSystemAmount
+      });
+      if (bookingForm.paymentMode === "mixed") {
+        const splitCashAmount = parsePaymentSplitAmount(bookingForm.paymentSplitCash);
+        const splitCardAmount = parsePaymentSplitAmount(bookingForm.paymentSplitCard);
+        const splitUpiAmount = parsePaymentSplitAmount(bookingForm.paymentSplitUpi);
+        const splitTotal = Number((splitCashAmount + splitCardAmount + splitUpiAmount).toFixed(2));
+        const activeSplitParts = [
+          splitCashAmount > AMOUNT_DIFF_THRESHOLD ? `Cash ${formatCurrency(splitCashAmount)}` : null,
+          splitCardAmount > AMOUNT_DIFF_THRESHOLD ? `Card ${formatCurrency(splitCardAmount)}` : null,
+          splitUpiAmount > AMOUNT_DIFF_THRESHOLD ? `UPI ${formatCurrency(splitUpiAmount)}` : null
+        ].filter((value): value is string => Boolean(value));
+
+        if (activeSplitParts.length < 2) {
+          throw new Error("For mixed payment, enter at least two payment channels.");
+        }
+        if (Math.abs(splitTotal - payableAmount) > AMOUNT_DIFF_THRESHOLD) {
+          throw new Error(`Split total must match payable amount (${formatCurrency(payableAmount)}).`);
+        }
+
+        paymentMode = "mixed";
+        paymentBreakdown = {
+          cash: splitCashAmount,
+          card: splitCardAmount,
+          upi: splitUpiAmount
+        };
+        splitPaymentNote = `Payment Split: ${activeSplitParts.join(", ")}`;
+      } else {
+        paymentMode = bookingForm.paymentMode;
+        paymentBreakdown = {
+          cash: bookingForm.paymentMode === "cash" ? payableAmount : 0,
+          card: bookingForm.paymentMode === "card" ? payableAmount : 0,
+          upi: bookingForm.paymentMode === "upi" ? payableAmount : 0
+        };
+      }
+
+      const digitalSplitAmount = Number(
+        ((paymentBreakdown?.card ?? 0) + (paymentBreakdown?.upi ?? 0)).toFixed(2)
+      );
+      transactionReference =
+        digitalSplitAmount > AMOUNT_DIFF_THRESHOLD
+          ? bookingForm.paymentReference.trim() || extractUpiReferenceFromNote(editingBooking?.note)
+          : "";
+      if (digitalSplitAmount > AMOUNT_DIFF_THRESHOLD && !transactionReference) {
+        throw new Error("Reference ID is required for paid Card/UPI booking.");
+      }
+    }
+
+    const noteSegments = [cleanText(stripPaymentMetaFromNote(bookingForm.note))];
+    if (splitPaymentNote) {
+      noteSegments.push(splitPaymentNote);
+    }
+    if (transactionReference) {
+      noteSegments.push(`Txn Ref: ${transactionReference}`);
     }
     const sharedPayload = {
       bookingType: bookingForm.bookingType,
@@ -960,7 +1151,8 @@ export const GamingPage = () => {
       customers: preparedCustomers,
       status: bookingForm.status,
       paymentStatus: bookingForm.paymentStatus,
-      paymentMode: bookingForm.paymentStatus === "paid" ? bookingForm.paymentMode || undefined : undefined,
+      paymentMode: bookingForm.paymentStatus === "paid" ? paymentMode : undefined,
+      paymentBreakdown: bookingForm.paymentStatus === "paid" ? paymentBreakdown : undefined,
       finalAmount,
       systemCalculatedAmount: autoSystemAmount,
       extraMemberCount: autoExtraMemberCount,
@@ -978,13 +1170,13 @@ export const GamingPage = () => {
     setSaveLoading(true);
     try {
       const sharedPayload = buildPayloadFromForm();
-        const selectedProductLines = bookingProductLines.filter((line) => line.productId);
-        const parsedProductLines = selectedProductLines.map((line) => {
-          const product = productMap.get(line.productId);
-          const quantity = parseDraftProductQuantity(line.quantity);
-          if (!product || !Number.isFinite(quantity) || quantity <= 0) {
-            return null;
-          }
+      const selectedProductLines = bookingProductLines.filter((line) => line.productId);
+      const parsedProductLines = selectedProductLines.map((line) => {
+        const product = productMap.get(line.productId);
+        const quantity = parseDraftProductQuantity(line.quantity);
+        if (!product || !Number.isFinite(quantity) || quantity <= 0) {
+          return null;
+        }
         const unitPrice = Number(product.sellingPrice) || 0;
         return {
           productId: product.id,
@@ -1032,18 +1224,73 @@ export const GamingPage = () => {
         const invoiceStatus = payloadWithProducts.paymentStatus === "paid" ? "paid" : "pending";
         const paymentMode = payloadWithProducts.paymentMode ?? "cash";
         const paymentReference = bookingForm.paymentReference.trim() || extractUpiReferenceFromNote(editingBooking?.note);
+        const bookingSplit = {
+          cash: Number(Math.max(0, payloadWithProducts.paymentBreakdown?.cash ?? 0).toFixed(2)),
+          card: Number(Math.max(0, payloadWithProducts.paymentBreakdown?.card ?? 0).toFixed(2)),
+          upi: Number(Math.max(0, payloadWithProducts.paymentBreakdown?.upi ?? 0).toFixed(2))
+        };
+        const bookingSplitTotal = Number((bookingSplit.cash + bookingSplit.card + bookingSplit.upi).toFixed(2));
         const payments =
-          invoiceStatus === "paid"
-            ? [
-                {
-                  mode: paymentMode,
-                  amount: productTotalAmount,
-                  receivedAmount: productTotalAmount,
-                  changeAmount: 0,
-                  referenceNo: paymentMode === "upi" ? paymentReference : undefined
-                }
-              ]
-            : [];
+          invoiceStatus !== "paid"
+            ? []
+            : paymentMode !== "mixed"
+              ? [
+                  {
+                    mode: paymentMode,
+                    amount: productTotalAmount,
+                    receivedAmount: productTotalAmount,
+                    changeAmount: 0,
+                    referenceNo:
+                      paymentMode === "upi" || paymentMode === "card" ? paymentReference || undefined : undefined
+                  }
+                ]
+              : (() => {
+                  const channels = (["cash", "card", "upi"] as const).filter(
+                    (channel) => bookingSplit[channel] > AMOUNT_DIFF_THRESHOLD
+                  );
+                  if (!channels.length || bookingSplitTotal <= AMOUNT_DIFF_THRESHOLD) {
+                    return [
+                      {
+                        mode: "cash" as const,
+                        amount: productTotalAmount,
+                        receivedAmount: productTotalAmount,
+                        changeAmount: 0,
+                        referenceNo: undefined
+                      }
+                    ];
+                  }
+
+                  let allocatedAmount = 0;
+                  const splitPayments = channels.map((channel, index) => {
+                    const rawAmount =
+                      index === channels.length - 1
+                        ? Number((productTotalAmount - allocatedAmount).toFixed(2))
+                        : Number(((productTotalAmount * bookingSplit[channel]) / bookingSplitTotal).toFixed(2));
+                    const safeAmount = Number(Math.max(0, rawAmount).toFixed(2));
+                    allocatedAmount = Number((allocatedAmount + safeAmount).toFixed(2));
+                    return {
+                      mode: channel,
+                      amount: safeAmount,
+                      receivedAmount: safeAmount,
+                      changeAmount: 0,
+                      referenceNo:
+                        channel === "upi" || channel === "card" ? paymentReference || undefined : undefined
+                    };
+                  });
+
+                  const sum = Number(
+                    splitPayments.reduce((running, payment) => running + payment.amount, 0).toFixed(2)
+                  );
+                  const remainder = Number((productTotalAmount - sum).toFixed(2));
+                  if (Math.abs(remainder) > AMOUNT_DIFF_THRESHOLD) {
+                    splitPayments[splitPayments.length - 1].amount = Number(
+                      (splitPayments[splitPayments.length - 1].amount + remainder).toFixed(2)
+                    );
+                    splitPayments[splitPayments.length - 1].receivedAmount = splitPayments[splitPayments.length - 1].amount;
+                  }
+
+                  return splitPayments.filter((payment) => payment.amount > AMOUNT_DIFF_THRESHOLD);
+                })();
 
         await invoicesService.syncUpsert({
           idempotencyKey: createDraftId(),
@@ -1233,18 +1480,35 @@ export const GamingPage = () => {
         {
           key: "payment",
           header: "Payment",
-          render: (row: GamingBookingRow) => (
-            <VStack align="start" spacing={0}>
-              <Badge colorScheme={paymentColorMap[row.paymentStatus]} textTransform="capitalize">
-                {row.paymentStatus}
-              </Badge>
-              {row.paymentMode ? (
-                <Text fontSize="xs" color="#7A6258" textTransform="uppercase">
-                  {row.paymentMode}
-                </Text>
-              ) : null}
-            </VStack>
-          )
+          render: (row: GamingBookingRow) => {
+            const splitParts = [
+              row.paymentBreakdown.cash > AMOUNT_DIFF_THRESHOLD
+                ? `Cash ${formatCurrency(row.paymentBreakdown.cash)}`
+                : null,
+              row.paymentBreakdown.card > AMOUNT_DIFF_THRESHOLD
+                ? `Card ${formatCurrency(row.paymentBreakdown.card)}`
+                : null,
+              row.paymentBreakdown.upi > AMOUNT_DIFF_THRESHOLD ? `UPI ${formatCurrency(row.paymentBreakdown.upi)}` : null
+            ].filter((value): value is string => Boolean(value));
+
+            return (
+              <VStack align="start" spacing={0}>
+                <Badge colorScheme={paymentColorMap[row.paymentStatus]} textTransform="capitalize">
+                  {row.paymentStatus}
+                </Badge>
+                {row.paymentMode ? (
+                  <Text fontSize="xs" color="#7A6258" textTransform="uppercase">
+                    {row.paymentMode}
+                  </Text>
+                ) : null}
+                {row.paymentStatus === "paid" && splitParts.length ? (
+                  <Text fontSize="xs" color="#7A6258">
+                    {splitParts.join(" | ")}
+                  </Text>
+                ) : null}
+              </VStack>
+            );
+          }
         },
         {
           key: "staff",
@@ -1657,6 +1921,7 @@ export const GamingPage = () => {
                     <option value="cash">Cash</option>
                     <option value="upi">UPI</option>
                     <option value="card">Card</option>
+                    <option value="mixed">Mixed (Split)</option>
                   </Select>
                 </FormControl>
                 <AppInput
@@ -1696,6 +1961,71 @@ export const GamingPage = () => {
                   }
                 />
               </SimpleGrid>
+
+              {bookingForm.paymentStatus === "paid" && bookingForm.paymentMode === "mixed" ? (
+                <VStack
+                  align="stretch"
+                  spacing={3}
+                  p={3}
+                  borderRadius="12px"
+                  border="1px solid"
+                  borderColor="rgba(133, 78, 48, 0.18)"
+                  bg="#FFFBF4"
+                >
+                  <Text fontWeight={700}>Payment Split</Text>
+                  <SimpleGrid columns={{ base: 1, md: 2, xl: 4 }} spacing={3}>
+                    <AppInput
+                      label="Cash Amount"
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      value={bookingForm.paymentSplitCash}
+                      onChange={(event) =>
+                        setBookingForm((current) => ({
+                          ...current,
+                          paymentSplitCash: (event.target as HTMLInputElement).value
+                        }))
+                      }
+                    />
+                    <AppInput
+                      label="Card Amount"
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      value={bookingForm.paymentSplitCard}
+                      onChange={(event) =>
+                        setBookingForm((current) => ({
+                          ...current,
+                          paymentSplitCard: (event.target as HTMLInputElement).value
+                        }))
+                      }
+                    />
+                    <AppInput
+                      label="UPI Amount"
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      value={bookingForm.paymentSplitUpi}
+                      onChange={(event) =>
+                        setBookingForm((current) => ({
+                          ...current,
+                          paymentSplitUpi: (event.target as HTMLInputElement).value
+                        }))
+                      }
+                    />
+                    <AppInput
+                      label="Split Total"
+                      value={`${formatCurrency(formPaymentSplitTotal)} / ${formatCurrency(formPayableAmount)}`}
+                      isReadOnly
+                    />
+                  </SimpleGrid>
+                  {Math.abs(formPaymentSplitTotal - formPayableAmount) > AMOUNT_DIFF_THRESHOLD ? (
+                    <Text fontSize="xs" color="#B45309">
+                      Split total should match payable amount.
+                    </Text>
+                  ) : null}
+                </VStack>
+              ) : null}
 
               <SimpleGrid columns={{ base: 1, md: 2, xl: 4 }} spacing={3}>
                 <AppInput
@@ -1743,9 +2073,9 @@ export const GamingPage = () => {
                 />
               </SimpleGrid>
 
-              {bookingForm.paymentStatus === "paid" && bookingForm.paymentMode === "upi" ? (
+              {requiresDigitalReference ? (
                 <AppInput
-                  label="UPI Reference ID"
+                  label="UPI/Card Reference ID"
                   value={bookingForm.paymentReference}
                   onChange={(event) =>
                     setBookingForm((current) => ({

@@ -50,6 +50,21 @@ const toOrderTypeLabel = (value: PosOrder["orderType"] | string | null | undefin
 const toPaymentModeLabel = (value: PosOrder["paymentMode"] | null | undefined) =>
   value ? value.toUpperCase() : "-";
 
+const toPaymentSplitSummary = (row: Pick<
+  DesktopInvoiceListRow,
+  "paidCashAmount" | "paidCardAmount" | "paidUpiAmount" | "paymentMode"
+>) => {
+  const parts = [
+    row.paidCashAmount > 0.001 ? `Cash ${formatRs(row.paidCashAmount)}` : null,
+    row.paidCardAmount > 0.001 ? `Card ${formatRs(row.paidCardAmount)}` : null,
+    row.paidUpiAmount > 0.001 ? `UPI ${formatRs(row.paidUpiAmount)}` : null
+  ].filter(Boolean) as string[];
+  if (!parts.length) {
+    return row.paymentMode?.toUpperCase() ?? "-";
+  }
+  return parts.join(" | ");
+};
+
 const toApiDateStart = (value: string) => new Date(`${value}T00:00:00.000`).toISOString();
 const toApiDateEnd = (value: string) => new Date(`${value}T23:59:59.999`).toISOString();
 
@@ -333,7 +348,14 @@ export const StaffOrdersPage = () => {
       {
         key: "paymentMode",
         header: "Payment Mode",
-        render: (bill) => <Text>{toPaymentModeLabel(bill.paymentMode)}</Text>
+        render: (bill) => (
+          <VStack align="start" spacing={0}>
+            <Text>{toPaymentModeLabel(bill.paymentMode)}</Text>
+            <Text fontSize="xs" color="#7A6258">
+              {toPaymentSplitSummary(bill)}
+            </Text>
+          </VStack>
+        )
       },
       {
         key: "totalAmount",

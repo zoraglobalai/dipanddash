@@ -82,6 +82,22 @@ const formatCurrency = (value: number) =>
 
 const formatDateTime = (value: string) => new Date(value).toLocaleString("en-IN");
 
+const formatPaymentSplitSummary = (row: Pick<
+  InvoiceListRow,
+  "paidCashAmount" | "paidCardAmount" | "paidUpiAmount" | "paymentMode"
+>) => {
+  const chunks = [
+    row.paidCashAmount > 0.001 ? `Cash ${formatCurrency(row.paidCashAmount)}` : null,
+    row.paidCardAmount > 0.001 ? `Card ${formatCurrency(row.paidCardAmount)}` : null,
+    row.paidUpiAmount > 0.001 ? `UPI ${formatCurrency(row.paidUpiAmount)}` : null
+  ].filter(Boolean) as string[];
+
+  if (!chunks.length) {
+    return row.paymentMode.toUpperCase();
+  }
+  return chunks.join(" | ");
+};
+
 const statusStyleMap: Record<InvoiceStatus, { bg: string; color: string; label: string }> = {
   paid: { bg: "green.100", color: "green.700", label: "Paid" },
   pending: { bg: "orange.100", color: "orange.700", label: "Pending" },
@@ -333,7 +349,14 @@ export const InvoicesPage = () => {
         {
           key: "paymentMode",
           header: "Payment",
-          render: (row: InvoiceListRow) => row.paymentMode.toUpperCase()
+          render: (row: InvoiceListRow) => (
+            <VStack align="start" spacing={0}>
+              <Text fontWeight={700}>{row.paymentMode.toUpperCase()}</Text>
+              <Text fontSize="xs" color="#7D655B">
+                {formatPaymentSplitSummary(row)}
+              </Text>
+            </VStack>
+          )
         },
         {
           key: "status",

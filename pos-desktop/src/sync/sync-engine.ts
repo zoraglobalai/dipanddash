@@ -1,5 +1,6 @@
 import { ordersRepository } from "@/db/repositories/orders.repository";
 import { syncQueueRepository } from "@/db/repositories/sync-queue.repository";
+import { ordersSyncService } from "@/services/orders-sync.service";
 import { posSyncApiService } from "@/services/pos-sync-api.service";
 import type { SyncQueueEvent, SyncQueueRow } from "@/types/pos";
 
@@ -63,6 +64,15 @@ class SyncEngine {
     }
   }
 
+  private async pullServerOrdersSafe() {
+    try {
+      await ordersSyncService.pullFromServer(true);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unable to refresh server orders";
+      this.lastError = message;
+    }
+  }
+
   async syncNow() {
     if (this.isSyncing) {
       return;
@@ -74,6 +84,7 @@ class SyncEngine {
     try {
       const queueRows = await syncQueueRepository.listPending(40);
       if (!queueRows.length) {
+        await this.pullServerOrdersSafe();
         this.lastError = null;
         this.lastSyncedAt = new Date().toISOString();
         return;
@@ -119,6 +130,7 @@ class SyncEngine {
         });
       }
 
+      await this.pullServerOrdersSafe();
       this.lastError = null;
       this.lastSyncedAt = new Date().toISOString();
     } catch (error) {
@@ -143,7 +155,7 @@ class SyncEngine {
     }
   }
 
-  start(intervalMs = 8000) {
+  start(intervalMs = 3000) {
     if (this.isRunning) {
       return;
     }

@@ -14,6 +14,9 @@ import type {
 import { makeId, makeInvoiceNumber } from "@/utils/idempotency";
 import { roundMoney } from "@/utils/currency";
 
+type PaymentSplitChannel = Extract<PaymentMode, "cash" | "upi" | "card">;
+type PaymentBreakdownInput = Partial<Record<PaymentSplitChannel, number>>;
+
 type UpsertSnookerFoodOrderInput = {
   booking: GamingBooking;
   snapshot: CatalogSnapshot;
@@ -39,6 +42,9 @@ type CreateSnookerDirectProductSaleInput = {
   manualDiscountAmount?: number;
   notes?: string;
 };
+
+const PAYMENT_SPLIT_THRESHOLD = 0.01;
+const PAYMENT_SPLIT_CHANNELS: PaymentSplitChannel[] = ["cash", "upi", "card"];
 
 const buildCustomerSnapshot = (booking: GamingBooking): CustomerRecord => {
   const now = new Date().toISOString();
@@ -109,6 +115,109 @@ const buildNewPendingOrder = (
   return order;
 };
 
+const normalizePaymentBreakdown = (input?: PaymentBreakdownInput) => {
+  const normalized: Record<PaymentSplitChannel, number> = {
+    cash: 0,
+    upi: 0,
+    card: 0
+  };
+  if (!input) {
+    return normalized;
+  }
+  PAYMENT_SPLIT_CHANNELS.forEach((channel) => {
+    const parsed = Number(input[channel] ?? 0);
+    normalized[channel] = Number.isFinite(parsed) ? roundMoney(Math.max(0, parsed)) : 0;
+  });
+  return normalized;
+};
+
+const getPaymentBreakdownTotal = (breakdown: Record<PaymentSplitChannel, number>) =>
+  roundMoney(breakdown.cash + breakdown.upi + breakdown.card);
+
+const scalePaymentBreakdown = (
+  breakdown: Record<PaymentSplitChannel, number>,
+  sourceTotal: number,
+  targetTotal: number
+) => {
+  const normalizedTarget = roundMoney(Math.max(0, Number(targetTotal) || 0));
+  const normalizedSource = roundMoney(Math.max(0, Number(sourceTotal) || 0));
+  const breakdownTotal = getPaymentBreakdownTotal(breakdown);
+  const sourceBase = normalizedSource > PAYMENT_SPLIT_THRESHOLD ? normalizedSource : breakdownTotal;
+  if (sourceBase <= PAYMENT_SPLIT_THRESHOLD || normalizedTarget <= PAYMENT_SPLIT_THRESHOLD) {
+    return null;
+  }
+
+  const scaled: Record<PaymentSplitChannel, number> = {
+    cash: roundMoney((breakdown.cash / sourceBase) * normalizedTarget),
+    upi: roundMoney((breakdown.upi / sourceBase) * normalizedTarget),
+    card: roundMoney((breakdown.card / sourceBase) * normalizedTarget)
+  };
+
+  const activeChannels = PAYMENT_SPLIT_CHANNELS.filter(
+    (channel) => breakdown[channel] > PAYMENT_SPLIT_THRESHOLD || scaled[channel] > PAYMENT_SPLIT_THRESHOLD
+  );
+  if (!activeChannels.length) {
+    return null;
+  }
+
+  const scaledTotal = getPaymentBreakdownTotal(scaled);
+  const delta = roundMoney(normalizedTarget - scaledTotal);
+  if (Math.abs(delta) > 0) {
+    const fallbackChannel = activeChannels[activeChannels.length - 1];
+    scaled[fallbackChannel] = roundMoney(Math.max(0, scaled[fallbackChannel] + delta));
+  }
+
+  return scaled;
+};
+
+const buildPaidPayments = (
+  orderTotalAmount: number,
+  paymentInput?: {
+    mode: PaymentMode;
+    referenceNo?: string | null;
+    paymentBreakdown?: PaymentBreakdownInput;
+    paymentBreakdownTotal?: number;
+  }
+) => {
+  const normalizedOrderAmount = roundMoney(Math.max(0, Number(orderTotalAmount) || 0));
+  const paidAt = new Date().toISOString();
+  const referenceNo = paymentInput?.referenceNo?.trim() || null;
+
+  const breakdown = normalizePaymentBreakdown(paymentInput?.paymentBreakdown);
+  const breakdownTotal = getPaymentBreakdownTotal(breakdown);
+  if (breakdownTotal > PAYMENT_SPLIT_THRESHOLD) {
+    const sourceTotal = roundMoney(Math.max(0, Number(paymentInput?.paymentBreakdownTotal ?? 0) || 0));
+    const scaled = scalePaymentBreakdown(breakdown, sourceTotal, normalizedOrderAmount);
+    if (scaled) {
+      const splitPayments = PAYMENT_SPLIT_CHANNELS.filter(
+        (channel) => scaled[channel] > PAYMENT_SPLIT_THRESHOLD
+      ).map((channel) => ({
+        mode: channel,
+        amount: scaled[channel],
+        receivedAmount: scaled[channel],
+        changeAmount: 0,
+        referenceNo: channel === "cash" ? null : referenceNo,
+        paidAt
+      }));
+      if (splitPayments.length) {
+        return splitPayments;
+      }
+    }
+  }
+
+  const mode = paymentInput?.mode ?? "cash";
+  return [
+    {
+      mode,
+      amount: normalizedOrderAmount,
+      receivedAmount: normalizedOrderAmount,
+      changeAmount: 0,
+      referenceNo: mode === "cash" ? null : referenceNo,
+      paidAt
+    }
+  ];
+};
+
 const queueInvoiceSync = async (
   order: PosOrder,
   snapshot: CatalogSnapshot,
@@ -116,21 +225,11 @@ const queueInvoiceSync = async (
   paymentInput?: {
     mode: PaymentMode;
     referenceNo?: string | null;
+    paymentBreakdown?: PaymentBreakdownInput;
+    paymentBreakdownTotal?: number;
   }
 ) => {
-  const payments =
-    mode === "paid"
-      ? [
-          {
-            mode: paymentInput?.mode ?? "cash",
-            amount: order.totals.totalAmount,
-            receivedAmount: order.totals.totalAmount,
-            changeAmount: 0,
-            referenceNo: paymentInput?.referenceNo?.trim() || null,
-            paidAt: new Date().toISOString()
-          }
-        ]
-      : [];
+  const payments = mode === "paid" ? buildPaidPayments(order.totals.totalAmount, paymentInput) : [];
 
   const payload = posBillingService.buildInvoiceSyncPayload({
     order,
@@ -247,6 +346,9 @@ export const snookerOrderService = {
     booking: GamingBooking;
     snapshot: CatalogSnapshot;
     paymentMode: PaymentMode;
+    paymentBreakdown?: PaymentBreakdownInput;
+    paymentBreakdownTotal?: number;
+    referenceNo?: string | null;
   }) {
     if (!input.booking.foodOrderReference) {
       return null;
@@ -278,7 +380,10 @@ export const snookerOrderService = {
     await ordersRepository.save(paidOrder);
     await ordersRepository.removePendingBill(paidOrder.localOrderId);
     await queueInvoiceSync(paidOrder, input.snapshot, "paid", {
-      mode: input.paymentMode
+      mode: input.paymentMode,
+      paymentBreakdown: input.paymentBreakdown,
+      paymentBreakdownTotal: input.paymentBreakdownTotal,
+      referenceNo: input.referenceNo ?? null
     });
     await gamingBookingsService.updateFoodOrderLink(input.booking.localBookingId, {
       foodInvoiceStatus: "paid",

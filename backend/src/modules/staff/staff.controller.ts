@@ -33,4 +33,13 @@ export class StaffController {
     const staff = await this.staffService.resetPassword(req.params.id, req.body.password);
     return sendSuccess(res, StatusCodes.OK, "Staff password reset successfully", { staff });
   };
+
+  delete = async (req: Request, res: Response): Promise<Response> => {
+    const permanentValue = Array.isArray(req.query.permanent)
+      ? req.query.permanent[0]
+      : req.query.permanent;
+    const permanent = permanentValue === "true";
+    const staff = await this.staffService.deleteStaff(req.params.id, { permanent });
+    return sendSuccess(res, StatusCodes.OK, "Staff member deleted successfully", { staff });
+  };
 }

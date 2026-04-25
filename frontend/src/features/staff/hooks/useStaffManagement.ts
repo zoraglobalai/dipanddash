@@ -70,6 +70,17 @@ export const useStaffManagement = () => {
     }
   }, []);
 
+  const deleteStaff = useCallback(async (id: string, options?: { permanent?: boolean }) => {
+    setMutationLoading(true);
+    try {
+      const response = await staffService.remove(id, options);
+      setStaff((prev) => prev.filter((member) => member.id !== id));
+      return response.message;
+    } finally {
+      setMutationLoading(false);
+    }
+  }, []);
+
   return {
     staff,
     loading,
@@ -79,6 +90,7 @@ export const useStaffManagement = () => {
     createStaff,
     updateStaff,
     updateStatus,
-    resetPassword
+    resetPassword,
+    deleteStaff
   };
 };

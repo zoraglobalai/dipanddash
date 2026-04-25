@@ -153,7 +153,14 @@ const gamingBookingUpsertSchema = z.object({
     sourceDeviceId: z.string().trim().max(80).optional(),
     status: z.enum(["upcoming", "ongoing", "completed", "cancelled"]).optional(),
     paymentStatus: z.enum(["pending", "paid", "refunded"]).optional(),
-    paymentMode: z.enum(["cash", "upi", "card"]).optional(),
+    paymentMode: z.enum(["cash", "upi", "card", "mixed"]).optional(),
+    paymentBreakdown: z
+      .object({
+        cash: z.coerce.number().min(0).optional(),
+        card: z.coerce.number().min(0).optional(),
+        upi: z.coerce.number().min(0).optional()
+      })
+      .optional(),
     finalAmount: z.coerce.number().min(0).optional(),
     systemCalculatedAmount: z.coerce.number().min(0).optional(),
     extraMemberCount: z.coerce.number().int().min(0).optional(),

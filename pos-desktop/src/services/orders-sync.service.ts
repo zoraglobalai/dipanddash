@@ -1,15 +1,15 @@
 import { ordersRepository } from "@/db/repositories/orders.repository";
+import { syncQueueRepository } from "@/db/repositories/sync-queue.repository";
 import {
   invoicesService,
   type DesktopInvoiceDetailsResponse,
   type DesktopInvoiceListRow
 } from "@/services/invoices.service";
-import type { CartAddOnSelection, CartLine, CustomerRecord, KitchenStatus, PaymentMode, PosOrder, SyncStatus } from "@/types/pos";
+import type { CartAddOnSelection, CartLine, CustomerRecord, KitchenStatus, PaymentMode, PosOrder } from "@/types/pos";
 
-const SERVER_PULL_INTERVAL_MS = 8000;
+const SERVER_PULL_INTERVAL_MS = 3000;
 const INVOICE_PAGE_LIMIT = 150;
 const REMOTE_STATUSES = "pending,paid,cancelled,refunded";
-const UNSYNCED_STATUSES = new Set<SyncStatus>(["pending", "syncing", "failed", "needs_attention"]);
 const VALID_PAYMENT_MODES = new Set<PaymentMode>(["cash", "card", "upi", "mixed"]);
 const VALID_KITCHEN_STATUSES = new Set<KitchenStatus>(["not_sent", "queued", "preparing", "ready", "served"]);
 
@@ -47,6 +47,25 @@ const normalizeLineType = (value: string): CartLine["lineType"] => {
     return value;
   }
   return "product";
+};
+
+const resolveOrderChannel = (
+  orderType: PosOrder["orderType"],
+  existingOrderChannel: PosOrder["orderChannel"] | null | undefined
+): PosOrder["orderChannel"] => {
+  if (orderType === "dine_in") {
+    return "dine-in";
+  }
+  if (orderType === "takeaway") {
+    return "take-away";
+  }
+  if (orderType === "snooker") {
+    return "snooker";
+  }
+  if (existingOrderChannel === "swiggy" || existingOrderChannel === "zomato") {
+    return existingOrderChannel;
+  }
+  return null;
 };
 
 const parseAddOns = (meta: Record<string, unknown> | null | undefined): CartAddOnSelection[] => {
@@ -161,7 +180,7 @@ const buildOrderFromSummary = (
     serverInvoiceId: remote.id,
     invoiceNumber: remote.invoiceNumber,
     orderType: remote.orderType,
-    orderChannel: existing?.orderChannel ?? null,
+    orderChannel: resolveOrderChannel(remote.orderType, existing?.orderChannel),
     tableLabel: remote.tableLabel,
     kitchenStatus: normalizeKitchenStatus(remote.kitchenStatus, existing?.kitchenStatus ?? "not_sent"),
     status: normalizeRemoteStatus(remote.status),
@@ -252,7 +271,7 @@ const buildOrderFromDetails = (
     serverInvoiceId: remote.id,
     invoiceNumber: invoice.invoiceNumber || remote.invoiceNumber,
     orderType: invoice.orderType,
-    orderChannel: existing?.orderChannel ?? null,
+    orderChannel: resolveOrderChannel(invoice.orderType, existing?.orderChannel),
     tableLabel: invoice.tableLabel ?? remote.tableLabel,
     kitchenStatus: normalizeKitchenStatus(invoice.kitchenStatus, normalizeKitchenStatus(remote.kitchenStatus, "not_sent")),
     status: normalizeRemoteStatus(invoice.status),
@@ -330,6 +349,7 @@ const fetchRemoteInvoices = async () => {
 
 const runPull = async () => {
   const localRows = await ordersRepository.listForSync(5000);
+  const unresolvedInvoiceNumbers = new Set(await syncQueueRepository.listUnresolvedInvoiceNumbers());
   const localByInvoiceNumber = new Map(
     localRows
       .filter((row) => typeof row.invoiceNumber === "string" && row.invoiceNumber.trim().length > 0)
@@ -341,10 +361,15 @@ const runPull = async () => {
   const detailsCache = new Map<string, DesktopInvoiceDetailsResponse>();
 
   for (const row of localRows) {
-    if (UNSYNCED_STATUSES.has(row.syncStatus) || row.status === "draft") {
+    const normalizedInvoiceNumber = row.invoiceNumber.trim();
+    if (!normalizedInvoiceNumber || row.status === "draft") {
       continue;
     }
-    if (!remoteByInvoiceNumber.has(row.invoiceNumber.trim())) {
+    const hasLocalOnlyPendingSync = !row.serverInvoiceId && unresolvedInvoiceNumbers.has(normalizedInvoiceNumber);
+    if (hasLocalOnlyPendingSync) {
+      continue;
+    }
+    if (!remoteByInvoiceNumber.has(normalizedInvoiceNumber)) {
       staleSyncedOrderIds.push(row.localOrderId);
     }
   }
@@ -363,7 +388,12 @@ const runPull = async () => {
     }
 
     const localRow = localByInvoiceNumber.get(invoiceNumber);
-    if (localRow && (UNSYNCED_STATUSES.has(localRow.syncStatus) || localRow.status === "draft")) {
+    if (localRow?.status === "draft") {
+      continue;
+    }
+    const hasLocalOnlyPendingSync =
+      localRow !== undefined && !localRow.serverInvoiceId && unresolvedInvoiceNumbers.has(invoiceNumber);
+    if (hasLocalOnlyPendingSync) {
       continue;
     }
 
@@ -422,4 +452,3 @@ export const ordersSyncService = {
     return activePull;
   }
 };
-

@@ -24,6 +24,24 @@ const customerGroupMemberSchema = z.object({
   phone: optionalCustomerPhoneSchema
 });
 
+const paymentBreakdownSchema = z.object({
+  cash: z.coerce.number().min(0).optional(),
+  card: z.coerce.number().min(0).optional(),
+  upi: z.coerce.number().min(0).optional()
+});
+
+const hasPaymentBreakdownAmount = (value?: {
+  cash?: number;
+  card?: number;
+  upi?: number;
+}) => {
+  if (!value) {
+    return false;
+  }
+  const total = Number(value.cash ?? 0) + Number(value.card ?? 0) + Number(value.upi ?? 0);
+  return total > 0.001;
+};
+
 export const gamingListSchema = z.object({
   query: z.object({
     search: z.string().trim().max(120).optional(),
@@ -91,6 +109,7 @@ export const gamingCreateSchema = z.object({
     status: z.enum(GAMING_BOOKING_STATUSES).optional(),
     paymentStatus: z.enum(GAMING_PAYMENT_STATUSES).optional(),
     paymentMode: z.enum(GAMING_PAYMENT_MODES).optional(),
+    paymentBreakdown: paymentBreakdownSchema.optional(),
     finalAmount: z.coerce.number().min(0).optional(),
     systemCalculatedAmount: z.coerce.number().min(0).optional(),
     extraMemberCount: z.coerce.number().int().min(0).optional(),
@@ -109,11 +128,11 @@ export const gamingCreateSchema = z.object({
         path: ["customers"]
       });
     }
-    if (body.paymentStatus === "paid" && !body.paymentMode) {
+    if (body.paymentStatus === "paid" && !body.paymentMode && !hasPaymentBreakdownAmount(body.paymentBreakdown)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "Payment mode is required when payment status is paid.",
-        path: ["paymentMode"]
+        message: "Payment mode or split breakdown is required when payment status is paid.",
+        path: ["paymentBreakdown"]
       });
     }
     if (
@@ -169,6 +188,7 @@ export const gamingUpdateSchema = z.object({
     status: z.enum(GAMING_BOOKING_STATUSES).optional(),
     paymentStatus: z.enum(GAMING_PAYMENT_STATUSES).optional(),
     paymentMode: z.enum(GAMING_PAYMENT_MODES).optional(),
+    paymentBreakdown: paymentBreakdownSchema.optional(),
     finalAmount: z.coerce.number().min(0).optional(),
     systemCalculatedAmount: z.coerce.number().min(0).optional(),
     extraMemberCount: z.coerce.number().int().min(0).optional(),
@@ -186,11 +206,11 @@ export const gamingUpdateSchema = z.object({
         path: ["customers"]
       });
     }
-    if (body.paymentStatus === "paid" && !body.paymentMode) {
+    if (body.paymentStatus === "paid" && !body.paymentMode && !hasPaymentBreakdownAmount(body.paymentBreakdown)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "Payment mode is required when payment status is paid.",
-        path: ["paymentMode"]
+        message: "Payment mode or split breakdown is required when payment status is paid.",
+        path: ["paymentBreakdown"]
       });
     }
     if (
@@ -229,13 +249,14 @@ export const gamingCheckoutSchema = z.object({
     extraMemberCharge: z.coerce.number().min(0).optional(),
     amountOverrideReason: z.string().trim().max(500).optional(),
     paymentStatus: z.enum(["pending", "paid"]).default("pending"),
-    paymentMode: z.enum(GAMING_PAYMENT_MODES).optional()
+    paymentMode: z.enum(GAMING_PAYMENT_MODES).optional(),
+    paymentBreakdown: paymentBreakdownSchema.optional()
   }).superRefine((body, ctx) => {
-    if (body.paymentStatus === "paid" && !body.paymentMode) {
+    if (body.paymentStatus === "paid" && !body.paymentMode && !hasPaymentBreakdownAmount(body.paymentBreakdown)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "Select payment mode when status is paid.",
-        path: ["paymentMode"]
+        message: "Select payment mode or provide split breakdown when status is paid.",
+        path: ["paymentBreakdown"]
       });
     }
     if (
@@ -260,13 +281,14 @@ export const gamingPaymentSchema = z.object({
   }),
   body: z.object({
     paymentStatus: z.enum(["pending", "paid"]),
-    paymentMode: z.enum(GAMING_PAYMENT_MODES).optional()
+    paymentMode: z.enum(GAMING_PAYMENT_MODES).optional(),
+    paymentBreakdown: paymentBreakdownSchema.optional()
   }).superRefine((body, ctx) => {
-    if (body.paymentStatus === "paid" && !body.paymentMode) {
+    if (body.paymentStatus === "paid" && !body.paymentMode && !hasPaymentBreakdownAmount(body.paymentBreakdown)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "Select payment mode when status is paid.",
-        path: ["paymentMode"]
+        message: "Select payment mode or provide split breakdown when status is paid.",
+        path: ["paymentBreakdown"]
       });
     }
   }),

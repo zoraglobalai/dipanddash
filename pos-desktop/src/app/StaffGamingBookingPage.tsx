@@ -110,6 +110,26 @@ const SNOOKER_INCLUDED_MEMBERS = 4;
 const EXTRA_MEMBER_CHARGE = 50;
 const AMOUNT_DIFF_THRESHOLD = 0.01;
 const BOOKINGS_PER_PAGE = 10;
+const parsePaymentSplitAmount = (value: string) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return 0;
+  }
+  return Math.max(0, Number(parsed.toFixed(2)));
+};
+const formatPaymentSplitSummary = (split: { cash: number; card: number; upi: number }) => {
+  const parts: string[] = [];
+  if (split.cash > AMOUNT_DIFF_THRESHOLD) {
+    parts.push(`Cash ${formatINR(split.cash)}`);
+  }
+  if (split.upi > AMOUNT_DIFF_THRESHOLD) {
+    parts.push(`UPI ${formatINR(split.upi)}`);
+  }
+  if (split.card > AMOUNT_DIFF_THRESHOLD) {
+    parts.push(`Card ${formatINR(split.card)}`);
+  }
+  return parts.join(" + ");
+};
 
 const calcCheckoutAmount = (booking: GamingBooking, checkOutAtIso: string) => {
   const checkIn = new Date(booking.checkInAt).getTime();
@@ -171,6 +191,9 @@ export const StaffGamingBookingPage = () => {
   const [checkoutFinalAmount, setCheckoutFinalAmount] = useState("0");
   const [checkoutPaymentStatus, setCheckoutPaymentStatus] = useState<"pending" | "paid">("paid");
   const [checkoutPaymentMode, setCheckoutPaymentMode] = useState<GamingPaymentMode>("cash");
+  const [checkoutSplitCash, setCheckoutSplitCash] = useState("");
+  const [checkoutSplitCard, setCheckoutSplitCard] = useState("");
+  const [checkoutSplitUpi, setCheckoutSplitUpi] = useState("");
   const [checkoutPaymentReference, setCheckoutPaymentReference] = useState("");
   const [checkoutOverrideReason, setCheckoutOverrideReason] = useState("");
   const [viewBooking, setViewBooking] = useState<GamingBooking | null>(null);
@@ -447,7 +470,27 @@ export const StaffGamingBookingPage = () => {
       setCheckoutAtLocal(nowLocal);
       setCheckoutFinalAmount(String(systemTotal));
       setCheckoutPaymentStatus(booking.paymentStatus === "paid" ? "paid" : "pending");
-      setCheckoutPaymentMode(booking.paymentMode ?? "cash");
+      const initialPaymentMode = booking.paymentMode ?? "cash";
+      setCheckoutPaymentMode(initialPaymentMode);
+      const storedSplit = {
+        cash: Number(booking.paidCashAmount ?? 0),
+        card: Number(booking.paidCardAmount ?? 0),
+        upi: Number(booking.paidUpiAmount ?? 0)
+      };
+      const storedSplitTotal = Number((storedSplit.cash + storedSplit.card + storedSplit.upi).toFixed(2));
+      if (booking.paymentStatus === "paid" && storedSplitTotal > AMOUNT_DIFF_THRESHOLD) {
+        setCheckoutSplitCash(storedSplit.cash ? String(storedSplit.cash) : "");
+        setCheckoutSplitCard(storedSplit.card ? String(storedSplit.card) : "");
+        setCheckoutSplitUpi(storedSplit.upi ? String(storedSplit.upi) : "");
+      } else if (booking.paymentStatus === "paid" && initialPaymentMode !== "mixed") {
+        setCheckoutSplitCash(initialPaymentMode === "cash" ? String(systemTotal) : "");
+        setCheckoutSplitCard(initialPaymentMode === "card" ? String(systemTotal) : "");
+        setCheckoutSplitUpi(initialPaymentMode === "upi" ? String(systemTotal) : "");
+      } else {
+        setCheckoutSplitCash("");
+        setCheckoutSplitCard("");
+        setCheckoutSplitUpi("");
+      }
       setCheckoutPaymentReference("");
       setCheckoutOverrideReason(booking.amountOverrideReason ?? "");
       checkoutConfirmModal.onClose();
@@ -484,31 +527,133 @@ export const StaffGamingBookingPage = () => {
     const parsed = Number(checkoutFinalAmount);
     return Number.isFinite(parsed) ? Math.max(0, parsed) : checkoutSystemTotal;
   }, [checkoutFinalAmount, checkoutSystemTotal]);
+  const checkoutPaymentBreakdown = useMemo(
+    () => ({
+      cash: parsePaymentSplitAmount(checkoutSplitCash),
+      card: parsePaymentSplitAmount(checkoutSplitCard),
+      upi: parsePaymentSplitAmount(checkoutSplitUpi)
+    }),
+    [checkoutSplitCard, checkoutSplitCash, checkoutSplitUpi]
+  );
+  const checkoutPaymentBreakdownTotal = useMemo(
+    () =>
+      Number(
+        (
+          checkoutPaymentBreakdown.cash +
+          checkoutPaymentBreakdown.card +
+          checkoutPaymentBreakdown.upi
+        ).toFixed(2)
+      ),
+    [checkoutPaymentBreakdown]
+  );
+  const checkoutPaymentSplitGap = useMemo(
+    () => Number((checkoutFinalAmountNumber - checkoutPaymentBreakdownTotal).toFixed(2)),
+    [checkoutFinalAmountNumber, checkoutPaymentBreakdownTotal]
+  );
+  const checkoutPaymentSplitChannelCount = useMemo(
+    () =>
+      [checkoutPaymentBreakdown.cash, checkoutPaymentBreakdown.card, checkoutPaymentBreakdown.upi].filter(
+        (amount) => amount > AMOUNT_DIFF_THRESHOLD
+      ).length,
+    [checkoutPaymentBreakdown]
+  );
+  const checkoutHasSplitMismatch = useMemo(
+    () => Math.abs(checkoutPaymentSplitGap) > AMOUNT_DIFF_THRESHOLD,
+    [checkoutPaymentSplitGap]
+  );
+  const checkoutPaymentSplitSummary = useMemo(
+    () => formatPaymentSplitSummary(checkoutPaymentBreakdown),
+    [checkoutPaymentBreakdown]
+  );
   const checkoutRequiresOverrideReason = useMemo(
     () => Math.abs(checkoutFinalAmountNumber - checkoutSystemTotal) > AMOUNT_DIFF_THRESHOLD,
     [checkoutFinalAmountNumber, checkoutSystemTotal]
   );
   const checkoutRequiresReference = useMemo(
-    () => checkoutPaymentStatus === "paid" && (checkoutPaymentMode === "upi" || checkoutPaymentMode === "card"),
-    [checkoutPaymentMode, checkoutPaymentStatus]
+    () =>
+      checkoutPaymentStatus === "paid" &&
+      (checkoutPaymentMode === "upi" ||
+        checkoutPaymentMode === "card" ||
+        (checkoutPaymentMode === "mixed" &&
+          (checkoutPaymentBreakdown.card > AMOUNT_DIFF_THRESHOLD ||
+            checkoutPaymentBreakdown.upi > AMOUNT_DIFF_THRESHOLD))),
+    [checkoutPaymentBreakdown.card, checkoutPaymentBreakdown.upi, checkoutPaymentMode, checkoutPaymentStatus]
   );
   const viewProductLines = useMemo(() => viewFoodOrder?.lines ?? [], [viewFoodOrder]);
 
-  const confirmCheckout = async () => {
-    if (!checkoutBooking) return;
+  useEffect(() => {
+    if (checkoutPaymentStatus !== "paid") {
+      return;
+    }
+    if (checkoutPaymentMode === "mixed") {
+      return;
+    }
+    const total = Number(checkoutFinalAmountNumber.toFixed(2));
+    setCheckoutSplitCash(checkoutPaymentMode === "cash" ? String(total) : "");
+    setCheckoutSplitCard(checkoutPaymentMode === "card" ? String(total) : "");
+    setCheckoutSplitUpi(checkoutPaymentMode === "upi" ? String(total) : "");
+  }, [checkoutFinalAmountNumber, checkoutPaymentMode, checkoutPaymentStatus]);
+
+  const validateCheckoutPayment = useCallback(() => {
+    if (checkoutPaymentStatus !== "paid") {
+      return true;
+    }
+
+    if (checkoutPaymentMode === "mixed" && checkoutPaymentSplitChannelCount < 2) {
+      toast({
+        status: "warning",
+        title: "Split payment required",
+        description: "For Mixed mode, enter at least 2 payment channels."
+      });
+      return false;
+    }
+
+    if (checkoutHasSplitMismatch) {
+      toast({
+        status: "warning",
+        title: "Split amount mismatch",
+        description: "Split total should match the final amount."
+      });
+      return false;
+    }
+
     if (checkoutRequiresReference && !checkoutPaymentReference.trim()) {
       toast({
         status: "warning",
         title: "Reference ID required",
         description: "Enter card/UPI reference before checkout."
       });
+      return false;
+    }
+
+    return true;
+  }, [
+    checkoutHasSplitMismatch,
+    checkoutPaymentMode,
+    checkoutPaymentSplitChannelCount,
+    checkoutPaymentStatus,
+    checkoutPaymentReference,
+    checkoutRequiresReference,
+    toast
+  ]);
+
+  const confirmCheckout = async () => {
+    if (!checkoutBooking) return;
+    if (!validateCheckoutPayment()) {
       return;
     }
     setSaving(true);
     try {
       let latestFoodAmount = checkoutFoodAmount;
       if (catalog && checkoutPaymentStatus === "paid") {
-        const paidFoodOrder = await snookerOrderService.markFoodOrderPaidForCheckout({ booking: checkoutBooking, snapshot: catalog, paymentMode: checkoutPaymentMode });
+        const paidFoodOrder = await snookerOrderService.markFoodOrderPaidForCheckout({
+          booking: checkoutBooking,
+          snapshot: catalog,
+          paymentMode: checkoutPaymentMode,
+          paymentBreakdown: checkoutPaymentBreakdown,
+          paymentBreakdownTotal: checkoutFinalAmountNumber,
+          referenceNo: checkoutRequiresReference ? checkoutPaymentReference.trim() : undefined
+        });
         if (paidFoodOrder) latestFoodAmount = paidFoodOrder.totals.totalAmount;
       }
 
@@ -532,7 +677,8 @@ export const StaffGamingBookingPage = () => {
         extraMemberCharge: checkoutExtraCharge,
         amountOverrideReason: overrideReason || undefined,
         paymentStatus: checkoutPaymentStatus,
-        paymentMode: checkoutPaymentStatus === "paid" ? checkoutPaymentMode : undefined
+        paymentMode: checkoutPaymentStatus === "paid" ? checkoutPaymentMode : undefined,
+        paymentBreakdown: checkoutPaymentStatus === "paid" ? checkoutPaymentBreakdown : undefined
       });
 
       checkoutConfirmModal.onClose();
@@ -559,6 +705,9 @@ export const StaffGamingBookingPage = () => {
         title: "Reason required",
         description: "Please enter why final amount differs from system amount."
       });
+      return;
+    }
+    if (!validateCheckoutPayment()) {
       return;
     }
     checkoutConfirmModal.onOpen();
@@ -734,18 +883,33 @@ export const StaffGamingBookingPage = () => {
       {
         key: "payment",
         header: "Payment",
-        render: (booking) => (
-          <Box>
-            <Badge colorScheme={booking.paymentStatus === "paid" ? "green" : "orange"} textTransform="capitalize">
-              {booking.paymentStatus}
-            </Badge>
-            {booking.paymentStatus === "paid" && booking.paymentMode ? (
-              <Text fontSize="xs" textTransform="uppercase">
-                {booking.paymentMode}
-              </Text>
-            ) : null}
-          </Box>
-        )
+        render: (booking) => {
+          const splitSummary =
+            booking.paymentStatus === "paid"
+              ? formatPaymentSplitSummary({
+                  cash: booking.paidCashAmount,
+                  card: booking.paidCardAmount,
+                  upi: booking.paidUpiAmount
+                })
+              : "";
+          return (
+            <Box>
+              <Badge colorScheme={booking.paymentStatus === "paid" ? "green" : "orange"} textTransform="capitalize">
+                {booking.paymentStatus}
+              </Badge>
+              {booking.paymentStatus === "paid" && booking.paymentMode ? (
+                <Text fontSize="xs" textTransform="uppercase">
+                  {booking.paymentMode}
+                </Text>
+              ) : null}
+              {splitSummary ? (
+                <Text fontSize="xs" color="#705A50">
+                  {splitSummary}
+                </Text>
+              ) : null}
+            </Box>
+          );
+        }
       },
       {
         key: "actions",
@@ -929,7 +1093,7 @@ export const StaffGamingBookingPage = () => {
                 </Text>
               ) : null}
               {!isEditMode ? <Text fontSize="sm" color="#705A50">You can select multiple boards/consoles and create bookings in one click.</Text> : null}
-              <SimpleGrid columns={{ base: 1, md: 2 }} spacing={3}><FormControl><FormLabel>Payment Status</FormLabel><Select value={form.paymentStatus} onChange={(e) => setForm((p) => ({ ...p, paymentStatus: e.target.value as "pending" | "paid" }))}><option value="pending">Pending</option><option value="paid">Paid</option></Select></FormControl><FormControl isDisabled={form.paymentStatus !== "paid"}><FormLabel>Payment Mode</FormLabel><Select value={form.paymentMode} onChange={(e) => setForm((p) => ({ ...p, paymentMode: e.target.value as GamingPaymentMode }))}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option></Select></FormControl></SimpleGrid>
+              <SimpleGrid columns={{ base: 1, md: 2 }} spacing={3}><FormControl><FormLabel>Payment Status</FormLabel><Select value={form.paymentStatus} onChange={(e) => setForm((p) => ({ ...p, paymentStatus: e.target.value as "pending" | "paid" }))}><option value="pending">Pending</option><option value="paid">Paid</option></Select></FormControl><FormControl isDisabled={form.paymentStatus !== "paid"}><FormLabel>Payment Mode</FormLabel><Select value={form.paymentMode} onChange={(e) => setForm((p) => ({ ...p, paymentMode: e.target.value as GamingPaymentMode }))}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option><option value="mixed" disabled={!isEditMode}>Mixed</option></Select></FormControl></SimpleGrid>
               {isEditMode ? <Text fontSize="sm" color="#705A50">Locked fields: booking type, board/console, check-in time, rate and status. Only customers and payment can be updated after check-in.</Text> : null}
               <Box border="1px solid rgba(132,79,52,0.16)" borderRadius="12px" p={3}><HStack justify="space-between" mb={2}><Text fontWeight={800}>Customers</Text><Button size="sm" variant="outline" leftIcon={<FiPlus size={14} />} onClick={() => setForm((p) => ({ ...p, customers: [...p.customers, { name: "", phone: "" }] }))}>Add Customer</Button></HStack><VStack align="stretch" spacing={2}>{form.customers.map((customer, index) => <HStack key={`customer-${index}`} align="end"><FormControl><FormLabel fontSize="xs">Name</FormLabel><Input value={customer.name} onChange={(e) => setForm((p) => ({ ...p, customers: p.customers.map((entry, i) => i === index ? { ...entry, name: e.target.value } : entry) }))} /></FormControl><FormControl><FormLabel fontSize="xs">Phone</FormLabel><Input value={customer.phone} onBlur={() => void applyCustomerLookup(index)} onChange={(e) => setForm((p) => ({ ...p, customers: p.customers.map((entry, i) => i === index ? { ...entry, phone: e.target.value } : entry) }))} /></FormControl></HStack>)}</VStack></Box>
               <Box border="1px solid rgba(132,79,52,0.16)" borderRadius="12px" p={3}>
@@ -1066,6 +1230,24 @@ export const StaffGamingBookingPage = () => {
                   <Text fontWeight={800}>{formatINR(viewBooking?.systemCalculatedAmount ?? 0)}</Text>
                 </Box>
               </SimpleGrid>
+              <Box p={3} borderRadius="10px" border="1px solid rgba(132,79,52,0.14)">
+                <Text fontSize="xs" color="#705A50">Payment</Text>
+                <Text fontWeight={700} textTransform="uppercase">
+                  {viewBooking?.paymentStatus ?? "pending"}
+                  {viewBooking?.paymentStatus === "paid" && viewBooking.paymentMode
+                    ? ` (${viewBooking.paymentMode})`
+                    : ""}
+                </Text>
+                {viewBooking?.paymentStatus === "paid" ? (
+                  <Text fontSize="sm" color="#705A50">
+                    {formatPaymentSplitSummary({
+                      cash: viewBooking.paidCashAmount,
+                      card: viewBooking.paidCardAmount,
+                      upi: viewBooking.paidUpiAmount
+                    }) || "-"}
+                  </Text>
+                ) : null}
+              </Box>
               <Divider />
               <Box>
                 <Text fontWeight={700} mb={2}>Products Bought</Text>
@@ -1175,6 +1357,7 @@ export const StaffGamingBookingPage = () => {
                         <option value="cash">Cash</option>
                         <option value="upi">UPI</option>
                         <option value="card">Card</option>
+                        <option value="mixed">Mixed</option>
                       </Select>
                     </FormControl>
                   </SimpleGrid>
@@ -1187,6 +1370,63 @@ export const StaffGamingBookingPage = () => {
                         onChange={(event) => setCheckoutPaymentReference(event.target.value)}
                       />
                     </FormControl>
+                  ) : null}
+                  {checkoutPaymentStatus === "paid" && checkoutPaymentMode === "mixed" ? (
+                    <Box border="1px solid rgba(132,79,52,0.14)" borderRadius="10px" p={3}>
+                      <Text fontWeight={700} mb={2}>Split Payment</Text>
+                      <SimpleGrid columns={{ base: 1, md: 3 }} spacing={3}>
+                        <FormControl isRequired>
+                          <FormLabel>Cash Amount</FormLabel>
+                          <Input
+                            type="number"
+                            min={0}
+                            step="0.01"
+                            value={checkoutSplitCash}
+                            onChange={(event) => setCheckoutSplitCash(event.target.value)}
+                            placeholder="0"
+                          />
+                        </FormControl>
+                        <FormControl>
+                          <FormLabel>UPI Amount</FormLabel>
+                          <Input
+                            type="number"
+                            min={0}
+                            step="0.01"
+                            value={checkoutSplitUpi}
+                            onChange={(event) => setCheckoutSplitUpi(event.target.value)}
+                            placeholder="0"
+                          />
+                        </FormControl>
+                        <FormControl>
+                          <FormLabel>Card Amount</FormLabel>
+                          <Input
+                            type="number"
+                            min={0}
+                            step="0.01"
+                            value={checkoutSplitCard}
+                            onChange={(event) => setCheckoutSplitCard(event.target.value)}
+                            placeholder="0"
+                          />
+                        </FormControl>
+                      </SimpleGrid>
+                      <HStack mt={2} justify="space-between" flexWrap="wrap">
+                        <Text fontSize="sm" color="#705A50">
+                          Split Total: <b>{formatINR(checkoutPaymentBreakdownTotal)}</b> / Final:{" "}
+                          <b>{formatINR(checkoutFinalAmountNumber)}</b>
+                        </Text>
+                        {checkoutHasSplitMismatch ? (
+                          <Text fontSize="xs" color="#B42318">
+                            {checkoutPaymentSplitGap > 0
+                              ? `${formatINR(Math.abs(checkoutPaymentSplitGap))} pending to allocate`
+                              : `${formatINR(Math.abs(checkoutPaymentSplitGap))} exceeds final amount`}
+                          </Text>
+                        ) : (
+                          <Text fontSize="xs" color="#046C4E">
+                            Split total matched.
+                          </Text>
+                        )}
+                      </HStack>
+                    </Box>
                   ) : null}
                   <Box border="1px solid rgba(132,79,52,0.14)" borderRadius="10px" p={3}>
                     <Text fontWeight={700} mb={2}>Products Bought</Text>
@@ -1230,6 +1470,9 @@ export const StaffGamingBookingPage = () => {
                 Payment: <b>{checkoutPaymentStatus.toUpperCase()}</b>
                 {checkoutPaymentStatus === "paid" ? <> via <b>{checkoutPaymentMode.toUpperCase()}</b></> : null}
               </Text>
+              {checkoutPaymentStatus === "paid" ? (
+                <Text>Collected: <b>{checkoutPaymentSplitSummary || "-"}</b></Text>
+              ) : null}
               {checkoutRequiresReference ? (
                 <Text>Reference: <b>{checkoutPaymentReference.trim() || "-"}</b></Text>
               ) : null}

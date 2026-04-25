@@ -19,6 +19,11 @@ export type DesktopInvoiceListRow = {
   kitchenStatus: "not_sent" | "queued" | "preparing" | "ready" | "served";
   status: "pending" | "paid" | "cancelled" | "refunded";
   paymentMode: "cash" | "card" | "upi" | "mixed";
+  paidCashAmount: number;
+  paidCardAmount: number;
+  paidUpiAmount: number;
+  paidTotalAmount: number;
+  pendingAmount: number;
   subtotal: number;
   discountAmount: number;
   taxAmount: number;

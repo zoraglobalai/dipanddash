@@ -88,9 +88,14 @@ export const StaffPendingPage = () => {
   const [details, setDetails] = useState<PendingCustomerDetails>(emptyDetails);
 
   const [collectState, setCollectState] = useState<CollectState | null>(null);
-  const [collectMode, setCollectMode] = useState<"cash" | "card" | "upi">("cash");
+  const [collectMode, setCollectMode] = useState<"cash" | "card" | "upi" | "mixed">("cash");
   const [collectAmount, setCollectAmount] = useState("");
   const [collectReference, setCollectReference] = useState("");
+  const [collectCardReference, setCollectCardReference] = useState("");
+  const [collectUpiReference, setCollectUpiReference] = useState("");
+  const [collectCashAmount, setCollectCashAmount] = useState("");
+  const [collectCardAmount, setCollectCardAmount] = useState("");
+  const [collectUpiAmount, setCollectUpiAmount] = useState("");
   const [collectNote, setCollectNote] = useState("");
   const [collecting, setCollecting] = useState(false);
 
@@ -275,6 +280,11 @@ export const StaffPendingPage = () => {
               setCollectMode("cash");
               setCollectAmount(String(row.pendingAmount));
               setCollectReference("");
+              setCollectCardReference("");
+              setCollectUpiReference("");
+              setCollectCashAmount("");
+              setCollectCardAmount("");
+              setCollectUpiAmount("");
               setCollectNote("");
             }}
           >
@@ -330,29 +340,104 @@ export const StaffPendingPage = () => {
     []
   );
 
+  const mixedSplitValues = useMemo(
+    () => ({
+      cash: Number(collectCashAmount || 0),
+      card: Number(collectCardAmount || 0),
+      upi: Number(collectUpiAmount || 0)
+    }),
+    [collectCardAmount, collectCashAmount, collectUpiAmount]
+  );
+
+  const mixedSplitTotal = useMemo(
+    () => Number((mixedSplitValues.cash + mixedSplitValues.card + mixedSplitValues.upi).toFixed(2)),
+    [mixedSplitValues]
+  );
+
   const submitCollect = useCallback(async () => {
     if (!collectState || !selectedCustomer) {
       return;
     }
 
-    const amount = Number(collectAmount);
-    if (!Number.isFinite(amount) || amount <= 0) {
-      toast({ status: "warning", title: "Enter a valid amount" });
-      return;
-    }
-    if ((collectMode === "upi" || collectMode === "card") && !collectReference.trim()) {
-      toast({ status: "warning", title: "Reference ID is required for UPI/Card payment" });
-      return;
+    const payload: {
+      sourceType: PendingDocument["sourceType"];
+      sourceId: string;
+      paymentMode: "cash" | "card" | "upi" | "mixed";
+      amount?: number;
+      referenceNo?: string;
+      cardReferenceNo?: string;
+      upiReferenceNo?: string;
+      paymentBreakdown?: { cash?: number; card?: number; upi?: number };
+      note?: string;
+    } = {
+      sourceType: collectState.sourceType,
+      sourceId: collectState.sourceId,
+      paymentMode: collectMode
+    };
+
+    if (collectMode === "mixed") {
+      const activeSplitModes = [
+        mixedSplitValues.cash > 0 ? "cash" : null,
+        mixedSplitValues.card > 0 ? "card" : null,
+        mixedSplitValues.upi > 0 ? "upi" : null
+      ].filter(Boolean);
+      if (activeSplitModes.length < 2) {
+        toast({ status: "warning", title: "Mixed payment needs at least two modes." });
+        return;
+      }
+      if (!Number.isFinite(mixedSplitTotal) || mixedSplitTotal <= 0) {
+        toast({ status: "warning", title: "Enter valid split amounts." });
+        return;
+      }
+      if (mixedSplitTotal - collectState.pendingAmount > 0.001) {
+        toast({
+          status: "warning",
+          title: `Split amount cannot exceed pending due (${collectState.pendingAmount.toFixed(2)}).`
+        });
+        return;
+      }
+      if (mixedSplitValues.card > 0 && !collectCardReference.trim()) {
+        toast({ status: "warning", title: "Card reference ID is required." });
+        return;
+      }
+      if (mixedSplitValues.upi > 0 && !collectUpiReference.trim()) {
+        toast({ status: "warning", title: "UPI reference ID is required." });
+        return;
+      }
+
+      payload.amount = mixedSplitTotal;
+      payload.paymentBreakdown = {
+        cash: mixedSplitValues.cash,
+        card: mixedSplitValues.card,
+        upi: mixedSplitValues.upi
+      };
+      payload.cardReferenceNo = collectCardReference.trim() || undefined;
+      payload.upiReferenceNo = collectUpiReference.trim() || undefined;
+    } else {
+      const amount = Number(collectAmount);
+      if (!Number.isFinite(amount) || amount <= 0) {
+        toast({ status: "warning", title: "Enter a valid amount" });
+        return;
+      }
+      if (amount - collectState.pendingAmount > 0.001) {
+        toast({
+          status: "warning",
+          title: `Amount cannot exceed pending due (${collectState.pendingAmount.toFixed(2)}).`
+        });
+        return;
+      }
+      if ((collectMode === "upi" || collectMode === "card") && !collectReference.trim()) {
+        toast({ status: "warning", title: "Reference ID is required for UPI/Card payment" });
+        return;
+      }
+      payload.amount = amount;
+      payload.referenceNo = collectReference.trim() || undefined;
     }
 
     setCollecting(true);
     try {
       await pendingService.collectAmount({
-        sourceType: collectState.sourceType,
-        sourceId: collectState.sourceId,
-        paymentMode: collectMode,
-        amount,
-        referenceNo: collectReference.trim() || undefined,
+        ...payload,
         note: collectNote.trim() || undefined
       });
       toast({ status: "success", title: "Pending amount collected" });
@@ -369,12 +454,19 @@ export const StaffPendingPage = () => {
     }
   }, [
     collectAmount,
+    collectCardAmount,
+    collectCardReference,
+    collectCashAmount,
     collectMode,
     collectNote,
     collectReference,
     collectState,
+    collectUpiAmount,
+    collectUpiReference,
     fetchCustomerDetails,
     fetchCustomers,
+    mixedSplitTotal,
+    mixedSplitValues,
     selectedCustomer,
     toast
   ]);
@@ -513,22 +605,91 @@ export const StaffPendingPage = () => {
               </Text>
               <FormControl>
                 <FormLabel>Payment Mode</FormLabel>
-                <Select value={collectMode} onChange={(event) => setCollectMode(event.target.value as "cash" | "card" | "upi")}>
+                <Select
+                  value={collectMode}
+                  onChange={(event) => {
+                    setCollectMode(event.target.value as "cash" | "card" | "upi" | "mixed");
+                    setCollectReference("");
+                    setCollectCardReference("");
+                    setCollectUpiReference("");
+                    setCollectCashAmount("");
+                    setCollectCardAmount("");
+                    setCollectUpiAmount("");
+                  }}
+                >
                   <option value="cash">Cash</option>
                   <option value="card">Card</option>
                   <option value="upi">UPI</option>
+                  <option value="mixed">Mixed</option>
                 </Select>
               </FormControl>
-              <FormControl>
-                <FormLabel>Amount</FormLabel>
-                <Input type="number" min={0} value={collectAmount} onChange={(event) => setCollectAmount(event.target.value)} />
-              </FormControl>
-              {collectMode === "card" || collectMode === "upi" ? (
-                <FormControl>
-                  <FormLabel>Reference ID</FormLabel>
-                  <Input value={collectReference} onChange={(event) => setCollectReference(event.target.value)} />
-                </FormControl>
-              ) : null}
+              {collectMode === "mixed" ? (
+                <>
+                  <SimpleGrid columns={{ base: 1, md: 3 }} spacing={3}>
+                    <FormControl>
+                      <FormLabel>Cash Amount</FormLabel>
+                      <Input
+                        type="number"
+                        min={0}
+                        value={collectCashAmount}
+                        onChange={(event) => setCollectCashAmount(event.target.value)}
+                      />
+                    </FormControl>
+                    <FormControl>
+                      <FormLabel>Card Amount</FormLabel>
+                      <Input
+                        type="number"
+                        min={0}
+                        value={collectCardAmount}
+                        onChange={(event) => setCollectCardAmount(event.target.value)}
+                      />
+                    </FormControl>
+                    <FormControl>
+                      <FormLabel>UPI Amount</FormLabel>
+                      <Input
+                        type="number"
+                        min={0}
+                        value={collectUpiAmount}
+                        onChange={(event) => setCollectUpiAmount(event.target.value)}
+                      />
+                    </FormControl>
+                  </SimpleGrid>
+                  <SimpleGrid columns={{ base: 1, md: 2 }} spacing={3}>
+                    <FormControl>
+                      <FormLabel>Card Reference ID</FormLabel>
+                      <Input
+                        value={collectCardReference}
+                        onChange={(event) => setCollectCardReference(event.target.value)}
+                        placeholder="Required if card amount entered"
+                      />
+                    </FormControl>
+                    <FormControl>
+                      <FormLabel>UPI Reference ID</FormLabel>
+                      <Input
+                        value={collectUpiReference}
+                        onChange={(event) => setCollectUpiReference(event.target.value)}
+                        placeholder="Required if UPI amount entered"
+                      />
+                    </FormControl>
+                  </SimpleGrid>
+                  <Text fontSize="sm" color="#705A50">
+                    Split Total: <b>{formatINR(mixedSplitTotal)}</b>
+                  </Text>
+                </>
+              ) : (
+                <>
+                  <FormControl>
+                    <FormLabel>Amount</FormLabel>
+                    <Input type="number" min={0} value={collectAmount} onChange={(event) => setCollectAmount(event.target.value)} />
+                  </FormControl>
+                  {collectMode === "card" || collectMode === "upi" ? (
+                    <FormControl>
+                      <FormLabel>Reference ID</FormLabel>
+                      <Input value={collectReference} onChange={(event) => setCollectReference(event.target.value)} />
+                    </FormControl>
+                  ) : null}
+                </>
+              )}
               <FormControl>
                 <FormLabel>Note (Optional)</FormLabel>
                 <Textarea value={collectNote} onChange={(event) => setCollectNote(event.target.value)} />

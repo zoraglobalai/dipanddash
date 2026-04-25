@@ -1,11 +1,13 @@
 export const GAMING_BOOKING_TYPES = ["snooker", "console"] as const;
 export const GAMING_BOOKING_STATUSES = ["upcoming", "ongoing", "completed", "cancelled"] as const;
 export const GAMING_PAYMENT_STATUSES = ["pending", "paid", "refunded"] as const;
-export const GAMING_PAYMENT_MODES = ["cash", "upi", "card"] as const;
+export const GAMING_PAYMENT_CHANNELS = ["cash", "upi", "card"] as const;
+export const GAMING_PAYMENT_MODES = [...GAMING_PAYMENT_CHANNELS, "mixed"] as const;
 
 export type GamingBookingType = (typeof GAMING_BOOKING_TYPES)[number];
 export type GamingBookingStatus = (typeof GAMING_BOOKING_STATUSES)[number];
 export type GamingPaymentStatus = (typeof GAMING_PAYMENT_STATUSES)[number];
+export type GamingPaymentChannel = (typeof GAMING_PAYMENT_CHANNELS)[number];
 export type GamingPaymentMode = (typeof GAMING_PAYMENT_MODES)[number];
 
 export const SNOOKER_RESOURCES = [

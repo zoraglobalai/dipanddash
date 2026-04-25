@@ -1,4 +1,5 @@
 export type PendingSourceType = "invoice" | "gaming_booking";
+export type PendingCollectPaymentMode = "cash" | "card" | "upi" | "mixed";
 
 export type PendingCustomerSummary = {
   customerKey: string;
@@ -78,5 +79,9 @@ export type PendingCollectResponse = {
   collectedAmount: number;
   remainingAmount: number;
   settled: boolean;
+  paymentBreakdown?: {
+    cash: number;
+    card: number;
+    upi: number;
+  };
 };
-

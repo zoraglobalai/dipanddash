@@ -126,7 +126,12 @@ type GamingBookingUpsertEvent = {
     sourceDeviceId?: string;
     status?: "upcoming" | "ongoing" | "completed" | "cancelled";
     paymentStatus?: "pending" | "paid" | "refunded";
-    paymentMode?: "cash" | "upi" | "card";
+    paymentMode?: "cash" | "upi" | "card" | "mixed";
+    paymentBreakdown?: {
+      cash?: number;
+      card?: number;
+      upi?: number;
+    };
     finalAmount?: number;
     systemCalculatedAmount?: number;
     extraMemberCount?: number;

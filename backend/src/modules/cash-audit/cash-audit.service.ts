@@ -326,19 +326,59 @@ export class CashAuditService {
         END
       )
     `;
+    const collectibleAmountExpression = `
+      (
+        CASE
+          WHEN booking.status = 'completed' AND booking."finalAmount" > 0 THEN booking."finalAmount"
+          ELSE booking."systemCalculatedAmount"
+        END
+      )
+    `;
+    const splitTotalExpression =
+      `COALESCE(booking."paidCashAmount", 0) + COALESCE(booking."paidCardAmount", 0) + COALESCE(booking."paidUpiAmount", 0)`;
 
-    const rows = await this.gamingBookingRepository
+    const row = await this.gamingBookingRepository
       .createQueryBuilder("booking")
-      .select("booking.paymentMode", "mode")
-      .addSelect("COALESCE(SUM(booking.finalAmount + booking.foodAndBeverageAmount), 0)", "amount")
+      .select(
+        `COALESCE(SUM(
+          CASE
+            WHEN ${splitTotalExpression} > 0 THEN COALESCE(booking."paidCashAmount", 0)
+            WHEN booking."paymentMode" = 'cash' THEN ${collectibleAmountExpression}
+            ELSE 0
+          END
+        ), 0)`,
+        "cashAmount"
+      )
+      .addSelect(
+        `COALESCE(SUM(
+          CASE
+            WHEN ${splitTotalExpression} > 0 THEN COALESCE(booking."paidCardAmount", 0)
+            WHEN booking."paymentMode" = 'card' THEN ${collectibleAmountExpression}
+            ELSE 0
+          END
+        ), 0)`,
+        "cardAmount"
+      )
+      .addSelect(
+        `COALESCE(SUM(
+          CASE
+            WHEN ${splitTotalExpression} > 0 THEN COALESCE(booking."paidUpiAmount", 0)
+            WHEN booking."paymentMode" = 'upi' THEN ${collectibleAmountExpression}
+            ELSE 0
+          END
+        ), 0)`,
+        "upiAmount"
+      )
       .where("booking.paymentStatus = 'paid'")
-      .andWhere("booking.paymentMode IS NOT NULL")
       .andWhere(`${bookingEffectiveTimeExpression} >= :fromDate`, { fromDate: from })
       .andWhere(`${bookingEffectiveTimeExpression} <= :toDate`, { toDate: to })
-      .groupBy("booking.paymentMode")
-      .getRawMany<{ mode: string; amount: string }>();
+      .getRawOne<{ cashAmount: string; cardAmount: string; upiAmount: string }>();
 
-    return this.mergePaymentRows(rows);
+    return {
+      cash: toMoney(row?.cashAmount ?? 0),
+      card: toMoney(row?.cardAmount ?? 0),
+      upi: toMoney(row?.upiAmount ?? 0)
+    };
   }
 
   private async getExpectedBreakdownForSectionDate(section: CashAuditSection, auditDate: string) {

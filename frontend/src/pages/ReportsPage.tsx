@@ -34,6 +34,24 @@ const toCsvValue = (value: string | number | null) => {
   return `"${escaped}"`;
 };
 
+const STOCK_SNAPSHOT_NUMERIC_KEYS = new Set(["overallPurchase", "overallConsumption", "currentStock"]);
+
+const stripUnitFromStockSnapshotValue = (value: string | number | null) => {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (typeof value === "number") {
+    return value;
+  }
+  const trimmed = value.trim();
+  const matched = trimmed.match(/^(-?\d+(?:\.\d+)?)\s*[A-Za-z]+$/);
+  if (!matched) {
+    return value;
+  }
+  const parsed = Number(matched[1]);
+  return Number.isFinite(parsed) ? parsed : matched[1];
+};
+
 const looksCurrencyKey = (key: string) =>
   /(amount|sales|total|tax|discount|valuation|price|revenue|cost|cash|outflow|spend)/i.test(key);
 
@@ -289,7 +307,15 @@ export const ReportsPage = () => {
 
       const csvHeader = columns.map((column) => toCsvValue(column.label)).join(",");
       const csvRows = allRows.map((row) =>
-        columns.map((column) => toCsvValue(row[column.key] ?? null)).join(",")
+        columns
+          .map((column) => {
+            const rawValue = row[column.key] ?? null;
+            if (selectedReportKey === "stock_report_snooker" && STOCK_SNAPSHOT_NUMERIC_KEYS.has(column.key)) {
+              return toCsvValue(stripUnitFromStockSnapshotValue(rawValue));
+            }
+            return toCsvValue(rawValue);
+          })
+          .join(",")
       );
       const csv = [csvHeader, ...csvRows].join("\n");
 

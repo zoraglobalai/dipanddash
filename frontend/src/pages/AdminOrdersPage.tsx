@@ -149,6 +149,22 @@ const formatCurrency = (value: number) =>
 
 const formatDateTime = (value: string | null) => (value ? new Date(value).toLocaleString("en-IN") : "-");
 
+const formatPaymentSplitSummary = (row: Pick<
+  InvoiceListRow,
+  "paidCashAmount" | "paidCardAmount" | "paidUpiAmount" | "paymentMode"
+>) => {
+  const segments = [
+    row.paidCashAmount > 0.001 ? `Cash ${formatCurrency(row.paidCashAmount)}` : null,
+    row.paidCardAmount > 0.001 ? `Card ${formatCurrency(row.paidCardAmount)}` : null,
+    row.paidUpiAmount > 0.001 ? `UPI ${formatCurrency(row.paidUpiAmount)}` : null
+  ].filter(Boolean) as string[];
+
+  if (!segments.length) {
+    return row.paymentMode.toUpperCase();
+  }
+  return segments.join(" | ");
+};
+
 const parseNumber = (value: string) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
@@ -1055,7 +1071,14 @@ export const AdminOrdersPage = () => {
         {
           key: "paymentMode",
           header: "Payment",
-          render: (row: InvoiceListRow) => row.paymentMode.toUpperCase()
+          render: (row: InvoiceListRow) => (
+            <VStack align="start" spacing={0}>
+              <Text fontWeight={700}>{row.paymentMode.toUpperCase()}</Text>
+              <Text fontSize="xs" color="#705B52">
+                {formatPaymentSplitSummary(row)}
+              </Text>
+            </VStack>
+          )
         },
         {
           key: "totalAmount",

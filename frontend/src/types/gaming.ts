@@ -1,9 +1,15 @@
 export type GamingBookingType = "snooker" | "console";
 export type GamingBookingStatus = "upcoming" | "ongoing" | "completed" | "cancelled";
 export type GamingPaymentStatus = "pending" | "paid" | "refunded";
-export type GamingPaymentMode = "cash" | "upi" | "card";
+export type GamingPaymentMode = "cash" | "upi" | "card" | "mixed";
 export type GamingFoodInvoiceStatus = "none" | "pending" | "paid" | "cancelled";
 export type GamingBookingCustomer = { name: string; phone: string };
+export type GamingPaymentBreakdown = {
+  cash: number;
+  card: number;
+  upi: number;
+  total: number;
+};
 
 export type GamingPagination = {
   page: number;
@@ -38,6 +44,7 @@ export type GamingBookingRow = {
   status: GamingBookingStatus;
   paymentStatus: GamingPaymentStatus;
   paymentMode: GamingPaymentMode | null;
+  paymentBreakdown: GamingPaymentBreakdown;
   foodOrderReference: string | null;
   foodInvoiceNumber: string | null;
   foodInvoiceStatus: GamingFoodInvoiceStatus;
@@ -67,6 +74,7 @@ export type GamingCreateBookingPayload = {
   status?: GamingBookingStatus;
   paymentStatus?: GamingPaymentStatus;
   paymentMode?: GamingPaymentMode;
+  paymentBreakdown?: Partial<Pick<GamingPaymentBreakdown, "cash" | "card" | "upi">>;
   finalAmount?: number;
   systemCalculatedAmount?: number;
   extraMemberCount?: number;

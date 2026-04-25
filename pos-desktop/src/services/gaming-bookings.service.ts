@@ -8,6 +8,7 @@ import type {
   GamingBookingListFilter,
   GamingBookingStatus,
   GamingBookingType,
+  GamingPaymentChannel,
   GamingCustomerMember,
   GamingPaymentMode,
   GamingPaymentStatus,
@@ -44,6 +45,12 @@ type GamingBookingApiRow = {
   status: GamingBookingStatus;
   paymentStatus: GamingPaymentStatus;
   paymentMode: GamingPaymentMode | null;
+  paymentBreakdown?: {
+    cash?: number;
+    card?: number;
+    upi?: number;
+    total?: number;
+  };
   foodOrderReference: string | null;
   foodInvoiceNumber: string | null;
   foodInvoiceStatus: "none" | "pending" | "paid" | "cancelled";
@@ -57,6 +64,9 @@ type GamingBookingApiRow = {
   createdAt: string;
   updatedAt: string;
 };
+
+type PaymentBreakdown = Record<GamingPaymentChannel, number>;
+type PaymentBreakdownInput = Partial<Record<GamingPaymentChannel, number>>;
 
 type GamingBookingsListResponse = {
   bookings: GamingBookingApiRow[];
@@ -88,8 +98,14 @@ const ALL_RESOURCES = [...SNOOKER_RESOURCES, ...CONSOLE_RESOURCES];
 
 const SNOOKER_INCLUDED_MEMBERS = 4;
 const EXTRA_MEMBER_CHARGE = 50;
-const SERVER_PULL_INTERVAL_MS = 8000;
+const SERVER_PULL_INTERVAL_MS = 3000;
 const AMOUNT_DIFF_THRESHOLD = 0.01;
+const GAMING_PAYMENT_CHANNELS: readonly GamingPaymentChannel[] = ["cash", "card", "upi"];
+const EMPTY_PAYMENT_BREAKDOWN: PaymentBreakdown = {
+  cash: 0,
+  card: 0,
+  upi: 0
+};
 
 const normalizePhone = (value: string) => value.replace(/[^\d+]/g, "").trim();
 const roundCurrency = (value: number) => Number(value.toFixed(2));
@@ -102,6 +118,49 @@ const cleanText = (value?: string | null) => {
   return trimmed.length ? trimmed : null;
 };
 const hasAmountDiff = (left: number, right: number) => Math.abs(left - right) > AMOUNT_DIFF_THRESHOLD;
+
+const normalizePaymentBreakdown = (input?: PaymentBreakdownInput | null): PaymentBreakdown => {
+  const normalized: PaymentBreakdown = { ...EMPTY_PAYMENT_BREAKDOWN };
+  if (!input) {
+    return normalized;
+  }
+  GAMING_PAYMENT_CHANNELS.forEach((mode) => {
+    normalized[mode] = roundCurrency(Math.max(0, Number(input[mode] ?? 0) || 0));
+  });
+  return normalized;
+};
+
+const getPaymentBreakdownTotal = (value: PaymentBreakdown) =>
+  roundCurrency(value.cash + value.card + value.upi);
+
+const derivePaymentModeFromBreakdown = (breakdown: PaymentBreakdown): GamingPaymentMode | null => {
+  const activeModes = GAMING_PAYMENT_CHANNELS.filter((mode) => breakdown[mode] > AMOUNT_DIFF_THRESHOLD);
+  if (!activeModes.length) {
+    return null;
+  }
+  if (activeModes.length === 1) {
+    return activeModes[0];
+  }
+  return "mixed";
+};
+
+const getCollectibleAmount = (booking: Pick<GamingBooking, "status" | "finalAmount" | "systemCalculatedAmount">) => {
+  const finalAmount = roundCurrency(Math.max(0, Number(booking.finalAmount) || 0));
+  const systemAmount = roundCurrency(Math.max(0, Number(booking.systemCalculatedAmount) || 0));
+  if (booking.status === "completed") {
+    return finalAmount > 0 ? finalAmount : systemAmount;
+  }
+  return systemAmount;
+};
+
+const getPaymentBreakdownFromBooking = (
+  booking: Pick<GamingBooking, "paidCashAmount" | "paidCardAmount" | "paidUpiAmount">
+) =>
+  normalizePaymentBreakdown({
+    cash: booking.paidCashAmount,
+    card: booking.paidCardAmount,
+    upi: booking.paidUpiAmount
+  });
 
 const buildBookingNumber = () => {
   const now = new Date();
@@ -170,6 +229,14 @@ const buildSyncEvent = (booking: GamingBooking, idempotencyKey: string) => ({
     status: booking.status,
     paymentStatus: booking.paymentStatus,
     paymentMode: booking.paymentMode ?? undefined,
+    paymentBreakdown:
+      booking.paymentStatus === "paid"
+        ? {
+            cash: roundCurrency(Math.max(0, booking.paidCashAmount || 0)),
+            card: roundCurrency(Math.max(0, booking.paidCardAmount || 0)),
+            upi: roundCurrency(Math.max(0, booking.paidUpiAmount || 0))
+          }
+        : undefined,
     finalAmount: booking.finalAmount,
     systemCalculatedAmount: booking.systemCalculatedAmount,
     extraMemberCount: booking.extraMemberCount,
@@ -211,17 +278,64 @@ const sanitizeCustomers = (customers: Array<{ name: string; phone: string }>): G
   return sanitized;
 };
 
-const sanitizePayment = (input: { paymentStatus?: GamingPaymentStatus; paymentMode?: GamingPaymentMode | null }) => {
-  const paymentStatus = input.paymentStatus ?? "pending";
+const sanitizePayment = (
+  input: {
+    paymentStatus?: GamingPaymentStatus;
+    paymentMode?: GamingPaymentMode | null;
+    paymentBreakdown?: PaymentBreakdownInput;
+  },
+  fallback: {
+    paymentStatus: GamingPaymentStatus;
+    paymentMode: GamingPaymentMode | null;
+    paymentBreakdown: PaymentBreakdown;
+  },
+  targetAmount: number
+) => {
+  const paymentStatus = input.paymentStatus ?? fallback.paymentStatus;
   const paymentMode = input.paymentMode ?? null;
 
-  if (paymentStatus === "paid" && !paymentMode) {
-    throw new Error("Select payment mode when status is paid.");
+  if (paymentStatus !== "paid") {
+    return {
+      paymentStatus,
+      paymentMode: null,
+      paymentBreakdown: { ...EMPTY_PAYMENT_BREAKDOWN }
+    };
+  }
+
+  const explicitBreakdown = normalizePaymentBreakdown(input.paymentBreakdown);
+  let resolvedBreakdown =
+    getPaymentBreakdownTotal(explicitBreakdown) > AMOUNT_DIFF_THRESHOLD
+      ? explicitBreakdown
+      : { ...fallback.paymentBreakdown };
+
+  const normalizedTarget = roundCurrency(Math.max(0, Number(targetAmount) || 0));
+  if (getPaymentBreakdownTotal(resolvedBreakdown) <= AMOUNT_DIFF_THRESHOLD) {
+    if (!paymentMode || paymentMode === "mixed") {
+      throw new Error("Select payment mode or enter split breakdown for paid booking.");
+    }
+    resolvedBreakdown = {
+      ...EMPTY_PAYMENT_BREAKDOWN,
+      [paymentMode]: normalizedTarget
+    };
+  }
+
+  const resolvedTotal = getPaymentBreakdownTotal(resolvedBreakdown);
+  if (normalizedTarget > AMOUNT_DIFF_THRESHOLD && hasAmountDiff(resolvedTotal, normalizedTarget)) {
+    throw new Error("Split total must match payable amount.");
+  }
+
+  const derivedPaymentMode = derivePaymentModeFromBreakdown(resolvedBreakdown);
+  if (!derivedPaymentMode) {
+    throw new Error("Split values are required for paid booking.");
+  }
+  if (paymentMode && paymentMode !== "mixed" && derivedPaymentMode !== paymentMode) {
+    throw new Error("Payment mode and split amounts mismatch.");
   }
 
   return {
     paymentStatus,
-    paymentMode: paymentStatus === "paid" ? paymentMode : null
+    paymentMode: derivedPaymentMode,
+    paymentBreakdown: resolvedBreakdown
   };
 };
 
@@ -282,6 +396,27 @@ const toLocalBookingFromServer = (
   const extraMemberCharge = roundCurrency(
     Math.max(0, Number(serverBooking.extraMemberCharge ?? getExtraMemberCharge(serverBooking.bookingType, playerCount)))
   );
+  const finalAmount = roundCurrency(Math.max(0, Number(serverBooking.finalAmount) || 0));
+  const collectibleAmount = getCollectibleAmount({
+    status: serverBooking.status,
+    finalAmount,
+    systemCalculatedAmount
+  });
+  const serverBreakdown = normalizePaymentBreakdown({
+    cash: serverBooking.paymentBreakdown?.cash,
+    card: serverBooking.paymentBreakdown?.card,
+    upi: serverBooking.paymentBreakdown?.upi
+  });
+  const normalizedBreakdown =
+    serverBooking.paymentStatus === "paid" &&
+    getPaymentBreakdownTotal(serverBreakdown) <= AMOUNT_DIFF_THRESHOLD &&
+    serverBooking.paymentMode &&
+    serverBooking.paymentMode !== "mixed"
+      ? {
+          ...EMPTY_PAYMENT_BREAKDOWN,
+          [serverBooking.paymentMode]: collectibleAmount
+        }
+      : serverBreakdown;
 
   return {
     localBookingId: existingLocal?.localBookingId ?? `server-${serverBooking.id}`,
@@ -298,7 +433,7 @@ const toLocalBookingFromServer = (
     checkInAt: serverBooking.checkInAt,
     checkOutAt: serverBooking.checkOutAt,
     hourlyRate: roundCurrency(Math.max(0, Number(serverBooking.hourlyRate) || 0)),
-    finalAmount: roundCurrency(Math.max(0, Number(serverBooking.finalAmount) || 0)),
+    finalAmount,
     systemCalculatedAmount,
     extraMemberCount,
     extraMemberCharge,
@@ -306,6 +441,9 @@ const toLocalBookingFromServer = (
     status: serverBooking.status,
     paymentStatus: serverBooking.paymentStatus,
     paymentMode: serverBooking.paymentMode ?? null,
+    paidCashAmount: normalizedBreakdown.cash,
+    paidCardAmount: normalizedBreakdown.card,
+    paidUpiAmount: normalizedBreakdown.upi,
     foodOrderReference: cleanText(serverBooking.foodOrderReference),
     foodInvoiceNumber: cleanText(serverBooking.foodInvoiceNumber),
     foodInvoiceStatus: serverBooking.foodInvoiceStatus ?? "none",
@@ -315,7 +453,10 @@ const toLocalBookingFromServer = (
     sourceDeviceId: cleanText(serverBooking.sourceDeviceId),
     staffId: serverBooking.staffId,
     staffName: serverBooking.staffName || serverBooking.staffUsername || existingLocal?.staffName || "-",
-    syncStatus: existingLocal && UNSYNCED_STATUSES.has(existingLocal.syncStatus) ? existingLocal.syncStatus : "synced",
+    syncStatus:
+      existingLocal && !existingLocal.serverBookingId && UNSYNCED_STATUSES.has(existingLocal.syncStatus)
+        ? existingLocal.syncStatus
+        : "synced",
     createdAt: serverBooking.createdAt,
     updatedAt: serverBooking.updatedAt
   };
@@ -329,6 +470,7 @@ export const gamingBookingsService = {
     }
 
     const existingRows = await gamingBookingsRepository.list(undefined, 2000);
+    const unresolvedBookingNumbers = new Set(await syncQueueRepository.listUnresolvedGamingBookingNumbers());
     const existingByBookingNumber = new Map(existingRows.map((row) => [row.bookingNumber, row]));
     const existingByServerId = new Map(
       existingRows.filter((row) => row.serverBookingId).map((row) => [row.serverBookingId as string, row])
@@ -352,7 +494,9 @@ export const gamingBookingsService = {
           existingByServerId.get(serverRow.id) ??
           existingByBookingNumber.get(serverRow.bookingNumber) ??
           null;
-        if (existing && UNSYNCED_STATUSES.has(existing.syncStatus)) {
+        const hasLocalOnlyPendingSync =
+          existing !== null && !existing.serverBookingId && unresolvedBookingNumbers.has(existing.bookingNumber);
+        if (hasLocalOnlyPendingSync) {
           continue;
         }
         const localRow = toLocalBookingFromServer(serverRow, existing);
@@ -368,8 +512,11 @@ export const gamingBookingsService = {
     } while (page <= totalPages);
 
     const staleSyncedLocalIds = existingRows
-      .filter((row) => !UNSYNCED_STATUSES.has(row.syncStatus))
       .filter((row) => {
+        const hasLocalOnlyPendingSync = !row.serverBookingId && unresolvedBookingNumbers.has(row.bookingNumber);
+        if (hasLocalOnlyPendingSync) {
+          return false;
+        }
         if (row.serverBookingId) {
           return !serverBookingIdsSeen.has(row.serverBookingId);
         }
@@ -463,6 +610,7 @@ export const gamingBookingsService = {
       status?: GamingBookingStatus;
       paymentStatus?: GamingPaymentStatus;
       paymentMode?: GamingPaymentMode;
+      paymentBreakdown?: PaymentBreakdownInput;
       foodOrderReference?: string;
       foodInvoiceNumber?: string;
       foodInvoiceStatus?: "none" | "pending" | "paid" | "cancelled";
@@ -482,7 +630,6 @@ export const gamingBookingsService = {
         : getResourceLabel(primaryResourceCode);
     const customers = sanitizeCustomers(input.customers);
     const playerCount = sanitizePlayerCount(input.playerCount, customers.length);
-    const payment = sanitizePayment({ paymentStatus: input.paymentStatus, paymentMode: input.paymentMode });
     const checkInAt = input.checkInAt ? new Date(input.checkInAt).toISOString() : nowIso();
     const status =
       input.status ??
@@ -500,6 +647,24 @@ export const gamingBookingsService = {
     const extraMemberCount = getExtraMemberCount(input.bookingType, playerCount);
     const extraMemberCharge = getExtraMemberCharge(input.bookingType, playerCount);
     const systemCalculatedAmount = roundCurrency(gameAmount + foodAndBeverageAmount);
+    const targetAmount = getCollectibleAmount({
+      status,
+      finalAmount: 0,
+      systemCalculatedAmount
+    });
+    const payment = sanitizePayment(
+      {
+        paymentStatus: input.paymentStatus,
+        paymentMode: input.paymentMode ?? null,
+        paymentBreakdown: input.paymentBreakdown
+      },
+      {
+        paymentStatus: "pending",
+        paymentMode: null,
+        paymentBreakdown: { ...EMPTY_PAYMENT_BREAKDOWN }
+      },
+      targetAmount
+    );
     const now = nowIso();
 
     const booking: GamingBooking = {
@@ -525,6 +690,9 @@ export const gamingBookingsService = {
       status,
       paymentStatus: payment.paymentStatus,
       paymentMode: payment.paymentMode,
+      paidCashAmount: payment.paymentBreakdown.cash,
+      paidCardAmount: payment.paymentBreakdown.card,
+      paidUpiAmount: payment.paymentBreakdown.upi,
       foodOrderReference: input.foodOrderReference?.trim() || null,
       foodInvoiceNumber: input.foodInvoiceNumber?.trim() || null,
       foodInvoiceStatus: input.foodInvoiceStatus ?? "none",
@@ -555,6 +723,7 @@ export const gamingBookingsService = {
       amountOverrideReason?: string;
       paymentStatus?: "pending" | "paid";
       paymentMode?: GamingPaymentMode;
+      paymentBreakdown?: PaymentBreakdownInput;
     }
   ) {
     const booking = await gamingBookingsRepository.getById(localBookingId);
@@ -573,10 +742,6 @@ export const gamingBookingsService = {
       bookingType: booking.bookingType,
       playerCount: booking.playerCount,
       status: "completed"
-    });
-    const payment = sanitizePayment({
-      paymentStatus: input.paymentStatus ?? booking.paymentStatus,
-      paymentMode: input.paymentMode ?? booking.paymentMode
     });
     const systemCalculatedAmount = roundCurrency(
       Math.max(
@@ -598,6 +763,19 @@ export const gamingBookingsService = {
     if (hasAmountDiff(nextFinalAmount, systemCalculatedAmount) && !overrideReason) {
       throw new Error("Please enter reason for changing system amount.");
     }
+    const payment = sanitizePayment(
+      {
+        paymentStatus: input.paymentStatus ?? booking.paymentStatus,
+        paymentMode: input.paymentMode ?? booking.paymentMode,
+        paymentBreakdown: input.paymentBreakdown
+      },
+      {
+        paymentStatus: booking.paymentStatus,
+        paymentMode: booking.paymentMode,
+        paymentBreakdown: getPaymentBreakdownFromBooking(booking)
+      },
+      nextFinalAmount > 0 ? nextFinalAmount : systemCalculatedAmount
+    );
 
     const nextBooking: GamingBooking = {
       ...booking,
@@ -605,6 +783,9 @@ export const gamingBookingsService = {
       status: "completed",
       paymentStatus: payment.paymentStatus,
       paymentMode: payment.paymentMode,
+      paidCashAmount: payment.paymentBreakdown.cash,
+      paidCardAmount: payment.paymentBreakdown.card,
+      paidUpiAmount: payment.paymentBreakdown.upi,
       finalAmount: nextFinalAmount,
       systemCalculatedAmount,
       extraMemberCount: Math.max(
@@ -651,6 +832,7 @@ export const gamingBookingsService = {
       note?: string;
       paymentStatus?: "pending" | "paid";
       paymentMode?: GamingPaymentMode;
+      paymentBreakdown?: PaymentBreakdownInput;
       finalAmount?: number;
       systemCalculatedAmount?: number;
       extraMemberCount?: number;
@@ -682,10 +864,6 @@ export const gamingBookingsService = {
       await this.assertResourcesAvailable(nextResourceCodes, booking.localBookingId);
     }
 
-    const payment = sanitizePayment({
-      paymentStatus: input.paymentStatus ?? booking.paymentStatus,
-      paymentMode: input.paymentMode ?? booking.paymentMode
-    });
     const nextCustomers = input.customers?.length ? sanitizeCustomers(input.customers) : booking.customers;
     const nextPlayerCount = sanitizePlayerCount(
       input.playerCount === undefined ? booking.playerCount : input.playerCount,
@@ -721,6 +899,23 @@ export const gamingBookingsService = {
     if (shouldValidateOverride && hasAmountDiff(nextFinalAmount, nextSystemCalculatedAmount) && !nextOverrideReason) {
       throw new Error("Please enter reason for changing system amount.");
     }
+    const payment = sanitizePayment(
+      {
+        paymentStatus: input.paymentStatus ?? booking.paymentStatus,
+        paymentMode: input.paymentMode ?? booking.paymentMode,
+        paymentBreakdown: input.paymentBreakdown
+      },
+      {
+        paymentStatus: booking.paymentStatus,
+        paymentMode: booking.paymentMode,
+        paymentBreakdown: getPaymentBreakdownFromBooking(booking)
+      },
+      getCollectibleAmount({
+        status: nextStatus,
+        finalAmount: nextFinalAmount,
+        systemCalculatedAmount: nextSystemCalculatedAmount
+      })
+    );
 
     const nextBooking: GamingBooking = {
       ...booking,
@@ -762,6 +957,9 @@ export const gamingBookingsService = {
       note: input.note === undefined ? booking.note : input.note.trim() || null,
       paymentStatus: payment.paymentStatus,
       paymentMode: payment.paymentMode,
+      paidCashAmount: payment.paymentBreakdown.cash,
+      paidCardAmount: payment.paymentBreakdown.card,
+      paidUpiAmount: payment.paymentBreakdown.upi,
       foodOrderReference: booking.foodOrderReference,
       foodInvoiceNumber: booking.foodInvoiceNumber,
       foodInvoiceStatus: booking.foodInvoiceStatus,
@@ -777,7 +975,12 @@ export const gamingBookingsService = {
     return nextBooking;
   },
 
-  async updatePaymentStatus(localBookingId: string, paymentStatus: GamingPaymentStatus, paymentMode?: GamingPaymentMode) {
+  async updatePaymentStatus(
+    localBookingId: string,
+    paymentStatus: GamingPaymentStatus,
+    paymentMode?: GamingPaymentMode,
+    paymentBreakdown?: PaymentBreakdownInput
+  ) {
     const booking = await gamingBookingsRepository.getById(localBookingId);
     if (!booking) {
       throw new Error("Booking not found.");
@@ -785,12 +988,27 @@ export const gamingBookingsService = {
     if (booking.status === "completed") {
       throw new Error("Payment status cannot be changed after checkout.");
     }
-    const payment = sanitizePayment({ paymentStatus, paymentMode: paymentMode ?? booking.paymentMode });
+    const payment = sanitizePayment(
+      {
+        paymentStatus,
+        paymentMode: paymentMode ?? booking.paymentMode,
+        paymentBreakdown
+      },
+      {
+        paymentStatus: booking.paymentStatus,
+        paymentMode: booking.paymentMode,
+        paymentBreakdown: getPaymentBreakdownFromBooking(booking)
+      },
+      getCollectibleAmount(booking)
+    );
 
     const nextBooking: GamingBooking = {
       ...booking,
       paymentStatus: payment.paymentStatus,
       paymentMode: payment.paymentMode,
+      paidCashAmount: payment.paymentBreakdown.cash,
+      paidCardAmount: payment.paymentBreakdown.card,
+      paidUpiAmount: payment.paymentBreakdown.upi,
       foodOrderReference: booking.foodOrderReference,
       foodInvoiceNumber: booking.foodInvoiceNumber,
       foodInvoiceStatus: booking.foodInvoiceStatus,

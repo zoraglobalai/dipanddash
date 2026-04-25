@@ -244,7 +244,8 @@ export type UsageEventDraft = {
 export type GamingBookingType = "snooker" | "console";
 export type GamingBookingStatus = "upcoming" | "ongoing" | "completed" | "cancelled";
 export type GamingPaymentStatus = "pending" | "paid" | "refunded";
-export type GamingPaymentMode = "cash" | "upi" | "card";
+export type GamingPaymentChannel = "cash" | "upi" | "card";
+export type GamingPaymentMode = GamingPaymentChannel | "mixed";
 export type GamingResourceCode =
   | "board_1"
   | "board_2"
@@ -285,6 +286,9 @@ export type GamingBooking = {
   status: GamingBookingStatus;
   paymentStatus: GamingPaymentStatus;
   paymentMode: GamingPaymentMode | null;
+  paidCashAmount: number;
+  paidCardAmount: number;
+  paidUpiAmount: number;
   foodOrderReference: string | null;
   foodInvoiceNumber: string | null;
   foodInvoiceStatus: "none" | "pending" | "paid" | "cancelled";
@@ -410,6 +414,7 @@ export type SyncQueueEvent =
         status?: GamingBookingStatus;
         paymentStatus?: GamingPaymentStatus;
         paymentMode?: GamingPaymentMode;
+        paymentBreakdown?: Partial<Record<GamingPaymentChannel, number>>;
         finalAmount?: number;
         systemCalculatedAmount?: number;
         extraMemberCount?: number;

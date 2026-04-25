@@ -24,9 +24,16 @@ type CustomerDetailsFilter = {
 type CollectPendingInput = {
   sourceType: PendingSourceType;
   sourceId: string;
-  paymentMode: "cash" | "card" | "upi";
+  paymentMode: "cash" | "card" | "upi" | "mixed";
   amount?: number;
   referenceNo?: string;
+  cardReferenceNo?: string;
+  upiReferenceNo?: string;
+  paymentBreakdown?: {
+    cash?: number;
+    card?: number;
+    upi?: number;
+  };
   note?: string;
 };
 
@@ -130,6 +137,12 @@ type RawGamingPendingRow = {
 };
 
 type RawAmountRow = { amount: string };
+type PendingCollectionMode = "cash" | "card" | "upi";
+type PendingCollectionStep = {
+  mode: PendingCollectionMode;
+  amount: number;
+  referenceNo: string | null;
+};
 
 export class PendingService {
   private readonly invoiceRepository = AppDataSource.getRepository(Invoice);
@@ -217,7 +230,20 @@ export class PendingService {
         "payment.\"invoiceId\" = invoice.id AND payment.status = 'success'"
       )
       .where("invoice.status = :status", { status: "pending" })
+      .andWhere(
+        `(
+          invoice."kitchenStatus" = :collectionReadyKitchenStatus
+          OR EXISTS (
+            SELECT 1
+            FROM invoice_payments payment_exists
+            WHERE payment_exists."invoiceId" = invoice.id
+              AND payment_exists.status = 'success'
+              AND payment_exists.amount > 0
+          )
+        )`
+      )
       .setParameters({
+        collectionReadyKitchenStatus: "served",
         snookerOrderType: "snooker",
         snookerStaffRole: UserRole.SNOOKER_STAFF,
         snookerInvoicePrefix: "SNK-%",
@@ -621,11 +647,108 @@ export class PendingService {
     };
   }
 
-  async collectPendingAmount(input: CollectPendingInput, contextUser: PendingContextUser) {
-    if ((input.paymentMode === "card" || input.paymentMode === "upi") && !cleanOptionalText(input.referenceNo)) {
-      throw new AppError(422, "Reference ID is required for Card and UPI payments.");
+  private normalizeCollectionSteps(input: CollectPendingInput, maxAllowedAmount: number): PendingCollectionStep[] {
+    const maxAmount = toMoney(maxAllowedAmount);
+    if (maxAmount <= 0.001) {
+      return [];
     }
 
+    if (input.paymentMode !== "mixed") {
+      if ((input.paymentMode === "card" || input.paymentMode === "upi") && !cleanOptionalText(input.referenceNo)) {
+        throw new AppError(422, "Reference ID is required for Card and UPI payments.");
+      }
+
+      const amount = toMoney(input.amount ?? maxAmount);
+      if (amount <= 0) {
+        throw new AppError(422, "Amount should be greater than zero.");
+      }
+      if (amount - maxAmount > 0.001) {
+        throw new AppError(422, `Amount cannot exceed pending due (${maxAmount.toFixed(2)}).`);
+      }
+
+      return [
+        {
+          mode: input.paymentMode,
+          amount,
+          referenceNo: cleanOptionalText(input.referenceNo)
+        }
+      ];
+    }
+
+    const split = input.paymentBreakdown;
+    if (!split) {
+      throw new AppError(422, "Split amounts are required for mixed payment.");
+    }
+
+    const normalizedSplit = {
+      cash: toMoney(split.cash ?? 0),
+      card: toMoney(split.card ?? 0),
+      upi: toMoney(split.upi ?? 0)
+    };
+    const activeModes = Object.entries(normalizedSplit)
+      .filter((entry) => entry[1] > 0.001)
+      .map((entry) => entry[0] as PendingCollectionMode);
+
+    if (activeModes.length < 2) {
+      throw new AppError(422, "Mixed payment should include at least two payment methods.");
+    }
+
+    const splitTotal = toMoney(normalizedSplit.cash + normalizedSplit.card + normalizedSplit.upi);
+    const amount = toMoney(input.amount ?? splitTotal);
+    if (amount <= 0) {
+      throw new AppError(422, "Amount should be greater than zero.");
+    }
+    if (Math.abs(splitTotal - amount) > 0.01) {
+      throw new AppError(422, "Amount should match the mixed split total.");
+    }
+    if (amount - maxAmount > 0.001) {
+      throw new AppError(422, `Amount cannot exceed pending due (${maxAmount.toFixed(2)}).`);
+    }
+
+    if (normalizedSplit.card > 0.001 && !cleanOptionalText(input.cardReferenceNo)) {
+      throw new AppError(422, "Card reference ID is required for mixed payment.");
+    }
+    if (normalizedSplit.upi > 0.001 && !cleanOptionalText(input.upiReferenceNo)) {
+      throw new AppError(422, "UPI reference ID is required for mixed payment.");
+    }
+
+    return activeModes.map((mode) => ({
+      mode,
+      amount: normalizedSplit[mode],
+      referenceNo:
+        mode === "card"
+          ? cleanOptionalText(input.cardReferenceNo)
+          : mode === "upi"
+            ? cleanOptionalText(input.upiReferenceNo)
+            : null
+    }));
+  }
+
+  private async resolveInvoicePaymentMode(manager: EntityManager, invoiceId: string) {
+    const rows = await manager
+      .getRepository(InvoicePayment)
+      .createQueryBuilder("payment")
+      .select("payment.mode", "mode")
+      .where("payment.\"invoiceId\" = :invoiceId", { invoiceId })
+      .andWhere("payment.status = :status", { status: "success" })
+      .andWhere("payment.amount > 0")
+      .groupBy("payment.mode")
+      .getRawMany<{ mode: string }>();
+
+    const activeModes = rows
+      .map((row) => row.mode)
+      .filter((mode): mode is "cash" | "card" | "upi" => mode === "cash" || mode === "card" || mode === "upi");
+
+    if (!activeModes.length) {
+      return null;
+    }
+    if (activeModes.length === 1) {
+      return activeModes[0];
+    }
+    return "mixed";
+  }
+
+  async collectPendingAmount(input: CollectPendingInput, contextUser: PendingContextUser) {
     return AppDataSource.transaction(async (manager) => {
       const scope = this.resolveScopeByRole(contextUser.role, undefined, contextUser.clientType);
 
@@ -646,51 +769,56 @@ export class PendingService {
           };
         }
 
-        const amount = toMoney(input.amount ?? state.pendingAmount);
-        if (amount <= 0) {
-          throw new AppError(422, "Amount should be greater than zero.");
-        }
-        if (amount - state.pendingAmount > 0.001) {
-          throw new AppError(422, `Amount cannot exceed pending due (${state.pendingAmount.toFixed(2)}).`);
+        const steps = this.normalizeCollectionSteps(input, state.pendingAmount);
+        const collectedAmount = toMoney(steps.reduce((sum, step) => sum + step.amount, 0));
+        const remainingAmount = toMoney(Math.max(state.pendingAmount - collectedAmount, 0));
+        const normalizedNote = cleanOptionalText(input.note);
+
+        for (const step of steps) {
+          await manager.save(
+            InvoicePayment,
+            manager.create(InvoicePayment, {
+              invoiceId: state.invoice.id,
+              mode: step.mode,
+              status: "success",
+              amount: step.amount,
+              receivedAmount: step.amount,
+              changeAmount: 0,
+              referenceNo: step.referenceNo,
+              paidAt: new Date()
+            })
+          );
         }
 
-        const remainingAmount = toMoney(Math.max(state.pendingAmount - amount, 0));
-        await manager.save(
-          InvoicePayment,
-          manager.create(InvoicePayment, {
-            invoiceId: state.invoice.id,
-            mode: input.paymentMode,
-            status: "success",
-            amount,
-            receivedAmount: amount,
-            changeAmount: 0,
-            referenceNo: cleanOptionalText(input.referenceNo),
-            paidAt: new Date()
-          })
-        );
+        let runningRemaining = state.pendingAmount;
+        for (const step of steps) {
+          runningRemaining = toMoney(Math.max(runningRemaining - step.amount, 0));
+          await manager.save(
+            PendingPaymentHistory,
+            manager.create(PendingPaymentHistory, {
+              sourceType: "invoice",
+              sourceId: state.invoice.id,
+              sourceNumber: state.invoice.invoiceNumber,
+              customerName: state.customerName,
+              customerPhone: state.customerPhone,
+              mode: step.mode,
+              amount: step.amount,
+              remainingAmount: runningRemaining,
+              referenceNo: step.referenceNo,
+              note: normalizedNote,
+              collectedByUserId: contextUser.userId
+            })
+          );
+        }
 
-        if (remainingAmount <= 0.001 && state.invoice.status !== "paid") {
+        const derivedInvoicePaymentMode = await this.resolveInvoicePaymentMode(manager, state.invoice.id);
+        state.invoice.paymentMode = derivedInvoicePaymentMode ?? state.invoice.paymentMode;
+        if (remainingAmount <= 0.001) {
           state.invoice.status = "paid";
-          state.invoice.paymentMode = input.paymentMode;
-          await manager.save(Invoice, state.invoice);
+        } else if (state.invoice.status !== "paid") {
+          state.invoice.status = "pending";
         }
-
-        await manager.save(
-          PendingPaymentHistory,
-          manager.create(PendingPaymentHistory, {
-            sourceType: "invoice",
-            sourceId: state.invoice.id,
-            sourceNumber: state.invoice.invoiceNumber,
-            customerName: state.customerName,
-            customerPhone: state.customerPhone,
-            mode: input.paymentMode,
-            amount,
-            remainingAmount,
-            referenceNo: cleanOptionalText(input.referenceNo),
-            note: cleanOptionalText(input.note),
-            collectedByUserId: contextUser.userId
-          })
-        );
+        await manager.save(Invoice, state.invoice);
 
         return {
           sourceType: "invoice" as const,
@@ -699,9 +827,14 @@ export class PendingService {
           customerName: state.customerName,
           customerPhone: state.customerPhone,
           totalAmount: state.totalAmount,
-          collectedAmount: amount,
+          collectedAmount,
           remainingAmount,
-          settled: remainingAmount <= 0.001
+          settled: remainingAmount <= 0.001,
+          paymentBreakdown: {
+            cash: toMoney(steps.filter((step) => step.mode === "cash").reduce((sum, step) => sum + step.amount, 0)),
+            card: toMoney(steps.filter((step) => step.mode === "card").reduce((sum, step) => sum + step.amount, 0)),
+            upi: toMoney(steps.filter((step) => step.mode === "upi").reduce((sum, step) => sum + step.amount, 0))
+          }
         };
       }
 
@@ -721,37 +854,57 @@ export class PendingService {
         };
       }
 
-      const amount = toMoney(input.amount ?? state.pendingAmount);
-      if (amount <= 0) {
-        throw new AppError(422, "Amount should be greater than zero.");
-      }
-      if (amount - state.pendingAmount > 0.001) {
-        throw new AppError(422, `Amount cannot exceed pending due (${state.pendingAmount.toFixed(2)}).`);
+      const steps = this.normalizeCollectionSteps(input, state.pendingAmount);
+      const collectedAmount = toMoney(steps.reduce((sum, step) => sum + step.amount, 0));
+      const remainingAmount = toMoney(Math.max(state.pendingAmount - collectedAmount, 0));
+      const normalizedNote = cleanOptionalText(input.note);
+
+      let runningRemaining = state.pendingAmount;
+      for (const step of steps) {
+        runningRemaining = toMoney(Math.max(runningRemaining - step.amount, 0));
+        await manager.save(
+          PendingPaymentHistory,
+          manager.create(PendingPaymentHistory, {
+            sourceType: "gaming_booking",
+            sourceId: state.booking.id,
+            sourceNumber: state.booking.bookingNumber,
+            customerName: state.customerName,
+            customerPhone: state.customerPhone,
+            mode: step.mode,
+            amount: step.amount,
+            remainingAmount: runningRemaining,
+            referenceNo: step.referenceNo,
+            note: normalizedNote,
+            collectedByUserId: contextUser.userId
+          })
+        );
       }
 
-      const remainingAmount = toMoney(Math.max(state.pendingAmount - amount, 0));
-      await manager.save(
-        PendingPaymentHistory,
-        manager.create(PendingPaymentHistory, {
-          sourceType: "gaming_booking",
-          sourceId: state.booking.id,
-          sourceNumber: state.booking.bookingNumber,
-          customerName: state.customerName,
-          customerPhone: state.customerPhone,
-          mode: input.paymentMode,
-          amount,
-          remainingAmount,
-          referenceNo: cleanOptionalText(input.referenceNo),
-          note: cleanOptionalText(input.note),
-          collectedByUserId: contextUser.userId
-        })
+      state.booking.paidCashAmount = toMoney(
+        toMoney(state.booking.paidCashAmount) +
+          steps.filter((step) => step.mode === "cash").reduce((sum, step) => sum + step.amount, 0)
+      );
+      state.booking.paidCardAmount = toMoney(
+        toMoney(state.booking.paidCardAmount) +
+          steps.filter((step) => step.mode === "card").reduce((sum, step) => sum + step.amount, 0)
+      );
+      state.booking.paidUpiAmount = toMoney(
+        toMoney(state.booking.paidUpiAmount) +
+          steps.filter((step) => step.mode === "upi").reduce((sum, step) => sum + step.amount, 0)
       );
 
+      const activeModes = [
+        state.booking.paidCashAmount > 0.001 ? "cash" : null,
+        state.booking.paidCardAmount > 0.001 ? "card" : null,
+        state.booking.paidUpiAmount > 0.001 ? "upi" : null
+      ].filter((mode): mode is "cash" | "card" | "upi" => Boolean(mode));
+      const derivedPaymentMode = activeModes.length <= 1 ? (activeModes[0] ?? null) : "mixed";
+
+      state.booking.paymentMode = derivedPaymentMode;
       if (remainingAmount <= 0.001) {
         state.booking.paymentStatus = "paid";
-        state.booking.paymentMode = input.paymentMode;
-        await manager.save(GamingBooking, state.booking);
       }
+      await manager.save(GamingBooking, state.booking);
 
       return {
         sourceType: "gaming_booking" as const,
@@ -760,9 +913,14 @@ export class PendingService {
         customerName: state.customerName,
         customerPhone: state.customerPhone,
         totalAmount: state.totalAmount,
-        collectedAmount: amount,
+        collectedAmount,
         remainingAmount,
-        settled: remainingAmount <= 0.001
+        settled: remainingAmount <= 0.001,
+        paymentBreakdown: {
+          cash: toMoney(steps.filter((step) => step.mode === "cash").reduce((sum, step) => sum + step.amount, 0)),
+          card: toMoney(steps.filter((step) => step.mode === "card").reduce((sum, step) => sum + step.amount, 0)),
+          upi: toMoney(steps.filter((step) => step.mode === "upi").reduce((sum, step) => sum + step.amount, 0))
+        }
       };
     });
   }

@@ -46,6 +46,7 @@ const parseSqlStatements = (sql: string) =>
 
 const ORDER_PAYMENT_MODES = new Set<PosOrder["paymentMode"]>(["cash", "card", "upi", "mixed", null]);
 const ORDER_CHANNELS = new Set<PosOrder["orderChannel"]>(["dine-in", "take-away", "swiggy", "zomato", "snooker", null]);
+const ACTIVE_QUEUE_STATUSES = new Set<SyncQueueRow["status"]>(["pending", "syncing", "failed", "needs_attention"]);
 
 const normalizeOrderRow = (row: PosOrder): PosOrder => ({
   ...row,
@@ -94,7 +95,16 @@ const normalizeGamingBookingRow = (row: GamingBooking) => ({
   amountOverrideReason:
     typeof (row as GamingBooking & { amountOverrideReason?: unknown }).amountOverrideReason === "string"
       ? ((row as GamingBooking & { amountOverrideReason?: string }).amountOverrideReason ?? null)
-      : null
+      : null,
+  paidCashAmount: Number.isFinite(Number((row as GamingBooking & { paidCashAmount?: number }).paidCashAmount))
+    ? Number((row as GamingBooking & { paidCashAmount?: number }).paidCashAmount)
+    : 0,
+  paidCardAmount: Number.isFinite(Number((row as GamingBooking & { paidCardAmount?: number }).paidCardAmount))
+    ? Number((row as GamingBooking & { paidCardAmount?: number }).paidCardAmount)
+    : 0,
+  paidUpiAmount: Number.isFinite(Number((row as GamingBooking & { paidUpiAmount?: number }).paidUpiAmount))
+    ? Number((row as GamingBooking & { paidUpiAmount?: number }).paidUpiAmount)
+    : 0
 });
 
 class PosStorage {
@@ -148,6 +158,27 @@ class PosStorage {
       }
       try {
         await this.db.execute("ALTER TABLE gaming_bookings_local ADD COLUMN payment_mode TEXT");
+      } catch {
+        // no-op: column already exists
+      }
+      try {
+        await this.db.execute(
+          "ALTER TABLE gaming_bookings_local ADD COLUMN paid_cash_amount REAL NOT NULL DEFAULT 0"
+        );
+      } catch {
+        // no-op: column already exists
+      }
+      try {
+        await this.db.execute(
+          "ALTER TABLE gaming_bookings_local ADD COLUMN paid_card_amount REAL NOT NULL DEFAULT 0"
+        );
+      } catch {
+        // no-op: column already exists
+      }
+      try {
+        await this.db.execute(
+          "ALTER TABLE gaming_bookings_local ADD COLUMN paid_upi_amount REAL NOT NULL DEFAULT 0"
+        );
       } catch {
         // no-op: column already exists
       }
@@ -725,12 +756,13 @@ class PosStorage {
         order_channel: PosOrder["orderChannel"];
         table_label: string | null;
         kitchen_status: PosOrder["kitchenStatus"];
+        payment_json: string | null;
         customer_snapshot_json: string | null;
         lines_json: string;
         totals_json: string;
         updated_at: string;
       }>(
-        "SELECT local_order_id, invoice_number, order_type, order_channel, table_label, kitchen_status, customer_snapshot_json, lines_json, totals_json, updated_at FROM orders_local WHERE status = 'pending' ORDER BY updated_at DESC"
+        "SELECT local_order_id, invoice_number, order_type, order_channel, table_label, kitchen_status, payment_json, customer_snapshot_json, lines_json, totals_json, updated_at FROM orders_local WHERE status = 'pending' AND NOT (kitchen_status = 'served' AND payment_json IS NOT NULL) ORDER BY updated_at DESC"
       );
 
       return rows.map((row) => {
@@ -756,6 +788,7 @@ class PosStorage {
 
     return [...this.state.orders]
       .filter((order) => order.status === "pending")
+      .filter((order) => !(order.kitchenStatus === "served" && order.paymentMode !== null))
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
       .map(
         (order) =>
@@ -989,7 +1022,7 @@ class PosStorage {
 
     if (this.db) {
       await this.db.execute(
-        "INSERT OR REPLACE INTO gaming_bookings_local (local_booking_id, server_booking_id, booking_number, booking_type, resource_code, resource_codes_json, resource_label, player_count, customers_json, primary_customer_name, primary_customer_phone, check_in_at, check_out_at, hourly_rate, final_amount, system_calculated_amount, extra_member_count, extra_member_charge, amount_override_reason, status, payment_status, payment_mode, food_order_reference, food_invoice_number, food_invoice_status, food_and_beverage_amount, note, booking_channel, source_device_id, staff_id, staff_name, sync_status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT OR REPLACE INTO gaming_bookings_local (local_booking_id, server_booking_id, booking_number, booking_type, resource_code, resource_codes_json, resource_label, player_count, customers_json, primary_customer_name, primary_customer_phone, check_in_at, check_out_at, hourly_rate, final_amount, system_calculated_amount, extra_member_count, extra_member_charge, amount_override_reason, status, payment_status, payment_mode, paid_cash_amount, paid_card_amount, paid_upi_amount, food_order_reference, food_invoice_number, food_invoice_status, food_and_beverage_amount, note, booking_channel, source_device_id, staff_id, staff_name, sync_status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         [
           booking.localBookingId,
           booking.serverBookingId,
@@ -1013,6 +1046,9 @@ class PosStorage {
           booking.status,
           booking.paymentStatus,
           booking.paymentMode,
+          booking.paidCashAmount,
+          booking.paidCardAmount,
+          booking.paidUpiAmount,
           booking.foodOrderReference,
           booking.foodInvoiceNumber,
           booking.foodInvoiceStatus,
@@ -1097,6 +1133,9 @@ class PosStorage {
         status: GamingBooking["status"];
         payment_status: GamingBooking["paymentStatus"];
         payment_mode: GamingBooking["paymentMode"];
+        paid_cash_amount: number;
+        paid_card_amount: number;
+        paid_upi_amount: number;
         food_order_reference: string | null;
         food_invoice_number: string | null;
         food_invoice_status: GamingBooking["foodInvoiceStatus"];
@@ -1142,6 +1181,9 @@ class PosStorage {
         status: row.status,
         paymentStatus: row.payment_status,
         paymentMode: row.payment_mode ?? null,
+        paidCashAmount: Number(row.paid_cash_amount ?? 0),
+        paidCardAmount: Number(row.paid_card_amount ?? 0),
+        paidUpiAmount: Number(row.paid_upi_amount ?? 0),
         foodOrderReference: row.food_order_reference ?? null,
         foodInvoiceNumber: row.food_invoice_number ?? null,
         foodInvoiceStatus: row.food_invoice_status ?? "none",
@@ -1212,6 +1254,9 @@ class PosStorage {
         status: GamingBooking["status"];
         payment_status: GamingBooking["paymentStatus"];
         payment_mode: GamingBooking["paymentMode"];
+        paid_cash_amount: number;
+        paid_card_amount: number;
+        paid_upi_amount: number;
         food_order_reference: string | null;
         food_invoice_number: string | null;
         food_invoice_status: GamingBooking["foodInvoiceStatus"];
@@ -1254,6 +1299,9 @@ class PosStorage {
             status: row.status,
             paymentStatus: row.payment_status,
             paymentMode: row.payment_mode ?? null,
+            paidCashAmount: Number(row.paid_cash_amount ?? 0),
+            paidCardAmount: Number(row.paid_card_amount ?? 0),
+            paidUpiAmount: Number(row.paid_upi_amount ?? 0),
             foodOrderReference: row.food_order_reference ?? null,
             foodInvoiceNumber: row.food_invoice_number ?? null,
             foodInvoiceStatus: row.food_invoice_status ?? "none",
@@ -1412,6 +1460,82 @@ class PosStorage {
             (entry.nextRetryAt === null || new Date(entry.nextRetryAt).getTime() <= now))
       )
       .slice(0, limit);
+  }
+
+  async listUnresolvedInvoiceNumbers() {
+    await this.ensureInitialized();
+    const numbers = new Set<string>();
+
+    if (this.db) {
+      const rows = await this.db.select<{ payload_json: string }>(
+        "SELECT payload_json FROM sync_queue WHERE event_type = 'invoice_upsert' AND status IN ('pending', 'syncing', 'failed', 'needs_attention')"
+      );
+      for (const row of rows) {
+        try {
+          const payload = JSON.parse(row.payload_json) as {
+            payload?: {
+              invoiceNumber?: string;
+            };
+          };
+          const invoiceNumber = payload.payload?.invoiceNumber?.trim();
+          if (invoiceNumber) {
+            numbers.add(invoiceNumber);
+          }
+        } catch {
+          // ignore malformed payload rows
+        }
+      }
+      return [...numbers];
+    }
+
+    for (const row of this.state.queue) {
+      if (row.eventType !== "invoice_upsert" || !ACTIVE_QUEUE_STATUSES.has(row.status)) {
+        continue;
+      }
+      const invoiceNumber = (row.payload as { payload?: { invoiceNumber?: string } }).payload?.invoiceNumber?.trim();
+      if (invoiceNumber) {
+        numbers.add(invoiceNumber);
+      }
+    }
+    return [...numbers];
+  }
+
+  async listUnresolvedGamingBookingNumbers() {
+    await this.ensureInitialized();
+    const numbers = new Set<string>();
+
+    if (this.db) {
+      const rows = await this.db.select<{ payload_json: string }>(
+        "SELECT payload_json FROM sync_queue WHERE event_type = 'gaming_booking_upsert' AND status IN ('pending', 'syncing', 'failed', 'needs_attention')"
+      );
+      for (const row of rows) {
+        try {
+          const payload = JSON.parse(row.payload_json) as {
+            payload?: {
+              bookingNumber?: string;
+            };
+          };
+          const bookingNumber = payload.payload?.bookingNumber?.trim();
+          if (bookingNumber) {
+            numbers.add(bookingNumber);
+          }
+        } catch {
+          // ignore malformed payload rows
+        }
+      }
+      return [...numbers];
+    }
+
+    for (const row of this.state.queue) {
+      if (row.eventType !== "gaming_booking_upsert" || !ACTIVE_QUEUE_STATUSES.has(row.status)) {
+        continue;
+      }
+      const bookingNumber = (row.payload as { payload?: { bookingNumber?: string } }).payload?.bookingNumber?.trim();
+      if (bookingNumber) {
+        numbers.add(bookingNumber);
+      }
+    }
+    return [...numbers];
   }
 
   async updateSyncQueueStatus(input: {

@@ -83,6 +83,7 @@ export class GamingController {
       req.params.id,
       req.body.paymentStatus,
       req.body.paymentMode,
+      req.body.paymentBreakdown,
       resolveContext(req)
     );
     return sendSuccess(res, StatusCodes.OK, "Payment status updated successfully", { booking });

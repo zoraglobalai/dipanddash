@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type PropsWithChildren
 } from "react";
@@ -18,6 +19,7 @@ import { ordersRepository } from "@/db/repositories/orders.repository";
 import { syncQueueRepository } from "@/db/repositories/sync-queue.repository";
 import { settingsRepository } from "@/db/repositories/settings.repository";
 import { env } from "@/config/env";
+import { syncEngine } from "@/sync/sync-engine";
 import { makeId, makeInvoiceNumber } from "@/utils/idempotency";
 import { getClosingLockMessage } from "@/utils/closing-lock-message";
 import { formatQuantityWithUnit } from "@/utils/quantity";
@@ -65,7 +67,7 @@ type PosContextValue = {
   removeLine: (lineId: string) => void;
   applyCouponCode: (couponCode: string) => { ok: boolean; message: string };
   setManualDiscount: (value: number) => void;
-  saveAsPending: () => Promise<void>;
+  saveAsPending: (input?: { moveToCollections?: boolean; paymentMode?: InvoicePaymentInput["mode"] }) => Promise<void>;
   sendToKitchen: () => Promise<{ ok: boolean; message: string }>;
   updateKitchenStatus: (localOrderId: string, kitchenStatus: KitchenStatus) => Promise<void>;
   resumePending: (localOrderId: string) => Promise<void>;
@@ -74,6 +76,13 @@ type PosContextValue = {
     mode: InvoicePaymentInput["mode"];
     receivedAmount?: number;
     referenceNo?: string;
+    splitAmounts?: {
+      cash: number;
+      card: number;
+      upi: number;
+    };
+    cardReferenceNo?: string;
+    upiReferenceNo?: string;
   }) => Promise<void>;
   quickCreateCustomer: (input: { name: string; phone: string; email?: string }) => Promise<CustomerRecord>;
   searchCustomers: (query: string) => Promise<CustomerRecord[]>;
@@ -209,6 +218,7 @@ export const PosProvider = ({ children }: PropsWithChildren) => {
   const [allocationWarning, setAllocationWarning] = useState<string | null>(null);
   const [closingStatus, setClosingStatus] = useState<ClosingStatus | null>(null);
   const [isPunchedIn, setIsPunchedIn] = useState<boolean | null>(null);
+  const isBackgroundOrderRefreshRunningRef = useRef(false);
 
   const refreshPendingBills = useCallback(async () => {
     try {
@@ -307,6 +317,31 @@ export const PosProvider = ({ children }: PropsWithChildren) => {
 
     void bootstrap();
   }, [refreshClosingStatus, refreshCompletedBills, refreshKitchenOrders, refreshPendingBills, refreshRecentBills, refreshShiftStatus]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      if (isBackgroundOrderRefreshRunningRef.current) {
+        return;
+      }
+      isBackgroundOrderRefreshRunningRef.current = true;
+      void (async () => {
+        try {
+          await Promise.all([
+            refreshPendingBills(),
+            refreshRecentBills(),
+            refreshCompletedBills(),
+            refreshKitchenOrders()
+          ]);
+        } finally {
+          isBackgroundOrderRefreshRunningRef.current = false;
+        }
+      })();
+    }, 3000);
+
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [refreshCompletedBills, refreshKitchenOrders, refreshPendingBills, refreshRecentBills]);
 
   const validateAllocationForLines = useCallback(
     (lines: CartLine[], invoiceNumber: string) => {
@@ -759,35 +794,85 @@ export const PosProvider = ({ children }: PropsWithChildren) => {
     setCurrentOrder((previous) => createDraftOrder(previous.orderType, previous.orderChannel));
   }, []);
 
-  const saveAsPending = useCallback(async () => {
+  const syncNowIfOnline = useCallback(async () => {
+    if (!navigator.onLine) {
+      return;
+    }
+    try {
+      await syncEngine.syncNow();
+    } catch {
+      // Keep local queue intact; next sync cycle will retry.
+    }
+  }, []);
+
+  const saveAsPending = useCallback(async (input?: { moveToCollections?: boolean; paymentMode?: InvoicePaymentInput["mode"] }) => {
     if (!currentOrder.lines.length) {
       return;
     }
+    const now = new Date().toISOString();
+    const moveToCollections = input?.moveToCollections === true;
+    const selectedPaymentMode = input?.paymentMode ?? "cash";
     const pendingOrder = recomputeOrder({
       ...currentOrder,
       status: "pending",
-      paymentMode: null
+      paymentMode: moveToCollections ? (selectedPaymentMode === "mixed" ? "mixed" : selectedPaymentMode) : null,
+      kitchenStatus: moveToCollections ? "served" : currentOrder.kitchenStatus,
+      syncStatus: "pending",
+      updatedAt: now
     });
     await ordersRepository.save(pendingOrder);
-    await ordersRepository.upsertPendingBill({
-      localOrderId: pendingOrder.localOrderId,
-      invoiceNumber: pendingOrder.invoiceNumber,
-      customerName: pendingOrder.customer?.name ?? "Walk-in",
-      customerPhone: pendingOrder.customer?.phone ?? "-",
-      orderType: pendingOrder.orderType,
-      orderChannel: pendingOrder.orderChannel,
-      tableLabel: pendingOrder.tableLabel,
-      kitchenStatus: pendingOrder.kitchenStatus,
-      totalAmount: pendingOrder.totals.totalAmount,
-      lineCount: pendingOrder.lines.length,
-      updatedAt: new Date().toISOString()
-    });
+
+    if (catalog) {
+      const payload = posBillingService.buildInvoiceSyncPayload({
+        order: pendingOrder,
+        payments: [],
+        snapshot: catalog,
+        forceStatus: "pending"
+      });
+      const idempotencyKey = makeId();
+      await syncQueueRepository.enqueue({
+        id: makeId(),
+        idempotencyKey,
+        eventType: "invoice_upsert",
+        payload: {
+          eventType: "invoice_upsert",
+          idempotencyKey,
+          deviceId: env.deviceId,
+          payload
+        },
+        status: "pending",
+        retryCount: 0,
+        lastError: null,
+        nextRetryAt: null,
+        createdAt: now,
+        updatedAt: now
+      });
+      await syncNowIfOnline();
+    }
+
+    if (moveToCollections) {
+      await ordersRepository.removePendingBill(pendingOrder.localOrderId);
+    } else {
+      await ordersRepository.upsertPendingBill({
+        localOrderId: pendingOrder.localOrderId,
+        invoiceNumber: pendingOrder.invoiceNumber,
+        customerName: pendingOrder.customer?.name ?? "Walk-in",
+        customerPhone: pendingOrder.customer?.phone ?? "-",
+        orderType: pendingOrder.orderType,
+        orderChannel: pendingOrder.orderChannel,
+        tableLabel: pendingOrder.tableLabel,
+        kitchenStatus: pendingOrder.kitchenStatus,
+        totalAmount: pendingOrder.totals.totalAmount,
+        lineCount: pendingOrder.lines.length,
+        updatedAt: pendingOrder.updatedAt
+      });
+    }
     await refreshPendingBills();
     await refreshRecentBills();
     await refreshCompletedBills();
     await refreshKitchenOrders();
     setCurrentOrder(createDraftOrder(currentOrder.orderType, currentOrder.orderChannel));
-  }, [currentOrder, refreshCompletedBills, refreshKitchenOrders, refreshPendingBills, refreshRecentBills]);
+  }, [catalog, currentOrder, refreshCompletedBills, refreshKitchenOrders, refreshPendingBills, refreshRecentBills, syncNowIfOnline]);
 
   const sendToKitchen = useCallback(async () => {
     if (!catalog || !currentOrder.lines.length || !currentOrder.customer) {
@@ -854,6 +939,7 @@ export const PosProvider = ({ children }: PropsWithChildren) => {
       createdAt: now,
       updatedAt: now
     });
+    await syncNowIfOnline();
 
     await refreshPendingBills();
     await refreshRecentBills();
@@ -868,6 +954,7 @@ export const PosProvider = ({ children }: PropsWithChildren) => {
     refreshKitchenOrders,
     refreshPendingBills,
     refreshRecentBills,
+    syncNowIfOnline,
     validateAllocationForLines
   ]);
 
@@ -921,11 +1008,12 @@ export const PosProvider = ({ children }: PropsWithChildren) => {
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
         });
+        await syncNowIfOnline();
       }
 
       await Promise.all([refreshKitchenOrders(), refreshRecentBills(), refreshPendingBills()]);
     },
-    [catalog, refreshKitchenOrders, refreshPendingBills, refreshRecentBills]
+    [catalog, refreshKitchenOrders, refreshPendingBills, refreshRecentBills, syncNowIfOnline]
   );
 
   const resumePending = useCallback(
@@ -945,13 +1033,20 @@ export const PosProvider = ({ children }: PropsWithChildren) => {
   );
 
   const completePayment = useCallback(
-    async (input: { mode: InvoicePaymentInput["mode"]; receivedAmount?: number; referenceNo?: string }) => {
+    async (input: {
+      mode: InvoicePaymentInput["mode"];
+      receivedAmount?: number;
+      referenceNo?: string;
+      splitAmounts?: {
+        cash: number;
+        card: number;
+        upi: number;
+      };
+      cardReferenceNo?: string;
+      upiReferenceNo?: string;
+    }) => {
       if (!catalog || currentOrder.lines.length === 0) {
         return;
-      }
-      const cleanedReferenceNo = input.referenceNo?.trim() ?? "";
-      if ((input.mode === "card" || input.mode === "upi") && cleanedReferenceNo.length === 0) {
-        throw new Error("Reference ID is required for Card and UPI payments.");
       }
 
       const allocationGuard = validateAllocationForLines(currentOrder.lines, currentOrder.invoiceNumber);
@@ -961,23 +1056,88 @@ export const PosProvider = ({ children }: PropsWithChildren) => {
       }
 
       const now = new Date().toISOString();
-      const payment: InvoicePaymentInput = {
-        mode: input.mode,
-        amount: currentOrder.totals.totalAmount,
-        receivedAmount: input.mode === "cash" ? input.receivedAmount ?? currentOrder.totals.totalAmount : null,
-        changeAmount:
-          input.mode === "cash"
-            ? Math.max((input.receivedAmount ?? currentOrder.totals.totalAmount) - currentOrder.totals.totalAmount, 0)
-            : null,
-        referenceNo: input.mode === "cash" ? null : cleanedReferenceNo,
-        paidAt: now
-      };
+      const totalAmount = currentOrder.totals.totalAmount;
+
+      const payments: InvoicePaymentInput[] = [];
+      if (input.mode === "mixed") {
+        const cashAmount = Number(input.splitAmounts?.cash ?? 0);
+        const cardAmount = Number(input.splitAmounts?.card ?? 0);
+        const upiAmount = Number(input.splitAmounts?.upi ?? 0);
+        const normalizedSplit = {
+          cash: Number(cashAmount.toFixed(2)),
+          card: Number(cardAmount.toFixed(2)),
+          upi: Number(upiAmount.toFixed(2))
+        };
+        const splitTotal = Number(
+          (normalizedSplit.cash + normalizedSplit.card + normalizedSplit.upi).toFixed(2)
+        );
+        const activeModes = [normalizedSplit.cash, normalizedSplit.card, normalizedSplit.upi].filter(
+          (value) => value > 0.001
+        ).length;
+        if (activeModes < 2) {
+          throw new Error("Mixed payment needs at least two payment methods.");
+        }
+        if (Math.abs(splitTotal - totalAmount) > 0.01) {
+          throw new Error("Mixed split amount should match total amount.");
+        }
+        if (normalizedSplit.card > 0.001 && !(input.cardReferenceNo?.trim().length ?? 0)) {
+          throw new Error("Card reference ID is required for mixed payment.");
+        }
+        if (normalizedSplit.upi > 0.001 && !(input.upiReferenceNo?.trim().length ?? 0)) {
+          throw new Error("UPI reference ID is required for mixed payment.");
+        }
+
+        if (normalizedSplit.cash > 0.001) {
+          payments.push({
+            mode: "cash",
+            amount: normalizedSplit.cash,
+            receivedAmount: normalizedSplit.cash,
+            changeAmount: 0,
+            referenceNo: null,
+            paidAt: now
+          });
+        }
+        if (normalizedSplit.card > 0.001) {
+          payments.push({
+            mode: "card",
+            amount: normalizedSplit.card,
+            receivedAmount: normalizedSplit.card,
+            changeAmount: 0,
+            referenceNo: input.cardReferenceNo?.trim() ?? null,
+            paidAt: now
+          });
+        }
+        if (normalizedSplit.upi > 0.001) {
+          payments.push({
+            mode: "upi",
+            amount: normalizedSplit.upi,
+            receivedAmount: normalizedSplit.upi,
+            changeAmount: 0,
+            referenceNo: input.upiReferenceNo?.trim() ?? null,
+            paidAt: now
+          });
+        }
+      } else {
+        const cleanedReferenceNo = input.referenceNo?.trim() ?? "";
+        if ((input.mode === "card" || input.mode === "upi") && cleanedReferenceNo.length === 0) {
+          throw new Error("Reference ID is required for Card and UPI payments.");
+        }
+        payments.push({
+          mode: input.mode,
+          amount: totalAmount,
+          receivedAmount: input.mode === "cash" ? input.receivedAmount ?? totalAmount : totalAmount,
+          changeAmount:
+            input.mode === "cash" ? Math.max((input.receivedAmount ?? totalAmount) - totalAmount, 0) : 0,
+          referenceNo: input.mode === "cash" ? null : cleanedReferenceNo,
+          paidAt: now
+        });
+      }
 
       const paidOrder = recomputeOrder({
         ...currentOrder,
         status: "paid",
         kitchenStatus: "served",
-        paymentMode: input.mode,
+        paymentMode: input.mode === "mixed" ? "mixed" : input.mode,
         syncStatus: "pending",
         updatedAt: now
       });
@@ -987,7 +1147,7 @@ export const PosProvider = ({ children }: PropsWithChildren) => {
 
       const payload = posBillingService.buildInvoiceSyncPayload({
         order: paidOrder,
-        payments: [payment],
+        payments,
         snapshot: catalog,
         forceStatus: "paid"
       });
@@ -1013,6 +1173,7 @@ export const PosProvider = ({ children }: PropsWithChildren) => {
         updatedAt: now
       };
       await syncQueueRepository.enqueue(queueRow);
+      await syncNowIfOnline();
       setCatalog((previous) => (previous ? applyUsageToCatalogSnapshot(previous, usageEvents) : previous));
       await refreshPendingBills();
       await refreshRecentBills();
@@ -1027,6 +1188,7 @@ export const PosProvider = ({ children }: PropsWithChildren) => {
       refreshKitchenOrders,
       refreshPendingBills,
       refreshRecentBills,
+      syncNowIfOnline,
       validateAllocationForLines
     ]
   );

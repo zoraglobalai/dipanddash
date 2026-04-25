@@ -85,6 +85,15 @@ export const resetStaffPasswordSchema = z.object({
   })
 });
 
+export const deleteStaffSchema = z.object({
+  params: z.object({
+    id: z.string().uuid("Invalid staff id")
+  }),
+  query: z.object({
+    permanent: z.enum(["true", "false"]).optional()
+  })
+});
+
 export const staffListQuerySchema = z.object({
   query: z.object({
     search: z.string().trim().optional()

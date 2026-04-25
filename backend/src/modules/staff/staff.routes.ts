@@ -8,6 +8,7 @@ import { validateRequest } from "../../middlewares/validate.middleware";
 import { StaffController } from "./staff.controller";
 import {
   createStaffSchema,
+  deleteStaffSchema,
   resetStaffPasswordSchema,
   staffListQuerySchema,
   updateStaffSchema,
@@ -32,5 +33,6 @@ router.patch(
   validateRequest(resetStaffPasswordSchema),
   asyncHandler(staffController.resetPassword)
 );
+router.delete("/:id", validateRequest(deleteStaffSchema), asyncHandler(staffController.delete));
 
 export const staffRoutes = router;

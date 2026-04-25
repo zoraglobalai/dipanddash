@@ -133,4 +133,8 @@ export class StaffService {
     const passwordHash = await hashPassword(password);
     return this.userService.resetStaffPassword(id, passwordHash);
   }
+
+  async deleteStaff(id: string, options?: { permanent?: boolean }) {
+    return this.userService.deleteStaff(id, options);
+  }
 }

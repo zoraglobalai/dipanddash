@@ -15,6 +15,8 @@ import {
   GAMING_BOOKING_TYPES,
   GAMING_PAYMENT_MODES,
   GAMING_PAYMENT_STATUSES,
+  GAMING_PAYMENT_CHANNELS,
+  type GamingPaymentChannel,
   type GamingPaymentMode,
   type GamingBookingStatus,
   type GamingBookingType,
@@ -92,6 +94,15 @@ export class GamingBooking {
   @Column({ type: "varchar", length: 20, nullable: true })
   paymentMode!: GamingPaymentMode | null;
 
+  @Column({ type: "numeric", precision: 12, scale: 2, default: 0 })
+  paidCashAmount!: number;
+
+  @Column({ type: "numeric", precision: 12, scale: 2, default: 0 })
+  paidCardAmount!: number;
+
+  @Column({ type: "numeric", precision: 12, scale: 2, default: 0 })
+  paidUpiAmount!: number;
+
   @Column({ type: "varchar", length: 80, nullable: true })
   foodOrderReference!: string | null;
 
@@ -138,3 +149,6 @@ export const isValidPaymentStatus = (value: string): value is GamingPaymentStatu
 
 export const isValidPaymentMode = (value: string): value is GamingPaymentMode =>
   (GAMING_PAYMENT_MODES as readonly string[]).includes(value);
+
+export const isValidPaymentChannel = (value: string): value is GamingPaymentChannel =>
+  (GAMING_PAYMENT_CHANNELS as readonly string[]).includes(value);

@@ -25,6 +25,11 @@ export type InvoiceListRow = {
   kitchenStatus: InvoiceKitchenStatus;
   status: InvoiceStatus;
   paymentMode: InvoicePaymentMode;
+  paidCashAmount: number;
+  paidCardAmount: number;
+  paidUpiAmount: number;
+  paidTotalAmount: number;
+  pendingAmount: number;
   subtotal: number;
   discountAmount: number;
   taxAmount: number;

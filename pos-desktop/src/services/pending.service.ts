@@ -3,6 +3,7 @@ import type {
   PendingCollectResponse,
   PendingCustomerDetails,
   PendingCustomersResponse,
+  PendingCollectPaymentMode,
   PendingSourceType
 } from "@/types/pending";
 
@@ -34,9 +35,16 @@ export const pendingService = {
   async collectAmount(payload: {
     sourceType: PendingSourceType;
     sourceId: string;
-    paymentMode: "cash" | "card" | "upi";
+    paymentMode: PendingCollectPaymentMode;
     amount?: number;
     referenceNo?: string;
+    cardReferenceNo?: string;
+    upiReferenceNo?: string;
+    paymentBreakdown?: {
+      cash?: number;
+      card?: number;
+      upi?: number;
+    };
     note?: string;
   }) {
     const response = await apiClient.post<ApiSuccess<PendingCollectResponse>>("/pending/collect", payload);
