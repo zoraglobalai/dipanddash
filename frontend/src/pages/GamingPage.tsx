@@ -1319,7 +1319,8 @@ export const GamingPage = () => {
             unitPrice: line.unitPrice,
             lineTotal: line.lineTotal
           })),
-          payments
+          payments,
+          usageEvents: []
         });
 
         const bookingUpdate = await gamingService.updateBooking(savedBooking.id, {

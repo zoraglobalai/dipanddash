@@ -848,6 +848,10 @@ export class InvoicesService {
   }
 
   async createInvoiceFromSync(payload: SyncInvoicePayload, contextUser: ContextUser) {
+    const normalizedLines = Array.isArray(payload.lines) ? payload.lines : [];
+    const normalizedPayments = Array.isArray(payload.payments) ? payload.payments : [];
+    const normalizedUsageEvents = Array.isArray(payload.usageEvents) ? payload.usageEvents : [];
+
     const existing = await this.invoiceRepository.findOne({
       where: { idempotencyKey: payload.idempotencyKey },
       relations: { customer: true, staff: true }
@@ -950,7 +954,7 @@ export class InvoicesService {
           await manager.delete(InvoicePayment, { invoiceId: savedInvoice.id });
         }
 
-        const lines = payload.lines.map((line) =>
+        const lines = normalizedLines.map((line) =>
           manager.create(InvoiceLine, {
             invoiceId: savedInvoice.id,
             lineType: line.lineType,
@@ -968,7 +972,7 @@ export class InvoicesService {
           await manager.save(InvoiceLine, lines);
         }
 
-        const payments = payload.payments.map((payment) =>
+        const payments = normalizedPayments.map((payment) =>
           manager.create(InvoicePayment, {
             invoiceId: savedInvoice.id,
             mode: payment.mode,
@@ -1006,17 +1010,17 @@ export class InvoicesService {
 
         const shouldApplyUsage = payload.status === "paid";
         if (shouldApplyUsage) {
-          await this.applyProductSalesToStock(manager, payload.lines, payload.orderType);
+          await this.applyProductSalesToStock(manager, normalizedLines, payload.orderType);
         }
 
-        if (shouldApplyUsage && payload.usageEvents.length) {
+        if (shouldApplyUsage && normalizedUsageEvents.length) {
           const billingControl = await manager.findOne(PosBillingControl, {
             where: {},
             order: { updatedAt: "DESC" }
           });
           const enforceIngredientStock = billingControl?.enforceIngredientStock ?? true;
           const usageRows: InvoiceUsageEvent[] = [];
-          for (const event of payload.usageEvents) {
+          for (const event of normalizedUsageEvents) {
             let ingredientNameSnapshot = event.ingredientNameSnapshot.trim();
             if (event.ingredientId) {
               const ingredient = await manager.findOne(Ingredient, {
