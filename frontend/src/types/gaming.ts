@@ -100,6 +100,7 @@ export type GamingStats = {
     activePlayers: number;
     endingSoon: number;
     totalRevenue: number;
+    pureGamingRevenue: number;
     pendingCollection: number;
   };
   gamingProducts: {

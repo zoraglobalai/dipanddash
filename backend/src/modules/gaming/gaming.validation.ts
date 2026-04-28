@@ -19,8 +19,19 @@ const optionalCustomerPhoneSchema = z.preprocess(
   z.string().trim().min(8, "Customer phone should be at least 8 digits").max(20).optional()
 );
 
+const optionalCustomerNameSchema = z.preprocess(
+  (value) => {
+    if (typeof value !== "string") {
+      return value;
+    }
+    const trimmed = value.trim();
+    return trimmed.length ? trimmed : undefined;
+  },
+  z.string().trim().max(120).optional()
+);
+
 const customerGroupMemberSchema = z.object({
-  name: z.string().trim().min(1, "Customer name is required").max(120),
+  name: optionalCustomerNameSchema,
   phone: optionalCustomerPhoneSchema
 });
 
@@ -121,10 +132,13 @@ export const gamingCreateSchema = z.object({
     foodAndBeverageAmount: z.coerce.number().min(0).optional(),
     staffId: z.string().uuid().optional()
   }).superRefine((body, ctx) => {
-    if (!body.customers.some((member) => (member.phone?.trim().length ?? 0) >= 8)) {
+    const hasPrimaryContact = body.customers.some(
+      (member) => (member.name?.trim().length ?? 0) > 0 && (member.phone?.trim().length ?? 0) >= 8
+    );
+    if (!hasPrimaryContact) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "At least one customer contact number is required.",
+        message: "At least one customer name and phone number is required.",
         path: ["customers"]
       });
     }
@@ -199,10 +213,13 @@ export const gamingUpdateSchema = z.object({
     foodInvoiceStatus: z.enum(["none", "pending", "paid", "cancelled"]).optional(),
     foodAndBeverageAmount: z.coerce.number().min(0).optional()
   }).superRefine((body, ctx) => {
-    if (body.customers && !body.customers.some((member) => (member.phone?.trim().length ?? 0) >= 8)) {
+    const hasPrimaryContact = body.customers?.some(
+      (member) => (member.name?.trim().length ?? 0) > 0 && (member.phone?.trim().length ?? 0) >= 8
+    );
+    if (body.customers && !hasPrimaryContact) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "At least one customer contact number is required.",
+        message: "At least one customer name and phone number is required.",
         path: ["customers"]
       });
     }

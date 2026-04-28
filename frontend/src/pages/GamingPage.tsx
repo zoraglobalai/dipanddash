@@ -217,6 +217,7 @@ const emptyStats: GamingStats = {
     activePlayers: 0,
     endingSoon: 0,
     totalRevenue: 0,
+    pureGamingRevenue: 0,
     pendingCollection: 0
   },
   gamingProducts: {
@@ -1049,14 +1050,14 @@ export const GamingPage = () => {
         phone: normalizePhone(member.phone)
       }));
 
-    if (!preparedCustomers.length || preparedCustomers.some((member) => !member.name.length)) {
-      throw new Error("Enter customer name for each player.");
+    if (!preparedCustomers.length) {
+      throw new Error("Add at least one customer row.");
     }
     if (preparedCustomers.some((member) => member.phone.length > 0 && member.phone.length < 8)) {
       throw new Error("Enter a valid phone number (min 8 digits) or leave it empty.");
     }
-    if (!preparedCustomers.some((member) => member.phone.length >= 8)) {
-      throw new Error("At least one customer contact number is required.");
+    if (!preparedCustomers.some((member) => member.name.length > 0 && member.phone.length >= 8)) {
+      throw new Error("At least one customer name and phone number is required.");
     }
 
     const hourlyRate = parseOptionalNumber(bookingForm.hourlyRate);
@@ -1563,7 +1564,7 @@ export const GamingPage = () => {
         subtitle="Admin operations dashboard for snooker and console sessions, collections, edits, and historical entries."
       />
 
-      <SimpleGrid columns={{ base: 1, sm: 2, xl: 4 }} spacing={4}>
+      <SimpleGrid columns={{ base: 1, sm: 2, xl: 5 }} spacing={4}>
         <StatsCard
           label="Current Active Sessions"
           value={statsLoading ? "..." : String(stats.totals.ongoing)}
@@ -1578,6 +1579,11 @@ export const GamingPage = () => {
           label="Total Revenue"
           value={statsLoading ? "..." : formatCurrency(stats.totals.totalRevenue)}
           helper={`${stats.totals.paidBookings} paid bookings`}
+        />
+        <StatsCard
+          label="Pure Gaming Revenue"
+          value={statsLoading ? "..." : formatCurrency(stats.totals.pureGamingRevenue)}
+          helper="Snooker/console charges only"
         />
         <StatsCard
           label="Pending Collection"

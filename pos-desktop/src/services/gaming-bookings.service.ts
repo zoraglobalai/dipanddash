@@ -269,14 +269,18 @@ const queueBookingSync = async (booking: GamingBooking) => {
 
 const sanitizeCustomers = (customers: Array<{ name: string; phone: string }>): GamingCustomerMember[] => {
   const sanitized = customers
-    .map((entry) => ({ name: entry.name.trim(), phone: normalizePhone(entry.phone) }))
-    .filter((entry) => entry.name.length > 0 && entry.phone.length > 0);
+    .map((entry) => ({ name: entry.name.trim(), phone: normalizePhone(entry.phone) }));
 
-  if (!sanitized.length) {
+  if (!sanitized.length || !sanitized.some((entry) => entry.name.length > 0 && entry.phone.length >= 8)) {
     throw new Error("Add at least one customer with name and phone.");
   }
   return sanitized;
 };
+
+const resolvePrimaryCustomer = (customers: GamingCustomerMember[]) =>
+  customers.find((entry) => entry.name.length > 0 && entry.phone.length >= 8) ??
+  customers.find((entry) => entry.name.length > 0) ??
+  customers[0] ?? { name: "-", phone: "-" };
 
 const sanitizePayment = (
   input: {
@@ -630,6 +634,7 @@ export const gamingBookingsService = {
         : getResourceLabel(primaryResourceCode);
     const customers = sanitizeCustomers(input.customers);
     const playerCount = sanitizePlayerCount(input.playerCount, customers.length);
+    const primaryCustomer = resolvePrimaryCustomer(customers);
     const checkInAt = input.checkInAt ? new Date(input.checkInAt).toISOString() : nowIso();
     const status =
       input.status ??
@@ -677,8 +682,8 @@ export const gamingBookingsService = {
       resourceLabel,
       playerCount,
       customers,
-      primaryCustomerName: customers[0].name,
-      primaryCustomerPhone: customers[0].phone,
+      primaryCustomerName: primaryCustomer.name || "-",
+      primaryCustomerPhone: primaryCustomer.phone || "-",
       checkInAt,
       checkOutAt: null,
       hourlyRate,
@@ -967,8 +972,9 @@ export const gamingBookingsService = {
       updatedAt: nowIso(),
       syncStatus: "pending"
     };
-    nextBooking.primaryCustomerName = nextBooking.customers[0]?.name ?? booking.primaryCustomerName;
-    nextBooking.primaryCustomerPhone = nextBooking.customers[0]?.phone ?? booking.primaryCustomerPhone;
+    const primaryCustomer = resolvePrimaryCustomer(nextBooking.customers);
+    nextBooking.primaryCustomerName = primaryCustomer.name || booking.primaryCustomerName;
+    nextBooking.primaryCustomerPhone = primaryCustomer.phone || booking.primaryCustomerPhone;
 
     await gamingBookingsRepository.save(nextBooking);
     await queueBookingSync(nextBooking);
