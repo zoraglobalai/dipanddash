@@ -1,5 +1,5 @@
 import { Box, Button, Flex, HStack, Text, VStack } from "@chakra-ui/react";
-import { FiLogOut, FiRefreshCw, FiWifi, FiWifiOff } from "react-icons/fi";
+import { FiLogOut, FiWifi, FiWifiOff } from "react-icons/fi";
 
 import { StatusBadge } from "@/components/common/StatusBadge";
 import type { StaffSession } from "@/types/pos";
@@ -7,30 +7,20 @@ import type { StaffSession } from "@/types/pos";
 type PosTopBarProps = {
   session: StaffSession | null;
   isOnline: boolean;
-  isSyncing: boolean;
-  pendingSyncCount: number;
-  failedSyncCount: number;
-  lastSyncedAt: string | null;
   title?: string;
   subtitle?: string;
   compactLayout?: boolean;
   onOpenShortcuts: () => void;
-  onSyncNow: () => void;
   onLogout?: () => void;
 };
 
 export const PosTopBar = ({
   session,
   isOnline,
-  isSyncing,
-  pendingSyncCount,
-  failedSyncCount,
-  lastSyncedAt,
   title,
   subtitle,
   compactLayout = false,
   onOpenShortcuts,
-  onSyncNow,
   onLogout
 }: PosTopBarProps) => {
   return (
@@ -61,7 +51,7 @@ export const PosTopBar = ({
             color="#7A6258"
             noOfLines={compactLayout ? 2 : { base: 2, xl: 1 }}
           >
-            {subtitle ?? "Offline-first billing console"}
+            {subtitle ?? "Centralized billing console"}
           </Text>
         </VStack>
 
@@ -75,16 +65,6 @@ export const PosTopBar = ({
             label={isOnline ? "Online" : "Offline"}
             tone={isOnline ? "success" : "danger"}
           />
-          <StatusBadge
-            label={
-              failedSyncCount > 0
-                ? `${failedSyncCount} failed`
-                : pendingSyncCount > 0
-                  ? `${pendingSyncCount} pending`
-                  : "Queue clear"
-            }
-            tone={failedSyncCount > 0 ? "danger" : pendingSyncCount > 0 ? "warning" : "info"}
-          />
           <HStack
             spacing={1}
             color={isOnline ? "green.600" : "red.500"}
@@ -93,15 +73,6 @@ export const PosTopBar = ({
             {isOnline ? <FiWifi /> : <FiWifiOff />}
             <Text fontSize="sm">{isOnline ? "Network" : "No network"}</Text>
           </HStack>
-          <Button
-            size={{ base: "xs", md: "sm" }}
-            variant="outline"
-            leftIcon={<FiRefreshCw />}
-            isLoading={isSyncing}
-            onClick={onSyncNow}
-          >
-            Sync
-          </Button>
           <Button size={{ base: "xs", md: "sm" }} variant="outline" onClick={onOpenShortcuts}>
             Shortcuts
           </Button>
@@ -115,7 +86,7 @@ export const PosTopBar = ({
               {session?.fullName ?? "Staff"}
             </Text>
             <Text fontSize="xs" color="#7A6258">
-              {lastSyncedAt ? `Last sync ${new Date(lastSyncedAt).toLocaleTimeString()}` : "Not synced yet"}
+              Central API mode
             </Text>
           </VStack>
         </HStack>

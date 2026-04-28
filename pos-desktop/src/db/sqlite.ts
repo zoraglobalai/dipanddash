@@ -1,5 +1,3 @@
-import schemaSql from "@/db/schema.sql?raw";
-import { isTauriRuntime } from "@/lib/tauri";
 import type {
   CatalogSnapshot,
   CustomerRecord,
@@ -26,8 +24,6 @@ type LocalState = {
   settings: Record<string, string>;
 };
 
-const STORAGE_KEY = "dip_dash_pos_local_state_v1";
-
 const emptyState = (): LocalState => ({
   customers: [],
   catalog: null,
@@ -37,12 +33,6 @@ const emptyState = (): LocalState => ({
   queue: [],
   settings: {}
 });
-
-const parseSqlStatements = (sql: string) =>
-  sql
-    .split(";")
-    .map((segment) => segment.trim())
-    .filter((segment) => segment.length > 0);
 
 const ORDER_PAYMENT_MODES = new Set<PosOrder["paymentMode"]>(["cash", "card", "upi", "mixed", null]);
 const ORDER_CHANNELS = new Set<PosOrder["orderChannel"]>(["dine-in", "take-away", "swiggy", "zomato", "snooker", null]);
@@ -117,171 +107,11 @@ class PosStorage {
       return;
     }
 
-    if (isTauriRuntime()) {
-      const sqlModule = await import("@tauri-apps/plugin-sql");
-      const rawDb = await sqlModule.default.load("sqlite:pos.db");
-      this.db = rawDb as unknown as SqlDb;
-
-      const statements = parseSqlStatements(schemaSql);
-      for (const statement of statements) {
-        await this.db.execute(statement);
-      }
-      try {
-        await this.db.execute("ALTER TABLE orders_local ADD COLUMN table_label TEXT");
-      } catch {
-        // no-op: column already exists
-      }
-      try {
-        await this.db.execute("ALTER TABLE orders_local ADD COLUMN order_channel TEXT");
-      } catch {
-        // no-op: column already exists
-      }
-      try {
-        await this.db.execute("ALTER TABLE orders_local ADD COLUMN kitchen_status TEXT NOT NULL DEFAULT 'not_sent'");
-      } catch {
-        // no-op: column already exists
-      }
-      try {
-        await this.db.execute("ALTER TABLE pending_bills ADD COLUMN order_type TEXT NOT NULL DEFAULT 'takeaway'");
-      } catch {
-        // no-op: column already exists
-      }
-      try {
-        await this.db.execute("ALTER TABLE pending_bills ADD COLUMN table_label TEXT");
-      } catch {
-        // no-op: column already exists
-      }
-      try {
-        await this.db.execute("ALTER TABLE pending_bills ADD COLUMN order_channel TEXT");
-      } catch {
-        // no-op: column already exists
-      }
-      try {
-        await this.db.execute("ALTER TABLE gaming_bookings_local ADD COLUMN payment_mode TEXT");
-      } catch {
-        // no-op: column already exists
-      }
-      try {
-        await this.db.execute(
-          "ALTER TABLE gaming_bookings_local ADD COLUMN paid_cash_amount REAL NOT NULL DEFAULT 0"
-        );
-      } catch {
-        // no-op: column already exists
-      }
-      try {
-        await this.db.execute(
-          "ALTER TABLE gaming_bookings_local ADD COLUMN paid_card_amount REAL NOT NULL DEFAULT 0"
-        );
-      } catch {
-        // no-op: column already exists
-      }
-      try {
-        await this.db.execute(
-          "ALTER TABLE gaming_bookings_local ADD COLUMN paid_upi_amount REAL NOT NULL DEFAULT 0"
-        );
-      } catch {
-        // no-op: column already exists
-      }
-      try {
-        await this.db.execute("ALTER TABLE gaming_bookings_local ADD COLUMN food_order_reference TEXT");
-      } catch {
-        // no-op: column already exists
-      }
-      try {
-        await this.db.execute("ALTER TABLE gaming_bookings_local ADD COLUMN food_invoice_number TEXT");
-      } catch {
-        // no-op: column already exists
-      }
-      try {
-        await this.db.execute(
-          "ALTER TABLE gaming_bookings_local ADD COLUMN food_invoice_status TEXT NOT NULL DEFAULT 'none'"
-        );
-      } catch {
-        // no-op: column already exists
-      }
-      try {
-        await this.db.execute(
-          "ALTER TABLE gaming_bookings_local ADD COLUMN food_and_beverage_amount REAL NOT NULL DEFAULT 0"
-        );
-      } catch {
-        // no-op: column already exists
-      }
-      try {
-        await this.db.execute(
-          "ALTER TABLE gaming_bookings_local ADD COLUMN player_count INTEGER NOT NULL DEFAULT 1"
-        );
-      } catch {
-        // no-op: column already exists
-      }
-      try {
-        await this.db.execute(
-          "ALTER TABLE gaming_bookings_local ADD COLUMN resource_codes_json TEXT NOT NULL DEFAULT '[]'"
-        );
-      } catch {
-        // no-op: column already exists
-      }
-      try {
-        await this.db.execute(
-          "ALTER TABLE gaming_bookings_local ADD COLUMN system_calculated_amount REAL NOT NULL DEFAULT 0"
-        );
-      } catch {
-        // no-op: column already exists
-      }
-      try {
-        await this.db.execute(
-          "ALTER TABLE gaming_bookings_local ADD COLUMN extra_member_count INTEGER NOT NULL DEFAULT 0"
-        );
-      } catch {
-        // no-op: column already exists
-      }
-      try {
-        await this.db.execute(
-          "ALTER TABLE gaming_bookings_local ADD COLUMN extra_member_charge REAL NOT NULL DEFAULT 0"
-        );
-      } catch {
-        // no-op: column already exists
-      }
-      try {
-        await this.db.execute("ALTER TABLE gaming_bookings_local ADD COLUMN amount_override_reason TEXT");
-      } catch {
-        // no-op: column already exists
-      }
-    } else {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        try {
-          const parsed = JSON.parse(raw) as Partial<LocalState>;
-          this.state = {
-            ...emptyState(),
-            ...parsed,
-            customers: parsed.customers ?? [],
-            orders: (parsed.orders ?? []).map((row) => normalizeOrderRow(row as PosOrder)),
-            gamingBookings: (parsed.gamingBookings ?? []).map((row) =>
-              normalizeGamingBookingRow(row as GamingBooking)
-            ),
-            pendingBills: (parsed.pendingBills ?? []).map((bill) => ({
-              ...(bill as PendingBillSummary),
-              orderChannel: ORDER_CHANNELS.has((bill as PendingBillSummary).orderChannel ?? null)
-                ? ((bill as PendingBillSummary).orderChannel ?? null)
-                : null
-            })),
-            queue: parsed.queue ?? [],
-            settings: parsed.settings ?? {}
-          };
-        } catch {
-          this.state = emptyState();
-        }
-      }
-    }
-
     this.initialized = true;
   };
 
   private persistBrowserState = () => {
-    if (this.db) {
-      return;
-    }
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(this.state));
+    // Centralized mode: keep runtime data in memory only.
   };
 
   private serializeOrderPayment(order: PosOrder) {

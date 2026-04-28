@@ -6,8 +6,6 @@
   "permissions": [
     "core:default",
     "process:default",
-    "sql:default",
-    "sql:allow-execute",
     "updater:default"
   ]
 }

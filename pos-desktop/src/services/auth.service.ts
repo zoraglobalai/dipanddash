@@ -1,5 +1,4 @@
 import { apiClient } from "@/lib/api-client";
-import { settingsRepository } from "@/db/repositories/settings.repository";
 import { desktopTokenService } from "@/services/desktop-token.service";
 import type { StaffSession } from "@/types/pos";
 
@@ -29,9 +28,9 @@ type UserResponse = {
   };
 };
 
-const STAFF_SESSION_KEY = "staff_session_json";
-
 const allowedDesktopRoles = new Set(["staff", "snooker_staff", "admin"]);
+
+let sessionMemory: StaffSession | null = null;
 
 const isAllowedDesktopSession = (session: StaffSession) => {
   if (!allowedDesktopRoles.has(session.role)) {
@@ -56,36 +55,15 @@ const toSession = (user: UserResponse["user"]): StaffSession => ({
 });
 
 const persistSession = async (session: StaffSession) => {
-  await settingsRepository.set(STAFF_SESSION_KEY, JSON.stringify(session));
+  sessionMemory = session;
 };
 
 const clearPersistedSession = async () => {
-  await settingsRepository.set(STAFF_SESSION_KEY, "");
+  sessionMemory = null;
   await desktopTokenService.clearTokens();
 };
 
-const readPersistedSession = async (): Promise<StaffSession | null> => {
-  const raw = await settingsRepository.get(STAFF_SESSION_KEY);
-  if (!raw) {
-    return null;
-  }
-
-  try {
-    const parsed = JSON.parse(raw) as StaffSession;
-    if (!parsed.userId || !parsed.username || !parsed.role) {
-      return null;
-    }
-    if (!Array.isArray(parsed.assignedReports)) {
-      parsed.assignedReports = [];
-    }
-    if (!Array.isArray(parsed.assignedModules)) {
-      parsed.assignedModules = [];
-    }
-    return parsed;
-  } catch {
-    return null;
-  }
-};
+const readPersistedSession = async (): Promise<StaffSession | null> => sessionMemory;
 
 const withTimeout = async <T>(promise: Promise<T>, ms: number): Promise<T | null> => {
   let timer: number | undefined;
@@ -201,7 +179,7 @@ export const authService = {
     try {
       const result = await withTimeout(this.me(), 5000);
       if (!result) {
-        throw new Error("Session restore timed out");
+        return { session: null, isOfflineSession: false as const };
       }
 
       return {
@@ -209,11 +187,8 @@ export const authService = {
         isOfflineSession: false as const
       };
     } catch {
-      const persisted = await withTimeout(readPersistedSession(), 3000);
-      if (persisted) {
-        return { session: persisted, isOfflineSession: true as const };
-      }
-      return { session: null, isOfflineSession: false as const };
+      const persisted = await withTimeout(readPersistedSession(), 500);
+      return { session: persisted, isOfflineSession: false as const };
     }
   }
 };

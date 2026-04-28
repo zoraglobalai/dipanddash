@@ -7,7 +7,7 @@ import {
   VStack
 } from "@chakra-ui/react";
 import { Download, FileBarChart2 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { EmptyState } from "@/components/common/EmptyState";
 import { PageHeader } from "@/components/common/PageHeader";
@@ -35,6 +35,18 @@ const toCsvValue = (value: string | number | null) => {
 };
 
 const STOCK_SNAPSHOT_NUMERIC_KEYS = new Set(["overallPurchase", "overallConsumption", "currentStock"]);
+const SNOOKER_REPORT_KEYS = new Set([
+  "gaming_report",
+  "cash_audit_report",
+  "daily_sales_report",
+  "customer_report",
+  "product_wise_sales_report_snooker",
+  "stock_consumption_report",
+  "stock_report_snooker"
+]);
+const SHARED_REPORT_KEYS = new Set(["stock_consumption_report"]);
+
+type BusinessScope = "snooker" | "dip_and_dash";
 
 const stripUnitFromStockSnapshotValue = (value: string | number | null) => {
   if (value === null || value === undefined) {
@@ -105,6 +117,7 @@ export const ReportsPage = () => {
   const defaultRange = useMemo(() => getDefaultRange(), []);
 
   const [catalog, setCatalog] = useState<ReportCatalogItem[]>([]);
+  const [businessScope, setBusinessScope] = useState<BusinessScope | "">("");
   const [selectedReportKey, setSelectedReportKey] = useState("");
   const [dateFrom, setDateFrom] = useState(defaultRange.from);
   const [dateTo, setDateTo] = useState(defaultRange.to);
@@ -117,12 +130,51 @@ export const ReportsPage = () => {
   const [stockExportLoading, setStockExportLoading] = useState<"excel" | "pdf" | null>(null);
   const [reportData, setReportData] = useState<GeneratedReportResponse | null>(null);
   const [hasGenerated, setHasGenerated] = useState(false);
-  const hasAutoSelectedInitialReport = useRef(false);
+  const businessOptions = useMemo(
+    () => [
+      {
+        label: "Snooker",
+        value: "snooker",
+        description: "Gaming and snooker-focused reporting pack.",
+        searchText: "snooker gaming cash daily customer product stock consumption"
+      },
+      {
+        label: "Dip & Dash",
+        value: "dip_and_dash",
+        description: "Restaurant and operations reporting pack.",
+        searchText: "dip and dash restaurant operations inventory"
+      }
+    ],
+    []
+  );
+
+  const scopedCatalog = useMemo(() => {
+    if (!businessScope) {
+      return [];
+    }
+
+    if (businessScope === "snooker") {
+      return catalog.filter((item) => SNOOKER_REPORT_KEYS.has(item.key));
+    }
+
+    return catalog.filter(
+      (item) => !SNOOKER_REPORT_KEYS.has(item.key) || SHARED_REPORT_KEYS.has(item.key)
+    );
+  }, [businessScope, catalog]);
 
   const selectedReport = useMemo(
-    () => catalog.find((item) => item.key === selectedReportKey) ?? null,
-    [catalog, selectedReportKey]
+    () => scopedCatalog.find((item) => item.key === selectedReportKey) ?? null,
+    [scopedCatalog, selectedReportKey]
   );
+  const selectedReportDescription = useMemo(() => {
+    if (!selectedReport) {
+      return "";
+    }
+    if (businessScope === "snooker" && selectedReportKey === "stock_consumption_report") {
+      return "Snooker product usage report based on products assigned to snooker section.";
+    }
+    return selectedReport.description;
+  }, [businessScope, selectedReport, selectedReportKey]);
   const isStockConsumptionReport = selectedReportKey === "stock_consumption_report";
   const isSnookerStockSnapshotReport = selectedReportKey === "stock_report_snooker";
 
@@ -132,19 +184,6 @@ export const ReportsPage = () => {
       const response = await reportsService.getCatalog();
       const reports = response.data.reports;
       setCatalog(reports);
-      setSelectedReportKey((current) => {
-        if (!reports.length) {
-          return "";
-        }
-        if (current && reports.some((report) => report.key === current)) {
-          return current;
-        }
-        if (!current && !hasAutoSelectedInitialReport.current) {
-          hasAutoSelectedInitialReport.current = true;
-          return reports[0].key;
-        }
-        return current;
-      });
     } catch (err) {
       toast.error(extractErrorMessage(err, "Unable to fetch reports catalog"));
     } finally {
@@ -166,6 +205,7 @@ export const ReportsPage = () => {
       try {
         const response = await reportsService.generate({
           reportKey: selectedReportKey,
+          businessScope: businessScope || undefined,
           dateFrom,
           dateTo,
           search: nextSearch || undefined,
@@ -180,7 +220,7 @@ export const ReportsPage = () => {
         setReportLoading(false);
       }
     },
-    [dateFrom, dateTo, limit, page, search, selectedReportKey, toast]
+    [businessScope, dateFrom, dateTo, limit, page, search, selectedReportKey, toast]
   );
 
   useEffect(() => {
@@ -189,6 +229,10 @@ export const ReportsPage = () => {
     }
     void loadReport(page, limit, search);
   }, [hasGenerated, limit, loadReport, page, search]);
+
+  useEffect(() => {
+    setSelectedReportKey((current) => (scopedCatalog.some((item) => item.key === current) ? current : ""));
+  }, [scopedCatalog]);
 
   useEffect(() => {
     if (!isSnookerStockSnapshotReport) {
@@ -258,15 +302,24 @@ export const ReportsPage = () => {
 
   const reportOptions = useMemo(
     () =>
-      catalog.map((report) => ({
+      scopedCatalog.map((report) => ({
         label: report.title,
         value: report.key,
         searchText: `${report.title} ${report.key} ${report.category}`
       })),
-    [catalog]
+    [scopedCatalog]
   );
 
   const handleGenerate = () => {
+    if (!businessScope) {
+      toast.warning("Please select business scope first.");
+      return;
+    }
+    if (!selectedReportKey) {
+      toast.warning("Please select a report first.");
+      return;
+    }
+
     setPage(1);
     void loadReport(1, limit, search);
   };
@@ -287,6 +340,7 @@ export const ReportsPage = () => {
       do {
         const response = await reportsService.generate({
           reportKey: selectedReportKey,
+          businessScope: businessScope || undefined,
           dateFrom,
           dateTo,
           search: search || undefined,
@@ -332,7 +386,7 @@ export const ReportsPage = () => {
     } finally {
       setExportLoading(false);
     }
-  }, [dateFrom, dateTo, search, selectedReportKey, toast]);
+  }, [businessScope, dateFrom, dateTo, search, selectedReportKey, toast]);
 
   const handleStockExport = useCallback(
     async (format: "excel" | "pdf") => {
@@ -345,6 +399,7 @@ export const ReportsPage = () => {
       try {
         const response = await reportsService.exportStockConsumption({
           format,
+          businessScope: businessScope || undefined,
           dateFrom,
           dateTo,
           search: search || undefined
@@ -371,7 +426,7 @@ export const ReportsPage = () => {
         setStockExportLoading(null);
       }
     },
-    [dateFrom, dateTo, isStockConsumptionReport, search, toast]
+    [businessScope, dateFrom, dateTo, isStockConsumptionReport, search, toast]
   );
 
   if (loading) {
@@ -430,7 +485,22 @@ export const ReportsPage = () => {
       />
 
       <AppCard>
-        <Grid templateColumns={{ base: "1fr", md: "repeat(2, minmax(0, 1fr))", xl: "repeat(5, minmax(0, 1fr))" }} gap={4}>
+        <Grid templateColumns={{ base: "1fr", md: "repeat(2, minmax(0, 1fr))", xl: "repeat(6, minmax(0, 1fr))" }} gap={4}>
+          <AppSearchableSelect
+            label="Business"
+            value={businessScope}
+            options={businessOptions}
+            onValueChange={(value) => {
+              setBusinessScope(value as BusinessScope | "");
+              setSelectedReportKey("");
+              setHasGenerated(false);
+              setReportData(null);
+              setSearch("");
+              setPage(1);
+            }}
+            placeholder="Select business"
+            isClearable={false}
+          />
           <AppSearchableSelect
             label="Report"
             value={selectedReportKey}
@@ -440,7 +510,9 @@ export const ReportsPage = () => {
               setHasGenerated(false);
               setReportData(null);
             }}
-            placeholder="Select report"
+            placeholder={businessScope ? "Select report" : "Select business first"}
+            emptyText={businessScope ? "No reports available for selected business." : "Select business first."}
+            isDisabled={!businessScope}
           />
             <AppInput
               label="Date From"
@@ -483,7 +555,7 @@ export const ReportsPage = () => {
         </Grid>
         {selectedReport ? (
           <Text mt={3} fontSize="sm" color="#705B52">
-            {selectedReport.description}
+            {selectedReportDescription}
           </Text>
         ) : null}
       </AppCard>

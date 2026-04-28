@@ -8,8 +8,7 @@ import {
   Tooltip,
   VStack,
   useDisclosure,
-  useMediaQuery,
-  useToast
+  useMediaQuery
 } from "@chakra-ui/react";
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -58,7 +57,6 @@ import { StaffPendingPage } from "@/app/StaffPendingPage";
 import { PosTopBar } from "@/components/layout/PosTopBar";
 import { ShortcutHelpModal } from "@/components/pos/ShortcutHelpModal";
 import { useNetworkStatus } from "@/hooks/useNetworkStatus";
-import { useSyncEngine } from "@/hooks/useSyncEngine";
 
 type StaffViewKey =
   | "dashboard"
@@ -141,7 +139,7 @@ const PAGE_TITLES: Record<StaffViewKey, { title: string; subtitle: string }> = {
   },
   "new-order/dine-in": {
     title: "New Order - Dine In",
-    subtitle: "Fast dine-in billing with offline-safe order queue."
+    subtitle: "Fast dine-in billing with centralized records."
   },
   "new-order/take-away": {
     title: "New Order - Take Away",
@@ -149,11 +147,11 @@ const PAGE_TITLES: Record<StaffViewKey, { title: string; subtitle: string }> = {
   },
   "new-order/swiggy": {
     title: "New Order - Swiggy",
-    subtitle: "Capture delivery marketplace orders with local reliability."
+    subtitle: "Capture delivery marketplace orders in real time."
   },
   "new-order/zomato": {
     title: "New Order - Zomato",
-    subtitle: "Queue and bill Zomato orders with sync-safe workflow."
+    subtitle: "Queue and bill Zomato orders from a single source of truth."
   },
   tables: {
     title: "Tables",
@@ -197,7 +195,7 @@ const PAGE_TITLES: Record<StaffViewKey, { title: string; subtitle: string }> = {
   },
   "gaming-booking": {
     title: "New Booking",
-    subtitle: "Create and manage snooker/console sessions with offline-safe sync."
+    subtitle: "Create and manage snooker/console sessions centrally."
   },
   "gaming-product-sale": {
     title: "Product Sale",
@@ -210,9 +208,7 @@ const PAGE_TITLES: Record<StaffViewKey, { title: string; subtitle: string }> = {
 };
 
 export const StaffDesktopShell = () => {
-  const toast = useToast();
-  const { session, logout, isOfflineSession } = usePosAuth();
-  const syncState = useSyncEngine();
+  const { session, logout } = usePosAuth();
   const isOnline = useNetworkStatus();
   const shortcutsModal = useDisclosure();
   const [isCompactViewport] = useMediaQuery("(max-width: 1360px)");
@@ -592,21 +588,10 @@ export const StaffDesktopShell = () => {
           <PosTopBar
             session={session}
             isOnline={isOnline}
-            isSyncing={syncState.isSyncing}
-            pendingSyncCount={syncState.pendingCount}
-            failedSyncCount={syncState.failedCount}
-            lastSyncedAt={syncState.lastSyncedAt}
             title={titleMeta.title}
-            subtitle={isOfflineSession ? "Offline session active. Some actions need internet to sync." : titleMeta.subtitle}
+            subtitle={titleMeta.subtitle}
             compactLayout={shouldUseCompactTopBar}
             onOpenShortcuts={shortcutsModal.onOpen}
-            onSyncNow={() => {
-              void syncState.syncNow();
-              toast({
-                status: "info",
-                title: "Sync started"
-              });
-            }}
             onLogout={() => {
               void logout();
             }}

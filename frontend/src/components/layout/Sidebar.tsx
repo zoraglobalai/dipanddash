@@ -1,6 +1,6 @@
-import { Box, Button, VStack, Text, Flex, Tooltip, HStack } from "@chakra-ui/react";
-import { useEffect, useState, type ReactNode } from "react";
-import { FiChevronDown, FiChevronLeft, FiChevronRight } from "react-icons/fi";
+import { Box, Button, VStack, Text, Flex, Tooltip, HStack, Input, InputGroup, InputLeftElement } from "@chakra-ui/react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { FiChevronDown, FiChevronLeft, FiChevronRight, FiSearch } from "react-icons/fi";
 import { NavLink, useLocation } from "react-router-dom";
 
 import type { NavItem } from "@/constants/nav";
@@ -29,12 +29,60 @@ export const Sidebar = ({
 }: SidebarProps) => {
   const location = useLocation();
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
+  const [searchQuery, setSearchQuery] = useState("");
   const compactMode = Boolean(!isMobile && isCollapsed);
   const sidebarWidth = isMobile
     ? "100%"
     : compactMode
       ? SIDEBAR_COLLAPSED_WIDTH
       : SIDEBAR_EXPANDED_WIDTH;
+  const normalizedQuery = searchQuery.trim().toLowerCase();
+  const isSearching = normalizedQuery.length > 0;
+
+  const visibleNavItems = useMemo(() => {
+    if (!isSearching) {
+      return navItems;
+    }
+
+    const filterItems = (items: NavItem[]): NavItem[] =>
+      items.reduce<NavItem[]>((accumulator, item) => {
+        if (item.isLogout) {
+          return accumulator;
+        }
+
+        const matchesLabel = item.label.toLowerCase().includes(normalizedQuery);
+
+        if (item.children?.length) {
+          const filteredChildren = filterItems(item.children);
+
+          if (filteredChildren.length) {
+            accumulator.push({
+              ...item,
+              children: filteredChildren
+            });
+            return accumulator;
+          }
+
+          if (matchesLabel) {
+            accumulator.push(item);
+          }
+
+          return accumulator;
+        }
+
+        if (matchesLabel) {
+          accumulator.push(item);
+        }
+
+        return accumulator;
+      }, []);
+
+    const filteredItems = filterItems(navItems);
+    const logoutItem = navItems.find((item) => item.isLogout);
+    return logoutItem ? [...filteredItems, logoutItem] : filteredItems;
+  }, [isSearching, navItems, normalizedQuery]);
+
+  const hasMenuMatch = visibleNavItems.some((item) => !item.isLogout);
 
   const isItemActive = (item: NavItem): boolean => {
     const isCurrent =
@@ -179,9 +227,13 @@ export const Sidebar = ({
     if (item.children?.length) {
       const isGroupActive = isItemActive(item);
       const GroupIcon = item.icon;
-      const isExpanded = expandedGroups[itemKey] ?? isGroupActive;
+      const isExpanded = isSearching ? true : expandedGroups[itemKey] ?? isGroupActive;
 
       const toggleGroup = () => {
+        if (isSearching) {
+          return;
+        }
+
         setExpandedGroups((previous) => ({
           ...previous,
           [itemKey]: !(previous[itemKey] ?? isGroupActive)
@@ -283,7 +335,7 @@ export const Sidebar = ({
       top={isMobile ? "auto" : 0}
       p={compactMode ? 3 : 5}
       pr={compactMode ? 2.5 : 4}
-      overflowY="auto"
+      overflow="hidden"
       overflowX="hidden"
       transition="all 0.24s ease"
       display="flex"
@@ -327,9 +379,43 @@ export const Sidebar = ({
       ) : (
         <AppLogo roleLabel={roleLabel} />
       )}
-      <VStack mt={compactMode ? 2 : 4} spacing={2} align="stretch" flex={1}>
-        {navItems.map((item) => renderNavItem(item))}
-      </VStack>
+      <Box mt={compactMode ? 2 : 3} flex={1} overflow="hidden">
+        <Box h="100%" overflowY="auto" overflowX="hidden">
+          {!compactMode ? (
+            <Box
+              position="sticky"
+              top={0}
+              zIndex={2}
+              pb={2}
+              bg="linear-gradient(180deg, #FFFDF7 0%, #FFF8ED 100%)"
+            >
+              <InputGroup size="sm">
+                <InputLeftElement pointerEvents="none" color="#8A6A58">
+                  <FiSearch size={14} />
+                </InputLeftElement>
+                <Input
+                  value={searchQuery}
+                  onChange={(event) => setSearchQuery(event.target.value)}
+                  placeholder="Search menu..."
+                  bg="rgba(255, 255, 255, 0.94)"
+                  borderColor="rgba(142, 9, 9, 0.18)"
+                  _hover={{ borderColor: "rgba(142, 9, 9, 0.3)" }}
+                  focusBorderColor="#D1A13D"
+                  borderRadius="11px"
+                />
+              </InputGroup>
+            </Box>
+          ) : null}
+          <VStack spacing={2} align="stretch" pb={2}>
+            {visibleNavItems.map((item) => renderNavItem(item))}
+          </VStack>
+          {!compactMode && isSearching && !hasMenuMatch ? (
+            <Text px={1} pb={2} color="#7A5A49" fontSize="sm">
+              No menu found for "{searchQuery.trim()}".
+            </Text>
+          ) : null}
+        </Box>
+      </Box>
     </Box>
   );
 };

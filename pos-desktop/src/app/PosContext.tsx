@@ -17,9 +17,7 @@ import { posBillingService } from "@/services/invoice-builder.service";
 import { ordersSyncService } from "@/services/orders-sync.service";
 import { ordersRepository } from "@/db/repositories/orders.repository";
 import { syncQueueRepository } from "@/db/repositories/sync-queue.repository";
-import { settingsRepository } from "@/db/repositories/settings.repository";
 import { env } from "@/config/env";
-import { syncEngine } from "@/sync/sync-engine";
 import { makeId, makeInvoiceNumber } from "@/utils/idempotency";
 import { getClosingLockMessage } from "@/utils/closing-lock-message";
 import { formatQuantityWithUnit } from "@/utils/quantity";
@@ -130,8 +128,6 @@ const createDraftOrder = (orderType: OrderType = "takeaway", orderChannel: Order
     syncStatus: "pending"
   };
 };
-
-const CLOSING_STATUS_CACHE_KEY = "pos_closing_status_cache";
 
 const recomputeOrder = (order: PosOrder) => {
   const totals = posBillingService.computeTotals({
@@ -264,18 +260,8 @@ export const PosProvider = ({ children }: PropsWithChildren) => {
     try {
       const status = await closingService.getStatus();
       setClosingStatus(status);
-      await settingsRepository.set(CLOSING_STATUS_CACHE_KEY, JSON.stringify(status));
     } catch {
-      const cached = await settingsRepository.get(CLOSING_STATUS_CACHE_KEY);
-      if (!cached) {
-        setClosingStatus(null);
-        return;
-      }
-      try {
-        setClosingStatus(JSON.parse(cached) as ClosingStatus);
-      } catch {
-        setClosingStatus(null);
-      }
+      setClosingStatus(null);
     }
   }, []);
 
@@ -794,17 +780,6 @@ export const PosProvider = ({ children }: PropsWithChildren) => {
     setCurrentOrder((previous) => createDraftOrder(previous.orderType, previous.orderChannel));
   }, []);
 
-  const syncNowIfOnline = useCallback(async () => {
-    if (!navigator.onLine) {
-      return;
-    }
-    try {
-      await syncEngine.syncNow();
-    } catch {
-      // Keep local queue intact; next sync cycle will retry.
-    }
-  }, []);
-
   const saveAsPending = useCallback(async (input?: { moveToCollections?: boolean; paymentMode?: InvoicePaymentInput["mode"] }) => {
     if (!currentOrder.lines.length) {
       return;
@@ -847,7 +822,6 @@ export const PosProvider = ({ children }: PropsWithChildren) => {
         createdAt: now,
         updatedAt: now
       });
-      await syncNowIfOnline();
     }
 
     if (moveToCollections) {
@@ -872,7 +846,7 @@ export const PosProvider = ({ children }: PropsWithChildren) => {
     await refreshCompletedBills();
     await refreshKitchenOrders();
     setCurrentOrder(createDraftOrder(currentOrder.orderType, currentOrder.orderChannel));
-  }, [catalog, currentOrder, refreshCompletedBills, refreshKitchenOrders, refreshPendingBills, refreshRecentBills, syncNowIfOnline]);
+  }, [catalog, currentOrder, refreshCompletedBills, refreshKitchenOrders, refreshPendingBills, refreshRecentBills]);
 
   const sendToKitchen = useCallback(async () => {
     if (!catalog || !currentOrder.lines.length || !currentOrder.customer) {
@@ -939,8 +913,6 @@ export const PosProvider = ({ children }: PropsWithChildren) => {
       createdAt: now,
       updatedAt: now
     });
-    await syncNowIfOnline();
-
     await refreshPendingBills();
     await refreshRecentBills();
     await refreshCompletedBills();
@@ -954,7 +926,6 @@ export const PosProvider = ({ children }: PropsWithChildren) => {
     refreshKitchenOrders,
     refreshPendingBills,
     refreshRecentBills,
-    syncNowIfOnline,
     validateAllocationForLines
   ]);
 
@@ -1008,12 +979,11 @@ export const PosProvider = ({ children }: PropsWithChildren) => {
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
         });
-        await syncNowIfOnline();
       }
 
       await Promise.all([refreshKitchenOrders(), refreshRecentBills(), refreshPendingBills()]);
     },
-    [catalog, refreshKitchenOrders, refreshPendingBills, refreshRecentBills, syncNowIfOnline]
+    [catalog, refreshKitchenOrders, refreshPendingBills, refreshRecentBills]
   );
 
   const resumePending = useCallback(
@@ -1173,7 +1143,6 @@ export const PosProvider = ({ children }: PropsWithChildren) => {
         updatedAt: now
       };
       await syncQueueRepository.enqueue(queueRow);
-      await syncNowIfOnline();
       setCatalog((previous) => (previous ? applyUsageToCatalogSnapshot(previous, usageEvents) : previous));
       await refreshPendingBills();
       await refreshRecentBills();
@@ -1188,7 +1157,6 @@ export const PosProvider = ({ children }: PropsWithChildren) => {
       refreshKitchenOrders,
       refreshPendingBills,
       refreshRecentBills,
-      syncNowIfOnline,
       validateAllocationForLines
     ]
   );

@@ -19,6 +19,7 @@
     "import:menu-ingredient-workbook": "ts-node src/scripts/importMenuAndIngredientsFromRoot.ts",
     "import:purchase-workbook": "ts-node src/scripts/importPurchaseWorkbookFromRoot.ts",
     "import:snooker-product-sales": "ts-node src/scripts/importSnookerProductSalesCsv.ts",
+    "sync:pos-db": "ts-node src/scripts/syncPosDbToLive.ts",
     "typeorm": "typeorm-ts-node-commonjs -d src/database/data-source.ts",
     "migration:generate": "npm run typeorm -- migration:generate src/database/migrations/AutoMigration",
     "migration:run": "npm run typeorm -- migration:run",

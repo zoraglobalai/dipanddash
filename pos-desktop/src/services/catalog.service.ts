@@ -1,4 +1,3 @@
-import { catalogRepository } from "@/db/repositories/catalog.repository";
 import { apiClient } from "@/lib/api-client";
 import type { CatalogSnapshot } from "@/types/pos";
 
@@ -12,9 +11,11 @@ type SnapshotResponse = {
   snapshot: CatalogSnapshot;
 };
 
+let runtimeSnapshot: CatalogSnapshot | null = null;
+
 export const catalogService = {
   async getLocalSnapshot() {
-    return catalogRepository.getSnapshot();
+    return runtimeSnapshot;
   },
 
   async pullSnapshot(input?: { sinceVersion?: string; allocationDate?: string }) {
@@ -22,20 +23,18 @@ export const catalogService = {
       params: input
     });
     const snapshot = response.data.data.snapshot;
-    await catalogRepository.saveSnapshot(snapshot);
+    runtimeSnapshot = snapshot;
     return snapshot;
   },
 
   async ensureSnapshot() {
-    const local = await catalogRepository.getSnapshot();
     try {
-      const fresh = await this.pullSnapshot({
+      return await this.pullSnapshot({
         sinceVersion: undefined,
         allocationDate: new Date().toISOString().slice(0, 10)
       });
-      return fresh;
     } catch {
-      return local;
+      return runtimeSnapshot;
     }
   }
 };

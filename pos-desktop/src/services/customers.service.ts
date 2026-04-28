@@ -1,9 +1,5 @@
-import { customersRepository } from "@/db/repositories/customers.repository";
-import { syncQueueRepository } from "@/db/repositories/sync-queue.repository";
-import { env } from "@/config/env";
 import { apiClient } from "@/lib/api-client";
-import { makeId } from "@/utils/idempotency";
-import type { CustomerRecord, SyncQueueRow } from "@/types/pos";
+import type { CustomerRecord } from "@/types/pos";
 
 const normalizePhone = (value: string) => value.replace(/[^\d+]/g, "");
 
@@ -27,6 +23,10 @@ type CustomerSearchResponse = {
   customers: RemoteCustomer[];
 };
 
+type CustomerCreateResponse = {
+  customer: RemoteCustomer;
+};
+
 const toLocalRecord = (customer: RemoteCustomer): CustomerRecord => ({
   localId: `remote-${customer.id}`,
   serverId: customer.id,
@@ -39,13 +39,19 @@ const toLocalRecord = (customer: RemoteCustomer): CustomerRecord => ({
   updatedAt: customer.updatedAt
 });
 
+const customerCache = new Map<string, CustomerRecord>();
+
+const cacheCustomer = (customer: CustomerRecord) => {
+  customerCache.set(normalizePhone(customer.phone), customer);
+};
+
+const getCachedCustomers = () => [...customerCache.values()];
+
 export const customersService = {
   async search(query: string) {
     const normalized = query.trim();
-    const localResults = await customersRepository.search(normalized, 8);
-
     if (!normalized) {
-      return localResults;
+      return getCachedCustomers().slice(0, 8);
     }
 
     try {
@@ -59,23 +65,26 @@ export const customersService = {
       });
 
       const remote = response.data.data.customers.map(toLocalRecord);
-      await Promise.all(remote.map((entry) => customersRepository.upsert(entry)));
-
-      const merged = new Map<string, CustomerRecord>();
-      [...remote, ...localResults].forEach((entry) => {
-        merged.set(normalizePhone(entry.phone), entry);
-      });
-      return [...merged.values()].slice(0, 8);
+      remote.forEach(cacheCustomer);
+      return remote.slice(0, 8);
     } catch {
-      return localResults;
+      const target = normalized.toLowerCase();
+      return getCachedCustomers()
+        .filter(
+          (entry) =>
+            entry.name.toLowerCase().includes(target) ||
+            entry.phone.toLowerCase().includes(target) ||
+            (entry.email ?? "").toLowerCase().includes(target)
+        )
+        .slice(0, 8);
     }
   },
 
   async findByPhone(phone: string) {
     const normalized = normalizePhone(phone);
-    const local = await customersRepository.getByPhone(normalized);
-    if (local) {
-      return local;
+    const cached = customerCache.get(normalized);
+    if (cached) {
+      return cached;
     }
 
     if (!normalized) {
@@ -94,8 +103,9 @@ export const customersService = {
       if (!first) {
         return null;
       }
+
       const mapped = toLocalRecord(first);
-      await customersRepository.upsert(mapped);
+      cacheCustomer(mapped);
       return mapped;
     } catch {
       return null;
@@ -103,49 +113,20 @@ export const customersService = {
   },
 
   async quickCreate(input: { name: string; phone: string; email?: string; notes?: string }) {
-    const now = new Date().toISOString();
     const normalizedPhone = normalizePhone(input.phone);
+    if (!normalizedPhone) {
+      throw new Error("Valid customer phone number is required.");
+    }
 
-    const customer: CustomerRecord = {
-      localId: makeId(),
-      serverId: null,
+    const response = await apiClient.post<ApiSuccess<CustomerCreateResponse>>("/customers", {
       name: input.name.trim(),
       phone: normalizedPhone,
-      email: input.email?.trim() || null,
-      notes: input.notes?.trim() || null,
-      syncStatus: "pending",
-      createdAt: now,
-      updatedAt: now
-    };
+      email: input.email?.trim() || undefined,
+      notes: input.notes?.trim() || undefined
+    });
 
-    await customersRepository.upsert(customer);
-
-    const idempotencyKey = makeId();
-    const queueRow: SyncQueueRow = {
-      id: makeId(),
-      idempotencyKey,
-      eventType: "customer_upsert",
-      payload: {
-        eventType: "customer_upsert",
-        idempotencyKey,
-        deviceId: env.deviceId,
-        payload: {
-          name: customer.name,
-          phone: customer.phone,
-          email: customer.email ?? undefined,
-          notes: customer.notes ?? undefined,
-          sourceDeviceId: env.deviceId
-        }
-      },
-      status: "pending",
-      retryCount: 0,
-      lastError: null,
-      nextRetryAt: null,
-      createdAt: now,
-      updatedAt: now
-    };
-
-    await syncQueueRepository.enqueue(queueRow);
+    const customer = toLocalRecord(response.data.data.customer);
+    cacheCustomer(customer);
     return customer;
   }
 };

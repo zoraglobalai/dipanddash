@@ -4,11 +4,6 @@
     "createUpdaterArtifacts": "v1Compatible"
   },
   "plugins": {
-    "sql": {
-      "preload": [
-        "sqlite:pos.db"
-      ]
-    },
     "updater": {
       "active": true,
       "dialog": false,
