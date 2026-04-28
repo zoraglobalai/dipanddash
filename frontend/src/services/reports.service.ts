@@ -4,6 +4,7 @@ import type { GeneratedReportResponse, ReportCatalogResponse } from "@/types/rep
 
 type GenerateReportParams = {
   reportKey: string;
+  businessScope?: "snooker" | "dip_and_dash";
   dateFrom?: string;
   dateTo?: string;
   search?: string;
@@ -13,6 +14,7 @@ type GenerateReportParams = {
 };
 
 type StockConsumptionExportParams = {
+  businessScope?: "snooker" | "dip_and_dash";
   dateFrom?: string;
   dateTo?: string;
   search?: string;

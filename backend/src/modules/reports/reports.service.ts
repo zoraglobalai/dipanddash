@@ -15,11 +15,17 @@ import { Combo } from "../items/combo.entity";
 import { Item } from "../items/item.entity";
 import { Outlet } from "../outlets/outlet.entity";
 import { ProcurementService } from "../procurement/procurement.service";
+import { type ProductTargetSection } from "../procurement/procurement.constants";
 import { Product } from "../procurement/product.entity";
 import { PurchaseOrder } from "../procurement/purchase-order.entity";
 import { Supplier } from "../procurement/supplier.entity";
 import { User } from "../users/user.entity";
-import { REPORT_CATALOG, REPORT_KEYS, type ReportKey } from "./reports.constants";
+import {
+  REPORT_CATALOG,
+  REPORT_KEYS,
+  type ReportBusinessScope,
+  type ReportKey
+} from "./reports.constants";
 import {
   buildStockConsumptionExcelXml,
   buildStockConsumptionHtmlDocument,
@@ -29,6 +35,7 @@ import {
 
 type GenerateReportInput = {
   reportKey: ReportKey;
+  businessScope?: ReportBusinessScope;
   dateFrom?: string;
   dateTo?: string;
   search?: string;
@@ -38,6 +45,7 @@ type GenerateReportInput = {
 };
 
 type ExportStockConsumptionInput = {
+  businessScope?: ReportBusinessScope;
   dateFrom?: string;
   dateTo?: string;
   search?: string;
@@ -100,6 +108,22 @@ type OutletContext = {
   outletCode: string;
   outletName: string;
 };
+
+const SNOOKER_ONLY_REPORT_KEYS = new Set<ReportKey>([
+  "gaming_report",
+  "product_wise_sales_report_snooker",
+  "stock_report_snooker"
+]);
+
+const SNOOKER_SCOPE_REPORT_KEYS = new Set<ReportKey>([
+  "gaming_report",
+  "cash_audit_report",
+  "daily_sales_report",
+  "customer_report",
+  "product_wise_sales_report_snooker",
+  "stock_consumption_report",
+  "stock_report_snooker"
+]);
 
 const toNumber = (value: unknown) => {
   const parsed = Number(value ?? 0);
@@ -373,8 +397,49 @@ export class ReportsService {
     };
   }
 
+  private resolveBusinessScope(
+    businessScope: ReportBusinessScope | undefined,
+    reportKey: ReportKey
+  ): ReportBusinessScope | undefined {
+    if (businessScope) {
+      return businessScope;
+    }
+
+    return SNOOKER_ONLY_REPORT_KEYS.has(reportKey) ? "snooker" : undefined;
+  }
+
+  private assertBusinessScopeAllowsReport(scope: ReportBusinessScope | undefined, reportKey: ReportKey) {
+    if (!scope) {
+      return;
+    }
+
+    if (scope === "snooker" && !SNOOKER_SCOPE_REPORT_KEYS.has(reportKey)) {
+      throw new AppError(422, "Selected report is not available for Snooker scope.");
+    }
+
+    if (scope === "dip_and_dash" && SNOOKER_ONLY_REPORT_KEYS.has(reportKey)) {
+      throw new AppError(422, "Selected report is not available for Dip & Dash scope.");
+    }
+  }
+
+  private applyInvoiceOrderScope(
+    query: { andWhere: (where: string, parameters?: Record<string, unknown>) => unknown },
+    scope: ReportBusinessScope | undefined,
+    alias = "invoice"
+  ) {
+    if (!scope) {
+      return query;
+    }
+
+    const operator = scope === "snooker" ? "=" : "!=";
+    query.andWhere(`${alias}.orderType ${operator} :snookerOrderType`, { snookerOrderType: "snooker" });
+    return query;
+  }
+
   async generateReport(user: ReportUserContext, input: GenerateReportInput) {
     await this.assertAccess(user, input.reportKey);
+    const businessScope = this.resolveBusinessScope(input.businessScope, input.reportKey);
+    this.assertBusinessScopeAllowsReport(businessScope, input.reportKey);
     const reportDefinition = REPORT_CATALOG.find((item) => item.key === input.reportKey);
     if (!reportDefinition) {
       throw new AppError(404, "Report definition not found");
@@ -387,7 +452,8 @@ export class ReportsService {
       to = endOfDay(now);
     }
     const payload = await this.dispatchGenerateReport(input.reportKey, from, to, {
-      outletId: input.outletId
+      outletId: input.outletId,
+      businessScope
     });
     const finalized = this.finalizeReportRows(payload.rows, input.search, input.page, input.limit);
 
@@ -411,18 +477,27 @@ export class ReportsService {
     format: "excel" | "pdf"
   ) {
     await this.assertAccess(user, "stock_consumption_report");
+    const businessScope = input.businessScope ?? "dip_and_dash";
+    this.assertBusinessScopeAllowsReport(businessScope, "stock_consumption_report");
     const { from, to } = getDateRange(input.dateFrom, input.dateTo);
-    const computed = await this.buildStockConsumptionDataset(from, to, input.outletId);
+    const computed =
+      businessScope === "snooker"
+        ? await this.buildSnookerStockConsumptionDataset(from, to)
+        : await this.buildStockConsumptionDataset(from, to, input.outletId);
     const filteredRows = this.filterReportRows(computed.payload.rows, input.search);
+    const stats =
+      businessScope === "snooker"
+        ? this.buildSnookerStockConsumptionStats(filteredRows)
+        : this.buildStockConsumptionStats(filteredRows);
     const exportPayload: StockConsumptionExportPayload = {
-      title: "Stock Consumption Report",
+      title: businessScope === "snooker" ? "Snooker Stock Consumption Report" : "Stock Consumption Report",
       outletLabel: computed.outletLabel,
       dateFrom: formatDate(from),
       dateTo: formatDate(to),
       generatedAt: new Date().toISOString(),
       columns: computed.payload.columns,
       rows: filteredRows,
-      stats: this.buildStockConsumptionStats(filteredRows)
+      stats
     };
 
     const outletToken = computed.outletLabel
@@ -448,18 +523,27 @@ export class ReportsService {
 
   async exportStockConsumptionHtml(user: ReportUserContext, input: ExportStockConsumptionInput) {
     await this.assertAccess(user, "stock_consumption_report");
+    const businessScope = input.businessScope ?? "dip_and_dash";
+    this.assertBusinessScopeAllowsReport(businessScope, "stock_consumption_report");
     const { from, to } = getDateRange(input.dateFrom, input.dateTo);
-    const computed = await this.buildStockConsumptionDataset(from, to, input.outletId);
+    const computed =
+      businessScope === "snooker"
+        ? await this.buildSnookerStockConsumptionDataset(from, to)
+        : await this.buildStockConsumptionDataset(from, to, input.outletId);
     const filteredRows = this.filterReportRows(computed.payload.rows, input.search);
+    const stats =
+      businessScope === "snooker"
+        ? this.buildSnookerStockConsumptionStats(filteredRows)
+        : this.buildStockConsumptionStats(filteredRows);
     const html = buildStockConsumptionHtmlDocument({
-      title: "Stock Consumption Report",
+      title: businessScope === "snooker" ? "Snooker Stock Consumption Report" : "Stock Consumption Report",
       outletLabel: computed.outletLabel,
       dateFrom: formatDate(from),
       dateTo: formatDate(to),
       generatedAt: new Date().toISOString(),
       columns: computed.payload.columns,
       rows: filteredRows,
-      stats: this.buildStockConsumptionStats(filteredRows)
+      stats
     });
 
     return {
@@ -468,24 +552,34 @@ export class ReportsService {
     };
   }
 
-  private async generateDailySalesReport(from: Date, to: Date): Promise<ReportPayload> {
-    const rows = await this.applyDateFilter(
-      this.invoiceRepository
-        .createQueryBuilder("invoice")
-        .where("invoice.status = 'paid'")
-        .select("DATE(invoice.createdAt)", "date")
-        .addSelect("COUNT(invoice.id)", "orders")
-        .addSelect("COALESCE(SUM(invoice.totalAmount),0)", "sales")
-        .addSelect("COALESCE(SUM(invoice.taxAmount),0)", "tax")
-        .addSelect(
-          "COALESCE(SUM(invoice.itemDiscountAmount + invoice.couponDiscountAmount + invoice.manualDiscountAmount),0)",
-          "discount"
-        )
-        .groupBy("DATE(invoice.createdAt)")
-        .orderBy("DATE(invoice.createdAt)", "ASC"),
-      from,
-      to
-    ).getRawMany<{ date: string; orders: string; sales: string; tax: string; discount: string }>();
+  private async generateDailySalesReport(
+    from: Date,
+    to: Date,
+    scope?: ReportBusinessScope
+  ): Promise<ReportPayload> {
+    const query = this.invoiceRepository
+      .createQueryBuilder("invoice")
+      .where("invoice.status = 'paid'")
+      .select("DATE(invoice.createdAt)", "date")
+      .addSelect("COUNT(invoice.id)", "orders")
+      .addSelect("COALESCE(SUM(invoice.totalAmount),0)", "sales")
+      .addSelect("COALESCE(SUM(invoice.taxAmount),0)", "tax")
+      .addSelect(
+        "COALESCE(SUM(invoice.itemDiscountAmount + invoice.couponDiscountAmount + invoice.manualDiscountAmount),0)",
+        "discount"
+      )
+      .groupBy("DATE(invoice.createdAt)")
+      .orderBy("DATE(invoice.createdAt)", "ASC");
+
+    this.applyInvoiceOrderScope(query, scope);
+
+    const rows = await this.applyDateFilter(query, from, to).getRawMany<{
+      date: string;
+      orders: string;
+      sales: string;
+      tax: string;
+      discount: string;
+    }>();
 
     const parsedRows = rows.map((row) => ({
       date: row.date,
@@ -764,8 +858,12 @@ export class ReportsService {
     };
   }
 
-  private async generateCustomerReport(from: Date, to: Date): Promise<ReportPayload> {
-    const invoices = await this.invoiceRepository
+  private async generateCustomerReport(
+    from: Date,
+    to: Date,
+    scope?: ReportBusinessScope
+  ): Promise<ReportPayload> {
+    const query = this.invoiceRepository
       .createQueryBuilder("invoice")
       .leftJoinAndSelect("invoice.customer", "customer")
       .where("invoice.status = 'paid'")
@@ -778,8 +876,11 @@ export class ReportsService {
         "customer.id",
         "customer.name",
         "customer.phone"
-      ])
-      .getMany();
+      ]);
+
+    this.applyInvoiceOrderScope(query, scope);
+
+    const invoices = await query.getMany();
 
     const map = new Map<
       string,
@@ -2031,6 +2132,156 @@ export class ReportsService {
     ];
   }
 
+  private buildSnookerStockConsumptionStats(rows: ReportRow[]): ReportStat[] {
+    const productTotals = new Map<
+      string,
+      {
+        purchase: number;
+        consumption: number;
+        latestDate: string;
+        latestClosingStock: number;
+        unit: string;
+      }
+    >();
+
+    rows.forEach((row) => {
+      const product = String(row.product ?? "-");
+      const unit = String(row.unit ?? "unit");
+      const date = String(row.date ?? "");
+      const purchase = toQty(toNumber(row.purchase));
+      const consumption = toQty(toNumber(row.consumption));
+      const closingStock = toQty(toNumber(row.closingStock));
+
+      const current = productTotals.get(product) ?? {
+        purchase: 0,
+        consumption: 0,
+        latestDate: "",
+        latestClosingStock: 0,
+        unit
+      };
+
+      current.purchase = toQty(current.purchase + purchase);
+      current.consumption = toQty(current.consumption + consumption);
+      current.unit = current.unit || unit;
+      if (date >= current.latestDate) {
+        current.latestDate = date;
+        current.latestClosingStock = closingStock;
+      }
+      productTotals.set(product, current);
+    });
+
+    const entries = Array.from(productTotals.entries()).map(([product, totals]) => ({ product, ...totals }));
+    const topConsumed = [...entries].sort((left, right) => {
+      if (right.consumption !== left.consumption) {
+        return right.consumption - left.consumption;
+      }
+      return left.product.localeCompare(right.product);
+    })[0];
+
+    return [
+      { label: "Products", value: entries.length },
+      { label: "Total Purchase", value: toQty(entries.reduce((sum, row) => sum + row.purchase, 0)) },
+      { label: "Total Snooker Usage", value: toQty(entries.reduce((sum, row) => sum + row.consumption, 0)) },
+      {
+        label: "Top Consumed Product",
+        value: topConsumed?.product ?? "-",
+        hint: topConsumed ? `${toQty(topConsumed.consumption)} ${topConsumed.unit}` : "No usage data"
+      },
+      { label: "Closing Stock", value: toQty(entries.reduce((sum, row) => sum + row.latestClosingStock, 0)) }
+    ];
+  }
+
+  private async buildSnookerStockConsumptionDataset(from: Date, to: Date) {
+    const fromDate = formatDate(from);
+    const toDate = formatDate(to);
+    const sourceRows: Array<Record<string, unknown>> = [];
+
+    const collectSectionRows = async (targetSection: ProductTargetSection) => {
+      let page = 1;
+      let totalPages = 1;
+
+      do {
+        const response = await this.procurementService.getProductDayLedger({
+          page,
+          limit: 200,
+          dateFrom: fromDate,
+          dateTo: toDate,
+          targetSection
+        });
+        const rows = Array.isArray(response.rows) ? response.rows : [];
+        sourceRows.push(...rows);
+        totalPages = Math.max(
+          1,
+          Number((response as { pagination?: { totalPages?: unknown } }).pagination?.totalPages ?? 1)
+        );
+        page += 1;
+      } while (page <= totalPages);
+    };
+
+    await collectSectionRows("gaming");
+    await collectSectionRows("both");
+
+    const rowMap = new Map<string, Record<string, unknown>>();
+    sourceRows.forEach((row) => {
+      const key = String(row.id ?? `${String(row.date ?? "")}-${String(row.productId ?? "")}`);
+      if (!rowMap.has(key)) {
+        rowMap.set(key, row);
+      }
+    });
+
+    const rows = Array.from(rowMap.values()).reduce<ReportRow[]>((accumulator, row) => {
+        const purchase = toQty(toNumber(row.purchased));
+        const consumption = toQty(toNumber(row.snookerConsumption));
+        const openingStock = toQty(toNumber(row.openingStock));
+        const closingStock = toQty(toNumber(row.closingStock));
+
+        if (purchase <= 0 && consumption <= 0 && openingStock <= 0 && closingStock <= 0) {
+          return accumulator;
+        }
+
+        accumulator.push({
+          date: String(row.date ?? ""),
+          product: String(row.productName ?? "-"),
+          category: String(row.category ?? "-"),
+          unit: String(row.unit ?? "unit"),
+          openingStock,
+          purchase,
+          consumption,
+          closingStock,
+          stockHealth: String(row.stockHealth ?? "HEALTHY")
+        });
+
+        return accumulator;
+      }, []);
+
+    rows.sort((left, right) => {
+        const dateCompare = String(left.date ?? "").localeCompare(String(right.date ?? ""));
+        if (dateCompare !== 0) {
+          return dateCompare;
+        }
+        return String(left.product ?? "").localeCompare(String(right.product ?? ""));
+      });
+
+    return {
+      payload: {
+        stats: this.buildSnookerStockConsumptionStats(rows),
+        columns: [
+          { key: "date", label: "Date" },
+          { key: "product", label: "Product" },
+          { key: "category", label: "Category" },
+          { key: "unit", label: "Unit" },
+          { key: "openingStock", label: "Opening Stock" },
+          { key: "purchase", label: "Purchase" },
+          { key: "consumption", label: "Snooker Usage" },
+          { key: "closingStock", label: "Closing Stock" },
+          { key: "stockHealth", label: "Stock Health" }
+        ],
+        rows
+      },
+      outletLabel: "Snooker"
+    };
+  }
+
   private async buildStockConsumptionDataset(from: Date, to: Date, outletId?: string) {
     const fromDate = formatDate(from);
     const toDate = formatDate(to);
@@ -2294,8 +2545,16 @@ export class ReportsService {
     return { payload, outletLabel };
   }
 
-  private async generateStockConsumptionReport(from: Date, to: Date, outletId?: string): Promise<ReportPayload> {
-    const computed = await this.buildStockConsumptionDataset(from, to, outletId);
+  private async generateStockConsumptionReport(
+    from: Date,
+    to: Date,
+    outletId: string | undefined,
+    scope?: ReportBusinessScope
+  ): Promise<ReportPayload> {
+    const computed =
+      scope === "snooker"
+        ? await this.buildSnookerStockConsumptionDataset(from, to)
+        : await this.buildStockConsumptionDataset(from, to, outletId);
     return computed.payload;
   }
 
@@ -2433,11 +2692,11 @@ export class ReportsService {
     reportKey: ReportKey,
     from: Date,
     to: Date,
-    options?: { outletId?: string }
+    options: { outletId?: string; businessScope?: ReportBusinessScope }
   ): Promise<ReportPayload> {
     switch (reportKey) {
       case "daily_sales_report":
-        return this.generateDailySalesReport(from, to);
+        return this.generateDailySalesReport(from, to, options.businessScope);
       case "product_wise_sales_report":
         return this.generateProductWiseSalesReport(from, to, "dip_and_dash");
       case "product_wise_sales_report_snooker":
@@ -2451,7 +2710,7 @@ export class ReportsService {
       case "kot_report":
         return this.generateKotReport(from, to);
       case "customer_report":
-        return this.generateCustomerReport(from, to);
+        return this.generateCustomerReport(from, to, options.businessScope);
       case "purchase_report":
         return this.generatePurchaseReport(from, to);
       case "supplier_wise_report":
@@ -2485,7 +2744,7 @@ export class ReportsService {
       case "peak_sales_time_report":
         return this.generatePeakSalesTimeReport(from, to);
       case "stock_consumption_report":
-        return this.generateStockConsumptionReport(from, to, options?.outletId);
+        return this.generateStockConsumptionReport(from, to, options.outletId, options.businessScope);
       case "gaming_report":
         return this.generateGamingReport(from, to);
       case "cash_audit_report":

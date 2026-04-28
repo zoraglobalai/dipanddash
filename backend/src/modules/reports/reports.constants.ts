@@ -29,6 +29,8 @@ export const REPORT_KEYS = [
 ] as const;
 
 export type ReportKey = (typeof REPORT_KEYS)[number];
+export const REPORT_BUSINESS_SCOPES = ["dip_and_dash", "snooker"] as const;
+export type ReportBusinessScope = (typeof REPORT_BUSINESS_SCOPES)[number];
 
 export type ReportCatalogItem = {
   key: ReportKey;

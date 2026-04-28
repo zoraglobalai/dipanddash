@@ -5,7 +5,7 @@ import { sendSuccess } from "../../common/api-response";
 import { AUTH_MESSAGES } from "../../constants/auth";
 import { AppError } from "../../errors/app-error";
 import { ReportsService } from "./reports.service";
-import type { ReportKey } from "./reports.constants";
+import type { ReportBusinessScope, ReportKey } from "./reports.constants";
 
 const parsePositiveInt = (value: unknown, fallback: number) => {
   const parsed = Number(value);
@@ -37,6 +37,10 @@ export class ReportsController {
       { id: req.user.id, role: req.user.role },
       {
         reportKey: req.query.reportKey as ReportKey,
+        businessScope:
+          typeof req.query.businessScope === "string"
+            ? (req.query.businessScope as ReportBusinessScope)
+            : undefined,
         dateFrom: typeof req.query.dateFrom === "string" ? req.query.dateFrom : undefined,
         dateTo: typeof req.query.dateTo === "string" ? req.query.dateTo : undefined,
         search: typeof req.query.search === "string" ? req.query.search : undefined,
@@ -58,6 +62,10 @@ export class ReportsController {
     const file = await this.reportsService.exportStockConsumptionReport(
       { id: req.user.id, role: req.user.role },
       {
+        businessScope:
+          typeof req.query.businessScope === "string"
+            ? (req.query.businessScope as ReportBusinessScope)
+            : undefined,
         dateFrom: typeof req.query.dateFrom === "string" ? req.query.dateFrom : undefined,
         dateTo: typeof req.query.dateTo === "string" ? req.query.dateTo : undefined,
         search: typeof req.query.search === "string" ? req.query.search : undefined,
@@ -79,6 +87,10 @@ export class ReportsController {
     const file = await this.reportsService.exportStockConsumptionHtml(
       { id: req.user.id, role: req.user.role },
       {
+        businessScope:
+          typeof req.query.businessScope === "string"
+            ? (req.query.businessScope as ReportBusinessScope)
+            : undefined,
         dateFrom: typeof req.query.dateFrom === "string" ? req.query.dateFrom : undefined,
         dateTo: typeof req.query.dateTo === "string" ? req.query.dateTo : undefined,
         search: typeof req.query.search === "string" ? req.query.search : undefined,
