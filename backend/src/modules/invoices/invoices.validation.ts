@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import {
+  INVOICE_PAYMENT_MODES,
   INVOICE_LINE_TYPES,
   INVOICE_ORDER_TYPES,
   INVOICE_STATUSES,
@@ -10,6 +11,12 @@ import {
 } from "./invoices.constants";
 
 const optionalNumeric = z.coerce.number().optional();
+const nonNegativeOptionalNumber = z.coerce.number().optional().transform((value) => {
+  if (value === undefined) {
+    return undefined;
+  }
+  return Math.max(value, 0);
+});
 
 export const invoiceListSchema = z.object({
   query: z.object({
@@ -17,7 +24,7 @@ export const invoiceListSchema = z.object({
     status: z.enum(INVOICE_STATUSES).optional(),
     statuses: z.string().trim().optional(),
     kitchenStatus: z.enum(KITCHEN_STATUSES).optional(),
-    paymentMode: z.enum(PAYMENT_MODES).optional(),
+    paymentMode: z.enum(INVOICE_PAYMENT_MODES).optional(),
     orderType: z.enum(INVOICE_ORDER_TYPES).optional(),
     excludeOrderType: z.enum(INVOICE_ORDER_TYPES).optional(),
     staffId: z.string().uuid().optional(),
@@ -130,8 +137,8 @@ const usageEventSchema = z.object({
   ingredientNameSnapshot: z.string().trim().min(1).max(180),
   consumedQuantity: z.coerce.number().min(0),
   baseUnit: z.string().trim().min(1).max(24),
-  allocatedQuantity: z.coerce.number().min(0).optional(),
-  overusedQuantity: z.coerce.number().min(0).optional(),
+  allocatedQuantity: nonNegativeOptionalNumber,
+  overusedQuantity: nonNegativeOptionalNumber,
   usageDate: z.string().date(),
   deviceId: z.string().trim().max(80).optional().nullable(),
   meta: z.record(z.unknown()).optional().nullable()
@@ -151,7 +158,7 @@ export const createInvoiceFromSyncSchema = z.object({
     tableLabel: z.string().trim().max(40).optional().nullable(),
     kitchenStatus: z.enum(KITCHEN_STATUSES).optional(),
     status: z.enum(INVOICE_STATUSES).default("paid"),
-    paymentMode: z.enum(PAYMENT_MODES).default("cash"),
+    paymentMode: z.enum(INVOICE_PAYMENT_MODES).default("cash"),
     subtotal: z.coerce.number().min(0),
     itemDiscountAmount: optionalNumeric,
     couponDiscountAmount: optionalNumeric,

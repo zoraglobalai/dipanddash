@@ -12,6 +12,7 @@ import { Product } from "../procurement/product.entity";
 import { User } from "../users/user.entity";
 import { PendingPaymentHistory } from "../pending/pending-payment-history.entity";
 import {
+  type InvoicePaymentMode,
   type KitchenStatus,
   type InvoiceOrderType,
   type InvoiceStatus,
@@ -29,7 +30,7 @@ type InvoiceListFilters = {
   status?: InvoiceStatus;
   statuses?: InvoiceStatus[];
   kitchenStatus?: KitchenStatus;
-  paymentMode?: PaymentMode;
+  paymentMode?: InvoicePaymentMode;
   orderType?: InvoiceOrderType;
   excludeOrderType?: InvoiceOrderType;
   staffId?: string;
@@ -95,7 +96,7 @@ type SyncInvoicePayload = {
   tableLabel?: string | null;
   kitchenStatus?: KitchenStatus;
   status: InvoiceStatus;
-  paymentMode: PaymentMode;
+  paymentMode: InvoicePaymentMode;
   subtotal: number;
   itemDiscountAmount?: number;
   couponDiscountAmount?: number;
@@ -889,6 +890,8 @@ export class InvoicesService {
 
         const wasPaid = invoice.status === "paid";
         const previousOrderType = invoice.orderType;
+        const normalizedInvoiceStatus: InvoiceStatus =
+          payload.paymentMode === "pending" && payload.status === "paid" ? "pending" : payload.status;
 
         invoice.idempotencyKey = payload.idempotencyKey;
         invoice.invoiceNumber = payload.invoiceNumber.trim();
@@ -900,8 +903,8 @@ export class InvoicesService {
         invoice.orderType = payload.orderType;
         invoice.tableLabel = cleanOptionalText(payload.tableLabel) ?? null;
         invoice.kitchenStatus =
-          payload.kitchenStatus ?? (payload.status === "paid" ? "served" : "queued");
-        invoice.status = payload.status;
+          payload.kitchenStatus ?? (normalizedInvoiceStatus === "paid" ? "served" : "queued");
+        invoice.status = normalizedInvoiceStatus;
         invoice.paymentMode = payload.paymentMode;
         invoice.subtotal = toMoney(payload.subtotal);
         invoice.itemDiscountAmount = toMoney(payload.itemDiscountAmount);
@@ -1008,7 +1011,7 @@ export class InvoicesService {
           })
         );
 
-        const shouldApplyUsage = payload.status === "paid";
+        const shouldApplyUsage = normalizedInvoiceStatus === "paid";
         if (shouldApplyUsage) {
           await this.applyProductSalesToStock(manager, normalizedLines, payload.orderType);
         }
@@ -1038,8 +1041,8 @@ export class InvoicesService {
                 ingredientNameSnapshot,
                 consumedQuantity: Number(event.consumedQuantity),
                 baseUnit: event.baseUnit.trim(),
-                allocatedQuantity: Number(event.allocatedQuantity ?? 0),
-                overusedQuantity: Number(event.overusedQuantity ?? 0),
+                allocatedQuantity: Math.max(Number(event.allocatedQuantity ?? 0), 0),
+                overusedQuantity: Math.max(Number(event.overusedQuantity ?? 0), 0),
                 usageDate: event.usageDate,
                 deviceId: cleanOptionalText(event.deviceId) ?? null,
                 staffId: contextUser.id,
@@ -1226,8 +1229,8 @@ export class InvoicesService {
       ingredientNameSnapshot,
       consumedQuantity: Number(payload.consumedQuantity),
       baseUnit: payload.baseUnit.trim(),
-      allocatedQuantity: Number(payload.allocatedQuantity ?? 0),
-      overusedQuantity: Number(payload.overusedQuantity ?? 0),
+      allocatedQuantity: Math.max(Number(payload.allocatedQuantity ?? 0), 0),
+      overusedQuantity: Math.max(Number(payload.overusedQuantity ?? 0), 0),
       usageDate: payload.usageDate,
       deviceId: cleanOptionalText(payload.deviceId) ?? null,
       staffId: contextUser.id,

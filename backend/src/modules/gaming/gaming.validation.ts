@@ -149,18 +149,6 @@ export const gamingCreateSchema = z.object({
         path: ["paymentBreakdown"]
       });
     }
-    if (
-      body.finalAmount !== undefined &&
-      body.systemCalculatedAmount !== undefined &&
-      Math.abs(body.finalAmount - body.systemCalculatedAmount) > 0.01 &&
-      !body.amountOverrideReason?.trim()
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "Reason is required when final amount is changed from system amount.",
-        path: ["amountOverrideReason"]
-      });
-    }
   }),
   params: z.object({}).optional(),
   query: z.object({}).optional()
@@ -230,18 +218,6 @@ export const gamingUpdateSchema = z.object({
         path: ["paymentBreakdown"]
       });
     }
-    if (
-      body.finalAmount !== undefined &&
-      body.systemCalculatedAmount !== undefined &&
-      Math.abs(body.finalAmount - body.systemCalculatedAmount) > 0.01 &&
-      !body.amountOverrideReason?.trim()
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "Reason is required when final amount is changed from system amount.",
-        path: ["amountOverrideReason"]
-      });
-    }
   }),
   query: z.object({}).optional()
 });
@@ -274,18 +250,6 @@ export const gamingCheckoutSchema = z.object({
         code: z.ZodIssueCode.custom,
         message: "Select payment mode or provide split breakdown when status is paid.",
         path: ["paymentBreakdown"]
-      });
-    }
-    if (
-      body.finalAmount !== undefined &&
-      body.systemCalculatedAmount !== undefined &&
-      Math.abs(body.finalAmount - body.systemCalculatedAmount) > 0.01 &&
-      !body.amountOverrideReason?.trim()
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "Reason is required when final amount is changed from system amount.",
-        path: ["amountOverrideReason"]
       });
     }
   }),

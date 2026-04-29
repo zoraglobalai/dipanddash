@@ -32,6 +32,7 @@ type GamingBookingApiRow = {
   resourceLabel: string;
   customers: GamingCustomerMember[];
   customerCount?: number;
+  playerCount?: number;
   primaryCustomerName?: string | null;
   primaryCustomerPhone?: string | null;
   checkInAt: string;
@@ -98,7 +99,7 @@ const ALL_RESOURCES = [...SNOOKER_RESOURCES, ...CONSOLE_RESOURCES];
 
 const SNOOKER_INCLUDED_MEMBERS = 4;
 const EXTRA_MEMBER_CHARGE = 50;
-const SERVER_PULL_INTERVAL_MS = 3000;
+const SERVER_PULL_INTERVAL_MS = 30000;
 const AMOUNT_DIFF_THRESHOLD = 0.01;
 const GAMING_PAYMENT_CHANNELS: readonly GamingPaymentChannel[] = ["cash", "card", "upi"];
 const EMPTY_PAYMENT_BREAKDOWN: PaymentBreakdown = {
@@ -269,10 +270,14 @@ const queueBookingSync = async (booking: GamingBooking) => {
 
 const sanitizeCustomers = (customers: Array<{ name: string; phone: string }>): GamingCustomerMember[] => {
   const sanitized = customers
-    .map((entry) => ({ name: entry.name.trim(), phone: normalizePhone(entry.phone) }));
+    .map((entry) => ({ name: entry.name.trim(), phone: normalizePhone(entry.phone) }))
+    .filter((entry) => entry.name.length > 0 || entry.phone.length > 0);
 
   if (!sanitized.length || !sanitized.some((entry) => entry.name.length > 0 && entry.phone.length >= 8)) {
     throw new Error("Add at least one customer with name and phone.");
+  }
+  if (sanitized.some((entry) => (entry.name.length > 0 || entry.phone.length > 0) && (entry.name.length === 0 || entry.phone.length < 8))) {
+    throw new Error("Each filled customer row must include name and a valid phone number.");
   }
   return sanitized;
 };
@@ -381,7 +386,15 @@ const toLocalBookingFromServer = (
       ? serverBooking.resourceCodes
       : normalizeResourceCodes(serverBooking.bookingType, { resourceCode: serverBooking.resourceCode });
   const customers = serverBooking.customers?.length ? serverBooking.customers : [{ name: "-", phone: "-" }];
-  const playerCount = sanitizePlayerCount(serverBooking.customerCount ?? customers.length, customers.length);
+  const inferredPlayerCountFromExtra =
+    serverBooking.bookingType === "snooker" && Number(serverBooking.extraMemberCount ?? 0) > 0
+      ? SNOOKER_INCLUDED_MEMBERS * Math.max(1, resourceCodes.length) +
+        Math.max(0, Math.floor(Number(serverBooking.extraMemberCount ?? 0)))
+      : customers.length;
+  const playerCount = sanitizePlayerCount(
+    serverBooking.playerCount ?? serverBooking.customerCount ?? inferredPlayerCountFromExtra,
+    customers.length
+  );
   const gameAmountForSlot = computeCalculatedAmount({
     checkInAt: serverBooking.checkInAt,
     checkOutAt: serverBooking.checkOutAt,
@@ -472,67 +485,68 @@ export const gamingBookingsService = {
     if (!force && now - lastServerPullAt < SERVER_PULL_INTERVAL_MS) {
       return;
     }
+    try {
+      const existingRows = await gamingBookingsRepository.list(undefined, 2000);
+      const unresolvedBookingNumbers = new Set(await syncQueueRepository.listUnresolvedGamingBookingNumbers());
+      const existingByBookingNumber = new Map(existingRows.map((row) => [row.bookingNumber, row]));
+      const existingByServerId = new Map(
+        existingRows.filter((row) => row.serverBookingId).map((row) => [row.serverBookingId as string, row])
+      );
+      const serverBookingIdsSeen = new Set<string>();
+      const serverBookingNumbersSeen = new Set<string>();
 
-    const existingRows = await gamingBookingsRepository.list(undefined, 2000);
-    const unresolvedBookingNumbers = new Set(await syncQueueRepository.listUnresolvedGamingBookingNumbers());
-    const existingByBookingNumber = new Map(existingRows.map((row) => [row.bookingNumber, row]));
-    const existingByServerId = new Map(
-      existingRows.filter((row) => row.serverBookingId).map((row) => [row.serverBookingId as string, row])
-    );
-    const serverBookingIdsSeen = new Set<string>();
-    const serverBookingNumbersSeen = new Set<string>();
+      let page = 1;
+      let totalPages = 1;
+      const limit = 200;
+      do {
+        const response = await apiClient.get<ApiSuccess<GamingBookingsListResponse>>("/gaming/bookings", {
+          params: { page, limit }
+        });
+        const payload = response.data.data;
 
-    let page = 1;
-    let totalPages = 1;
-    const limit = 200;
-    do {
-      const response = await apiClient.get<ApiSuccess<GamingBookingsListResponse>>("/gaming/bookings", {
-        params: { page, limit }
-      });
-      const payload = response.data.data;
-
-      for (const serverRow of payload.bookings) {
-        serverBookingIdsSeen.add(serverRow.id);
-        serverBookingNumbersSeen.add(serverRow.bookingNumber);
-        const existing =
-          existingByServerId.get(serverRow.id) ??
-          existingByBookingNumber.get(serverRow.bookingNumber) ??
-          null;
-        const hasLocalOnlyPendingSync =
-          existing !== null && !existing.serverBookingId && unresolvedBookingNumbers.has(existing.bookingNumber);
-        if (hasLocalOnlyPendingSync) {
-          continue;
+        for (const serverRow of payload.bookings) {
+          serverBookingIdsSeen.add(serverRow.id);
+          serverBookingNumbersSeen.add(serverRow.bookingNumber);
+          const existing =
+            existingByServerId.get(serverRow.id) ??
+            existingByBookingNumber.get(serverRow.bookingNumber) ??
+            null;
+          const hasLocalOnlyPendingSync =
+            existing !== null && !existing.serverBookingId && unresolvedBookingNumbers.has(existing.bookingNumber);
+          if (hasLocalOnlyPendingSync) {
+            continue;
+          }
+          const localRow = toLocalBookingFromServer(serverRow, existing);
+          await gamingBookingsRepository.save(localRow);
+          existingByBookingNumber.set(localRow.bookingNumber, localRow);
+          if (localRow.serverBookingId) {
+            existingByServerId.set(localRow.serverBookingId, localRow);
+          }
         }
-        const localRow = toLocalBookingFromServer(serverRow, existing);
-        await gamingBookingsRepository.save(localRow);
-        existingByBookingNumber.set(localRow.bookingNumber, localRow);
-        if (localRow.serverBookingId) {
-          existingByServerId.set(localRow.serverBookingId, localRow);
-        }
+
+        totalPages = payload.pagination.totalPages || 1;
+        page += 1;
+      } while (page <= totalPages);
+
+      const staleSyncedLocalIds = existingRows
+        .filter((row) => {
+          const hasLocalOnlyPendingSync = !row.serverBookingId && unresolvedBookingNumbers.has(row.bookingNumber);
+          if (hasLocalOnlyPendingSync) {
+            return false;
+          }
+          if (row.serverBookingId) {
+            return !serverBookingIdsSeen.has(row.serverBookingId);
+          }
+          return !serverBookingNumbersSeen.has(row.bookingNumber);
+        })
+        .map((row) => row.localBookingId);
+
+      if (staleSyncedLocalIds.length) {
+        await gamingBookingsRepository.removeByIds(staleSyncedLocalIds);
       }
-
-      totalPages = payload.pagination.totalPages || 1;
-      page += 1;
-    } while (page <= totalPages);
-
-    const staleSyncedLocalIds = existingRows
-      .filter((row) => {
-        const hasLocalOnlyPendingSync = !row.serverBookingId && unresolvedBookingNumbers.has(row.bookingNumber);
-        if (hasLocalOnlyPendingSync) {
-          return false;
-        }
-        if (row.serverBookingId) {
-          return !serverBookingIdsSeen.has(row.serverBookingId);
-        }
-        return !serverBookingNumbersSeen.has(row.bookingNumber);
-      })
-      .map((row) => row.localBookingId);
-
-    if (staleSyncedLocalIds.length) {
-      await gamingBookingsRepository.removeByIds(staleSyncedLocalIds);
+    } finally {
+      lastServerPullAt = now;
     }
-
-    lastServerPullAt = now;
   },
 
   getResourcesByType(bookingType: GamingBookingType) {

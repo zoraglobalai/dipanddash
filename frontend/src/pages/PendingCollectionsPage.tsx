@@ -450,7 +450,13 @@ export const PendingCollectionsPage = () => {
           sourceCreatedAt: sourceWithSnapshots.sourceCreatedAt ?? invoice.createdAt,
           lines: lineItems,
           payments: invoiceEditSource.payments.map((payment) => ({
-            mode: payment.mode,
+            mode:
+              payment.mode === "cash" ||
+              payment.mode === "card" ||
+              payment.mode === "upi" ||
+              payment.mode === "mixed"
+                ? payment.mode
+                : "cash",
             status: payment.status,
             amount: payment.amount,
             receivedAmount: payment.receivedAmount,

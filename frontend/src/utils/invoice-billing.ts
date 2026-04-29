@@ -195,7 +195,7 @@ export const buildUsageEventsForInvoice = (
     const stock = stockByIngredientId.get(entry.ingredientId);
     const allocation = allocationByIngredientId.get(entry.ingredientId);
     const availableQuantity = roundQty(
-      Number(stock?.availableQuantity ?? allocation?.remainingQuantity ?? 0)
+      Math.max(Number(stock?.availableQuantity ?? allocation?.remainingQuantity ?? 0), 0)
     );
     const overusedQuantity = roundQty(Math.max(consumedQuantity - availableQuantity, 0));
 

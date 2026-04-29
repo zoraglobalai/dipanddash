@@ -1,7 +1,7 @@
 export type InvoiceStatus = "pending" | "paid" | "cancelled" | "refunded";
 export type InvoiceOrderType = "takeaway" | "dine_in" | "delivery" | "snooker";
 export type InvoiceKitchenStatus = "not_sent" | "queued" | "preparing" | "ready" | "served";
-export type InvoicePaymentMode = "cash" | "card" | "upi" | "mixed";
+export type InvoicePaymentMode = "cash" | "card" | "upi" | "mixed" | "pending";
 export type InvoicePaymentStatus = "success" | "failed" | "refunded";
 export type InvoiceLineType = "item" | "add_on" | "combo" | "product" | "custom";
 

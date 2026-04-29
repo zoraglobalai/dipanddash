@@ -233,6 +233,7 @@ export class PendingService {
       .andWhere(
         `(
           invoice."kitchenStatus" = :collectionReadyKitchenStatus
+          OR invoice."paymentMode" = :pendingInvoicePaymentMode
           OR EXISTS (
             SELECT 1
             FROM invoice_payments payment_exists
@@ -244,6 +245,7 @@ export class PendingService {
       )
       .setParameters({
         collectionReadyKitchenStatus: "served",
+        pendingInvoicePaymentMode: "pending",
         snookerOrderType: "snooker",
         snookerStaffRole: UserRole.SNOOKER_STAFF,
         snookerInvoicePrefix: "SNK-%",

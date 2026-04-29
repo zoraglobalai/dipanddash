@@ -2587,7 +2587,7 @@ export class ReportsService {
           totalPlayingHours: hasCheckOut ? formatDurationFromMinutes(totalMinutes) : "-",
           bookingType: row.bookingType,
           resource: row.resourceCodes?.length ? row.resourceCodes.join(", ") : row.resourceLabel,
-          players: row.customerGroup?.length || 0,
+          players: Math.max(1, Math.floor(toNumber(row.playerCount ?? row.customerGroup?.length ?? 1))),
           status: row.status,
           paymentStatus: row.paymentStatus,
           paymentMode: row.paymentMode ?? "-",

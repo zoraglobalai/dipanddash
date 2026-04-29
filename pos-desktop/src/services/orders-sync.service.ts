@@ -7,7 +7,7 @@ import {
 } from "@/services/invoices.service";
 import type { CartAddOnSelection, CartLine, CustomerRecord, KitchenStatus, PaymentMode, PosOrder } from "@/types/pos";
 
-const SERVER_PULL_INTERVAL_MS = 3000;
+const SERVER_PULL_INTERVAL_MS = 30000;
 const INVOICE_PAGE_LIMIT = 150;
 const REMOTE_STATUSES = "pending,paid,cancelled,refunded";
 const VALID_PAYMENT_MODES = new Set<PaymentMode>(["cash", "card", "upi", "mixed"]);
@@ -243,7 +243,9 @@ const buildOrderFromDetails = (
     remote.createdAt ??
     existing?.createdAt ??
     new Date().toISOString();
-  const updatedAt = invoice.updatedAt ?? remote.updatedAt ?? existing?.updatedAt ?? createdAt;
+  // Keep sync marker aligned with the list endpoint's updatedAt to avoid
+  // repeatedly refetching details for unchanged invoices.
+  const updatedAt = remote.updatedAt ?? invoice.updatedAt ?? existing?.updatedAt ?? createdAt;
   const lines: CartLine[] = (details.lines ?? []).map((line, index) => ({
     lineId: line.id || `${localOrderId}-line-${index + 1}`,
     lineType: normalizeLineType(line.lineType),
@@ -347,7 +349,7 @@ const fetchRemoteInvoices = async () => {
   return remoteByInvoiceNumber;
 };
 
-const runPull = async () => {
+const runPull = async (includeDetails = false) => {
   const localRows = await ordersRepository.listForSync(5000);
   const unresolvedInvoiceNumbers = new Set(await syncQueueRepository.listUnresolvedInvoiceNumbers());
   const localByInvoiceNumber = new Map(
@@ -409,15 +411,16 @@ const runPull = async () => {
 
     const existing = localRow ? await ordersRepository.getById(localRow.localOrderId) : null;
     let details: DesktopInvoiceDetailsResponse | null = null;
-
-    try {
-      if (!detailsCache.has(remote.id)) {
-        const detailsResponse = await invoicesService.getById(remote.id);
-        detailsCache.set(remote.id, detailsResponse.data);
+    if (includeDetails) {
+      try {
+        if (!detailsCache.has(remote.id)) {
+          const detailsResponse = await invoicesService.getById(remote.id);
+          detailsCache.set(remote.id, detailsResponse.data);
+        }
+        details = detailsCache.get(remote.id) ?? null;
+      } catch {
+        details = null;
       }
-      details = detailsCache.get(remote.id) ?? null;
-    } catch {
-      details = null;
     }
 
     const localOrderId =
@@ -434,7 +437,6 @@ const runPull = async () => {
     }
   }
 
-  lastServerPullAt = Date.now();
 };
 
 export const ordersSyncService = {
@@ -446,7 +448,8 @@ export const ordersSyncService = {
     if (activePull) {
       return activePull;
     }
-    activePull = runPull().finally(() => {
+    activePull = runPull(false).finally(() => {
+      lastServerPullAt = Date.now();
       activePull = null;
     });
     return activePull;

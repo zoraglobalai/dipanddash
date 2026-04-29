@@ -48,6 +48,12 @@ export const chakraTheme = extendTheme({
     }
   },
   components: {
+    Modal: {
+      defaultProps: {
+        closeOnOverlayClick: false,
+        closeOnEsc: false
+      }
+    },
     Button: {
       baseStyle: {
         borderRadius: designTokens.radius.control,

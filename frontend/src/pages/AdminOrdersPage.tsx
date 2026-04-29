@@ -84,7 +84,8 @@ const paymentModeOptions: Array<{ label: string; value: InvoicePaymentMode }> = 
   { label: "Cash", value: "cash" },
   { label: "Card", value: "card" },
   { label: "UPI", value: "upi" },
-  { label: "Mixed", value: "mixed" }
+  { label: "Mixed", value: "mixed" },
+  { label: "Pending", value: "pending" }
 ];
 
 const orderTypeOptions: Array<{ label: string; value: InvoiceOrderType }> = [
@@ -102,6 +103,7 @@ const lineTypeOptions = [
 ] as const;
 
 type OrderLineType = (typeof lineTypeOptions)[number]["value"];
+type PaymentDraftMode = Exclude<InvoicePaymentMode, "mixed" | "pending">;
 
 type OrderLineDraft = {
   id: string;
@@ -116,7 +118,7 @@ type OrderLineDraft = {
 
 type PaymentDraftRow = {
   id: string;
-  mode: Exclude<InvoicePaymentMode, "mixed">;
+  mode: PaymentDraftMode;
   amount: string;
   referenceNo: string;
   paidAt: string;
@@ -252,7 +254,10 @@ const createOrderLineDraft = (): OrderLineDraft => ({
   discountAmount: "0"
 });
 
-const createPaymentDraft = (mode: Exclude<InvoicePaymentMode, "mixed"> = "cash"): PaymentDraftRow => ({
+const toPaymentDraftMode = (mode: InvoicePaymentMode): PaymentDraftMode =>
+  mode === "card" || mode === "upi" ? mode : "cash";
+
+const createPaymentDraft = (mode: PaymentDraftMode = "cash"): PaymentDraftRow => ({
   id: createDraftId(),
   mode,
   amount: "0",
@@ -700,12 +705,12 @@ export const AdminOrdersPage = () => {
           payments.length
             ? payments.map((payment) => ({
                 id: createDraftId(),
-                mode: payment.mode === "mixed" ? "cash" : payment.mode,
+                mode: toPaymentDraftMode(payment.mode),
                 amount: String(payment.amount),
                 referenceNo: payment.referenceNo ?? "",
                 paidAt: payment.paidAt
               }))
-            : [createPaymentDraft(invoice.paymentMode === "mixed" ? "cash" : invoice.paymentMode)]
+            : [createPaymentDraft(toPaymentDraftMode(invoice.paymentMode))]
         );
 
         const matchedOffer = snapshot.offers.find(
@@ -1628,7 +1633,7 @@ export const AdminOrdersPage = () => {
                             setPaymentDrafts((previous) =>
                               previous.map((entry) =>
                                 entry.id === payment.id
-                                  ? { ...entry, mode: event.target.value as Exclude<InvoicePaymentMode, "mixed"> }
+                                  ? { ...entry, mode: event.target.value as PaymentDraftMode }
                                   : entry
                               )
                             )

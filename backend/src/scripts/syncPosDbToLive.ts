@@ -734,6 +734,7 @@ const buildFallbackGamingEvent = (
       bookingType,
       resourceCode,
       resourceCodes,
+      playerCount: Math.max(1, Math.floor(toNumber(row.player_count, customers.length || 1))),
       checkInAt,
       checkOutAt,
       hourlyRate,
@@ -830,6 +831,13 @@ const importGamingEventDirect = async (input: {
   const systemCalculatedAmount = toMoney(payload.systemCalculatedAmount, 0);
   const finalAmount = toMoney(payload.finalAmount, status === "completed" ? systemCalculatedAmount : 0);
   const targetAmount = status === "completed" ? Math.max(finalAmount, systemCalculatedAmount) : systemCalculatedAmount;
+  const syncedPlayerCount = Math.max(1, Math.floor(toNumber(payload.playerCount, customerGroup.length)));
+  const syncedExtraMemberCount = Math.max(0, Math.floor(toNumber(payload.extraMemberCount, 0)));
+  const inferredPlayerCountFromExtra =
+    bookingType === "snooker" && syncedExtraMemberCount > 0
+      ? Math.max(1, normalizedResourceCodes.length) * 4 + syncedExtraMemberCount
+      : syncedPlayerCount;
+  const playerCount = Math.max(syncedPlayerCount, customerGroup.length, inferredPlayerCountFromExtra);
 
   let paymentStatus = asEnum(payload.paymentStatus, GAMING_PAYMENT_STATUSES, "pending");
   const paymentBreakdownInput = isRecord(payload.paymentBreakdown) ? payload.paymentBreakdown : {};
@@ -893,9 +901,10 @@ const importGamingEventDirect = async (input: {
     checkInAt: new Date(checkInAt),
     checkOutAt: checkOutAt ? new Date(checkOutAt) : null,
     hourlyRate: toMoney(payload.hourlyRate, 0),
+    playerCount,
     finalAmount,
     systemCalculatedAmount,
-    extraMemberCount: Math.max(0, Math.floor(toNumber(payload.extraMemberCount, 0))),
+    extraMemberCount: syncedExtraMemberCount,
     extraMemberCharge: toMoney(payload.extraMemberCharge, 0),
     amountOverrideReason: truncate(cleanText(payload.amountOverrideReason), 500),
     status,

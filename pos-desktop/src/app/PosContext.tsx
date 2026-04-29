@@ -4,7 +4,6 @@ import {
   useContext,
   useEffect,
   useMemo,
-  useRef,
   useState,
   type PropsWithChildren
 } from "react";
@@ -14,7 +13,6 @@ import { closingService } from "@/services/closing.service";
 import { attendanceService } from "@/services/attendance.service";
 import { customersService } from "@/services/customers.service";
 import { posBillingService } from "@/services/invoice-builder.service";
-import { ordersSyncService } from "@/services/orders-sync.service";
 import { ordersRepository } from "@/db/repositories/orders.repository";
 import { syncQueueRepository } from "@/db/repositories/sync-queue.repository";
 import { env } from "@/config/env";
@@ -214,44 +212,23 @@ export const PosProvider = ({ children }: PropsWithChildren) => {
   const [allocationWarning, setAllocationWarning] = useState<string | null>(null);
   const [closingStatus, setClosingStatus] = useState<ClosingStatus | null>(null);
   const [isPunchedIn, setIsPunchedIn] = useState<boolean | null>(null);
-  const isBackgroundOrderRefreshRunningRef = useRef(false);
 
   const refreshPendingBills = useCallback(async () => {
-    try {
-      await ordersSyncService.pullFromServer(false);
-    } catch {
-      // no-op: keep local snapshot in offline mode.
-    }
     const pending = await ordersRepository.listPendingBills();
     setPendingBills(pending);
   }, []);
 
   const refreshRecentBills = useCallback(async () => {
-    try {
-      await ordersSyncService.pullFromServer(false);
-    } catch {
-      // no-op: keep local snapshot in offline mode.
-    }
     const recent = await ordersRepository.listRecentBills(5);
     setRecentBills(recent);
   }, []);
 
   const refreshCompletedBills = useCallback(async () => {
-    try {
-      await ordersSyncService.pullFromServer(false);
-    } catch {
-      // no-op: keep local snapshot in offline mode.
-    }
     const completed = await ordersRepository.listCompletedBills(500);
     setCompletedBills(completed);
   }, []);
 
   const refreshKitchenOrders = useCallback(async () => {
-    try {
-      await ordersSyncService.pullFromServer(false);
-    } catch {
-      // no-op: keep local snapshot in offline mode.
-    }
     const rows = await ordersRepository.listKitchenOrders(500);
     setKitchenOrders(rows);
   }, []);
@@ -302,32 +279,14 @@ export const PosProvider = ({ children }: PropsWithChildren) => {
     };
 
     void bootstrap();
-  }, [refreshClosingStatus, refreshCompletedBills, refreshKitchenOrders, refreshPendingBills, refreshRecentBills, refreshShiftStatus]);
-
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      if (isBackgroundOrderRefreshRunningRef.current) {
-        return;
-      }
-      isBackgroundOrderRefreshRunningRef.current = true;
-      void (async () => {
-        try {
-          await Promise.all([
-            refreshPendingBills(),
-            refreshRecentBills(),
-            refreshCompletedBills(),
-            refreshKitchenOrders()
-          ]);
-        } finally {
-          isBackgroundOrderRefreshRunningRef.current = false;
-        }
-      })();
-    }, 3000);
-
-    return () => {
-      window.clearInterval(timer);
-    };
-  }, [refreshCompletedBills, refreshKitchenOrders, refreshPendingBills, refreshRecentBills]);
+  }, [
+    refreshClosingStatus,
+    refreshCompletedBills,
+    refreshKitchenOrders,
+    refreshPendingBills,
+    refreshRecentBills,
+    refreshShiftStatus
+  ]);
 
   const validateAllocationForLines = useCallback(
     (lines: CartLine[], invoiceNumber: string) => {

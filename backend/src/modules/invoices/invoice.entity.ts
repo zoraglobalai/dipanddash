@@ -14,12 +14,12 @@ import { User } from "../users/user.entity";
 import {
   INVOICE_ORDER_TYPES,
   INVOICE_STATUSES,
+  INVOICE_PAYMENT_MODES,
   KITCHEN_STATUSES,
-  PAYMENT_MODES,
   type KitchenStatus,
+  type InvoicePaymentMode,
   type InvoiceOrderType,
-  type InvoiceStatus,
-  type PaymentMode
+  type InvoiceStatus
 } from "./invoices.constants";
 
 @Index("IDX_invoices_invoice_number_unique", ["invoiceNumber"], { unique: true })
@@ -70,8 +70,8 @@ export class Invoice {
   @Column({ type: "enum", enum: INVOICE_STATUSES, default: "paid" })
   status!: InvoiceStatus;
 
-  @Column({ type: "enum", enum: PAYMENT_MODES, default: "cash" })
-  paymentMode!: PaymentMode;
+  @Column({ type: "enum", enum: INVOICE_PAYMENT_MODES, default: "cash" })
+  paymentMode!: InvoicePaymentMode;
 
   @Column({ type: "numeric", precision: 12, scale: 2, default: 0 })
   subtotal!: number;

@@ -1,11 +1,4 @@
-import { apiClient } from "@/lib/api-client";
 import type { SyncQueueEvent } from "@/types/pos";
-
-type ApiSuccess<T> = {
-  success: true;
-  message: string;
-  data: T;
-};
 
 type SyncBatchResponse = {
   summary: {
@@ -27,20 +20,32 @@ type SyncBatchResponse = {
 
 export const posSyncApiService = {
   async syncBatch(events: SyncQueueEvent[]) {
-    const response = await apiClient.post<ApiSuccess<SyncBatchResponse>>("/pos-sync/batch", { events });
-    return response.data.data;
+    // Legacy endpoint disabled in centralized API mode.
+    return {
+      summary: {
+        total: events.length,
+        successful: events.length,
+        failed: 0,
+        duplicates: 0
+      },
+      results: events.map((event) => ({
+        eventType: event.eventType,
+        idempotencyKey: event.idempotencyKey,
+        success: true,
+        duplicate: false,
+        message: "Skipped /pos-sync/batch in centralized mode.",
+        entityType: "none",
+        entityId: null
+      }))
+    } satisfies SyncBatchResponse;
   },
 
-  async getStatus(deviceId?: string) {
-    const response = await apiClient.get<
-      ApiSuccess<{
-        totalEvents: number;
-        processedEvents: number;
-        failedEvents: number;
-        lastProcessedAt: string | null;
-      }>
-    >("/pos-sync/status", { params: { deviceId } });
-    return response.data.data;
+  async getStatus(_deviceId?: string) {
+    return {
+      totalEvents: 0,
+      processedEvents: 0,
+      failedEvents: 0,
+      lastProcessedAt: null
+    };
   }
 };
-

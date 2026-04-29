@@ -39,7 +39,7 @@ type InvoiceUpsertEvent = {
     tableLabel?: string | null;
     kitchenStatus?: "not_sent" | "queued" | "preparing" | "ready" | "served";
     status: "pending" | "paid" | "cancelled" | "refunded";
-    paymentMode: "cash" | "card" | "upi" | "mixed";
+    paymentMode: "cash" | "card" | "upi" | "mixed" | "pending";
     subtotal: number;
     itemDiscountAmount?: number;
     couponDiscountAmount?: number;
@@ -114,6 +114,7 @@ type GamingBookingUpsertEvent = {
     bookingType: "snooker" | "console";
     resourceCode: string;
     resourceCodes?: string[];
+    playerCount?: number;
     checkInAt?: string;
     checkOutAt?: string;
     hourlyRate: number;

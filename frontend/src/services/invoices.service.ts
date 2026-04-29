@@ -77,7 +77,7 @@ export const invoicesService = {
     tableLabel?: string | null;
     kitchenStatus?: "not_sent" | "queued" | "preparing" | "ready" | "served";
     status?: "pending" | "paid" | "cancelled" | "refunded";
-    paymentMode?: "cash" | "card" | "upi" | "mixed";
+    paymentMode?: "cash" | "card" | "upi" | "mixed" | "pending";
     subtotal: number;
     itemDiscountAmount?: number;
     couponDiscountAmount?: number;

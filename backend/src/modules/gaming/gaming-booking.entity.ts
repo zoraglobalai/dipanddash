@@ -55,6 +55,9 @@ export class GamingBooking {
   @Column({ type: "jsonb", default: () => "'[]'::jsonb" })
   customerGroup!: BookingCustomerMember[];
 
+  @Column({ type: "integer", default: 1 })
+  playerCount!: number;
+
   @Column({ type: "varchar", length: 120, nullable: true })
   primaryCustomerName!: string | null;
 

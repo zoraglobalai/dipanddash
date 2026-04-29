@@ -10,6 +10,9 @@ export type KitchenStatus = (typeof KITCHEN_STATUSES)[number];
 export const PAYMENT_MODES = ["cash", "card", "upi", "mixed"] as const;
 export type PaymentMode = (typeof PAYMENT_MODES)[number];
 
+export const INVOICE_PAYMENT_MODES = [...PAYMENT_MODES, "pending"] as const;
+export type InvoicePaymentMode = (typeof INVOICE_PAYMENT_MODES)[number];
+
 export const PAYMENT_STATUSES = ["success", "failed", "refunded"] as const;
 export type PaymentStatus = (typeof PAYMENT_STATUSES)[number];
 
