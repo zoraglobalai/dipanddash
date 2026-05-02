@@ -47,18 +47,25 @@ const cacheCustomer = (customer: CustomerRecord) => {
 
 const getCachedCustomers = () => [...customerCache.values()];
 
+type CustomerSearchOptions = {
+  scope?: "all" | "snooker";
+};
+
 export const customersService = {
-  async search(query: string) {
+  async search(query: string, options?: CustomerSearchOptions) {
     const normalized = query.trim();
     if (!normalized) {
       return getCachedCustomers().slice(0, 8);
     }
+    const normalizedPhone = normalizePhone(normalized);
+    const isPhoneSearch = normalizedPhone.length >= 8 && /^[0-9+\-\s()]+$/.test(normalized);
 
     try {
       const response = await apiClient.get<ApiSuccess<CustomerSearchResponse>>("/customers/search", {
         params: {
-          phone: normalized,
           search: normalized,
+          ...(isPhoneSearch ? { phone: normalizedPhone } : {}),
+          ...(options?.scope && options.scope !== "all" ? { scope: options.scope } : {}),
           page: 1,
           limit: 8
         }
@@ -68,6 +75,9 @@ export const customersService = {
       remote.forEach(cacheCustomer);
       return remote.slice(0, 8);
     } catch {
+      if (options?.scope && options.scope !== "all") {
+        return [];
+      }
       const target = normalized.toLowerCase();
       return getCachedCustomers()
         .filter(
@@ -80,14 +90,14 @@ export const customersService = {
     }
   },
 
-  async findByPhone(phone: string) {
+  async findByPhone(phone: string, options?: CustomerSearchOptions) {
     const normalized = normalizePhone(phone);
-    const cached = customerCache.get(normalized);
+    const cached = options?.scope && options.scope !== "all" ? null : customerCache.get(normalized);
     if (cached) {
       return cached;
     }
 
-    if (!normalized) {
+    if (normalized.length < 8) {
       return null;
     }
 
@@ -95,6 +105,7 @@ export const customersService = {
       const response = await apiClient.get<ApiSuccess<CustomerSearchResponse>>("/customers/search", {
         params: {
           phone: normalized,
+          ...(options?.scope && options.scope !== "all" ? { scope: options.scope } : {}),
           page: 1,
           limit: 1
         }

@@ -231,6 +231,7 @@ export class CustomersService {
   async searchCustomersByPhone(input: {
     phone?: string;
     search?: string;
+    scope?: "all" | "snooker";
     page: number;
     limit: number;
   }) {
@@ -250,6 +251,32 @@ export class CustomersService {
       query.andWhere(
         "(LOWER(customer.name) LIKE LOWER(:search) OR customer.phone LIKE :search OR LOWER(COALESCE(customer.email, '')) LIKE LOWER(:search))",
         { search }
+      );
+    }
+    if (input.scope === "snooker") {
+      query.andWhere(
+        `(
+          EXISTS (
+            SELECT 1
+            FROM invoices invoice
+            WHERE invoice."customerId" = customer.id
+              AND invoice."orderType" = :snookerOrderType
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM gaming_bookings booking
+            WHERE booking."bookingType" = :snookerBookingType
+              AND (
+                booking."primaryCustomerPhone" = customer.phone
+                OR EXISTS (
+                  SELECT 1
+                  FROM jsonb_array_elements(COALESCE(booking."customerGroup", '[]'::jsonb)) AS customer_member
+                  WHERE regexp_replace(COALESCE(customer_member->>'phone', ''), '[^0-9+]', '', 'g') = customer.phone
+                )
+              )
+          )
+        )`,
+        { snookerOrderType: "snooker", snookerBookingType: "snooker" }
       );
     }
 

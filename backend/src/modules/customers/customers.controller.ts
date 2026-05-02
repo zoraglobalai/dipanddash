@@ -30,6 +30,7 @@ export class CustomersController {
     const data = await this.customersService.searchCustomersByPhone({
       phone: typeof req.query.phone === "string" ? req.query.phone : undefined,
       search: typeof req.query.search === "string" ? req.query.search : undefined,
+      scope: req.query.scope === "snooker" ? "snooker" : undefined,
       page: parsePositiveInt(req.query.page, 1),
       limit: parsePositiveInt(req.query.limit, 10)
     });

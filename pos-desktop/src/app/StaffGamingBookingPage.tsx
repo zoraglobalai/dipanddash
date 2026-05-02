@@ -35,7 +35,15 @@ import { PosDataTable, type PosTableColumn } from "@/components/common/PosDataTa
 import { customersService } from "@/services/customers.service";
 import { gamingBookingsService } from "@/services/gaming-bookings.service";
 import { snookerOrderService } from "@/services/snooker-order.service";
-import type { CatalogSnapshot, GamingBooking, GamingBookingStatus, GamingBookingType, GamingPaymentMode, PosOrder } from "@/types/pos";
+import type {
+  CatalogSnapshot,
+  CustomerRecord,
+  GamingBooking,
+  GamingBookingStatus,
+  GamingBookingType,
+  GamingPaymentMode,
+  PosOrder
+} from "@/types/pos";
 import { formatINR } from "@/utils/currency";
 
 type CustomerDraft = { name: string; phone: string };
@@ -130,6 +138,7 @@ const formatPaymentSplitSummary = (split: { cash: number; card: number; upi: num
   }
   return parts.join(" + ");
 };
+const normalizePhone = (value: string) => value.replace(/\D/g, "");
 
 const calcCheckoutAmount = (booking: GamingBooking, checkOutAtIso: string) => {
   const checkIn = new Date(booking.checkInAt).getTime();
@@ -163,6 +172,61 @@ const mapOrderToDraftLines = (order: PosOrder | null | undefined): FoodDraftLine
   return mapped.length ? mapped : [createFoodLine()];
 };
 
+const matchesCustomerQuery = (customer: CustomerDraft, query: string) => {
+  const target = query.trim().toLowerCase();
+  if (!target) {
+    return true;
+  }
+  const phoneTarget = normalizePhone(target);
+  return (
+    customer.name.toLowerCase().includes(target) ||
+    normalizePhone(customer.phone).includes(phoneTarget)
+  );
+};
+
+const searchSnookerCustomerSuggestions = async (query: string): Promise<CustomerRecord[]> => {
+  const normalized = query.trim();
+  const [customerRows, bookingRows] = await Promise.all([
+    customersService.search(normalized, { scope: "snooker" }),
+    gamingBookingsService.listBookings({ bookingType: "snooker", search: normalized }, 80)
+  ]);
+  const byPhone = new Map<string, CustomerRecord>();
+  const fallbackRows: CustomerRecord[] = [];
+
+  const addCustomer = (customer: CustomerRecord) => {
+    const phoneKey = normalizePhone(customer.phone);
+    if (!phoneKey) {
+      fallbackRows.push(customer);
+      return;
+    }
+    if (!byPhone.has(phoneKey)) {
+      byPhone.set(phoneKey, customer);
+    }
+  };
+
+  customerRows.forEach(addCustomer);
+  bookingRows.forEach((booking) => {
+    booking.customers
+      .filter((customer: CustomerDraft) => matchesCustomerQuery(customer, normalized))
+      .forEach((customer: CustomerDraft) => {
+        const phone = normalizePhone(customer.phone);
+        addCustomer({
+          localId: `snooker-booking-${phone || customer.name.toLowerCase().replace(/\s+/g, "-")}`,
+          serverId: null,
+          name: customer.name.trim(),
+          phone,
+          email: null,
+          notes: null,
+          syncStatus: "synced",
+          createdAt: booking.createdAt,
+          updatedAt: booking.updatedAt
+        });
+      });
+  });
+
+  return [...byPhone.values(), ...fallbackRows].slice(0, 8);
+};
+
 export const StaffGamingBookingPage = () => {
   const toast = useToast();
   const { session } = usePosAuth();
@@ -183,6 +247,17 @@ export const StaffGamingBookingPage = () => {
   const [formMode, setFormMode] = useState<FormMode>("create");
   const [editingBooking, setEditingBooking] = useState<GamingBooking | null>(null);
   const [form, setForm] = useState<BookingForm>(defaultForm());
+  const [customerLookup, setCustomerLookup] = useState<{
+    index: number | null;
+    query: string;
+    results: CustomerRecord[];
+    isSearching: boolean;
+  }>({
+    index: null,
+    query: "",
+    results: [],
+    isSearching: false
+  });
 
   const [checkoutBooking, setCheckoutBooking] = useState<GamingBooking | null>(null);
   const [checkoutFoodOrder, setCheckoutFoodOrder] = useState<PosOrder | null>(null);
@@ -291,12 +366,60 @@ export const StaffGamingBookingPage = () => {
   const tableStartIndex = bookings.length ? (safeTablePage - 1) * BOOKINGS_PER_PAGE + 1 : 0;
   const tableEndIndex = Math.min(safeTablePage * BOOKINGS_PER_PAGE, bookings.length);
 
+  useEffect(() => {
+    const query = customerLookup.query.trim();
+    if (customerLookup.index === null || query.length < 2) {
+      if (customerLookup.results.length || customerLookup.isSearching) {
+        setCustomerLookup((prev) => ({ ...prev, results: [], isSearching: false }));
+      }
+      return;
+    }
+
+    let isActive = true;
+    setCustomerLookup((prev) => ({ ...prev, isSearching: true }));
+    const timer = window.setTimeout(() => {
+      void searchSnookerCustomerSuggestions(query)
+        .then((results) => {
+          if (!isActive) return;
+          setCustomerLookup((prev) =>
+            prev.query.trim() === query ? { ...prev, results, isSearching: false } : prev
+          );
+        })
+        .catch(() => {
+          if (!isActive) return;
+          setCustomerLookup((prev) =>
+            prev.query.trim() === query ? { ...prev, results: [], isSearching: false } : prev
+          );
+        });
+    }, 300);
+
+    return () => {
+      isActive = false;
+      window.clearTimeout(timer);
+    };
+  }, [customerLookup.index, customerLookup.query]);
+
+  const updateCustomerDraft = (index: number, next: Partial<CustomerDraft>) => {
+    setForm((prev) => ({
+      ...prev,
+      customers: prev.customers.map((entry, i) => (i === index ? { ...entry, ...next } : entry))
+    }));
+  };
+
+  const selectCustomerSuggestion = (index: number, customer: CustomerRecord) => {
+    updateCustomerDraft(index, { name: customer.name, phone: customer.phone });
+    setCustomerLookup({ index: null, query: "", results: [], isSearching: false });
+  };
+
   const applyCustomerLookup = async (index: number) => {
     const row = form.customers[index];
-    if (!row?.phone.trim() || row.name.trim()) return;
-    const found = await customersService.findByPhone(row.phone.trim());
+    const phone = normalizePhone(row?.phone ?? "");
+    if (phone.length !== 10) return;
+    const found =
+      (await searchSnookerCustomerSuggestions(phone)).find((customer) => normalizePhone(customer.phone) === phone) ??
+      null;
     if (!found) return;
-    setForm((prev) => ({ ...prev, customers: prev.customers.map((entry, i) => (i === index ? { name: found.name, phone: found.phone } : entry)) }));
+    selectCustomerSuggestion(index, found);
   };
 
   const openCreate = () => {
@@ -1095,7 +1218,133 @@ export const StaffGamingBookingPage = () => {
               {!isEditMode ? <Text fontSize="sm" color="#705A50">You can select multiple boards/consoles and create bookings in one click.</Text> : null}
               <SimpleGrid columns={{ base: 1, md: 2 }} spacing={3}><FormControl><FormLabel>Payment Status</FormLabel><Select value={form.paymentStatus} onChange={(e) => setForm((p) => ({ ...p, paymentStatus: e.target.value as "pending" | "paid" }))}><option value="pending">Pending</option><option value="paid">Paid</option></Select></FormControl><FormControl isDisabled={form.paymentStatus !== "paid"}><FormLabel>Payment Mode</FormLabel><Select value={form.paymentMode} onChange={(e) => setForm((p) => ({ ...p, paymentMode: e.target.value as GamingPaymentMode }))}><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option><option value="mixed" disabled={!isEditMode}>Mixed</option></Select></FormControl></SimpleGrid>
               {isEditMode ? <Text fontSize="sm" color="#705A50">Locked fields: booking type, board/console, check-in time, rate and status. You can update players, customers and payment after check-in.</Text> : null}
-              <Box border="1px solid rgba(132,79,52,0.16)" borderRadius="12px" p={3}><HStack justify="space-between" mb={2}><Text fontWeight={800}>Customers</Text><Button size="sm" variant="outline" leftIcon={<FiPlus size={14} />} onClick={() => setForm((p) => ({ ...p, customers: [...p.customers, { name: "", phone: "" }] }))}>Add Customer</Button></HStack><VStack align="stretch" spacing={2}>{form.customers.map((customer, index) => <HStack key={`customer-${index}`} align="end"><FormControl><FormLabel fontSize="xs">Name</FormLabel><Input value={customer.name} onChange={(e) => setForm((p) => ({ ...p, customers: p.customers.map((entry, i) => i === index ? { ...entry, name: e.target.value } : entry) }))} /></FormControl><FormControl><FormLabel fontSize="xs">Phone</FormLabel><Input value={customer.phone} onBlur={() => void applyCustomerLookup(index)} onChange={(e) => setForm((p) => ({ ...p, customers: p.customers.map((entry, i) => i === index ? { ...entry, phone: e.target.value } : entry) }))} /></FormControl></HStack>)}</VStack></Box>
+              <Box border="1px solid rgba(132,79,52,0.16)" borderRadius="12px" p={3}>
+                <HStack justify="space-between" mb={2}>
+                  <Text fontWeight={800}>Customers</Text>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    leftIcon={<FiPlus size={14} />}
+                    onClick={() => setForm((p) => ({ ...p, customers: [...p.customers, { name: "", phone: "" }] }))}
+                  >
+                    Add Customer
+                  </Button>
+                </HStack>
+                <VStack align="stretch" spacing={2}>
+                  {form.customers.map((customer, index) => {
+                    const isLookupOpen =
+                      customerLookup.index === index &&
+                      (customerLookup.isSearching || customerLookup.results.length > 0);
+                    return (
+                      <Box key={`customer-${index}`} position="relative">
+                        <SimpleGrid columns={{ base: 1, md: 2 }} spacing={3}>
+                          <FormControl>
+                            <FormLabel fontSize="xs">Name</FormLabel>
+                            <Input
+                              value={customer.name}
+                              autoComplete="off"
+                              onFocus={() =>
+                                setCustomerLookup((prev) => ({
+                                  ...prev,
+                                  index,
+                                  query: customer.name.trim() || customer.phone.trim()
+                                }))
+                              }
+                              onBlur={() => {
+                                window.setTimeout(() => {
+                                  setCustomerLookup((prev) =>
+                                    prev.index === index ? { index: null, query: "", results: [], isSearching: false } : prev
+                                  );
+                                }, 180);
+                              }}
+                              onChange={(e) => {
+                                updateCustomerDraft(index, { name: e.target.value });
+                                setCustomerLookup((prev) => ({ ...prev, index, query: e.target.value }));
+                              }}
+                              placeholder="Type name"
+                            />
+                          </FormControl>
+                          <FormControl>
+                            <FormLabel fontSize="xs">Phone</FormLabel>
+                            <Input
+                              value={customer.phone}
+                              autoComplete="off"
+                              inputMode="numeric"
+                              pattern="[0-9]*"
+                              maxLength={10}
+                              onFocus={() =>
+                                setCustomerLookup((prev) => ({
+                                  ...prev,
+                                  index,
+                                  query: customer.phone.trim() || customer.name.trim()
+                                }))
+                              }
+                              onBlur={() => {
+                                void applyCustomerLookup(index);
+                                window.setTimeout(() => {
+                                  setCustomerLookup((prev) =>
+                                    prev.index === index ? { index: null, query: "", results: [], isSearching: false } : prev
+                                  );
+                                }, 180);
+                              }}
+                              onChange={(e) => {
+                                const phone = normalizePhone(e.target.value).slice(0, 10);
+                                updateCustomerDraft(index, { phone });
+                                setCustomerLookup((prev) => ({ ...prev, index, query: phone }));
+                              }}
+                              placeholder="Type phone number"
+                            />
+                          </FormControl>
+                        </SimpleGrid>
+                        {isLookupOpen ? (
+                          <Box
+                            position="absolute"
+                            top="calc(100% + 4px)"
+                            left={0}
+                            right={0}
+                            zIndex={20}
+                            bg="white"
+                            border="1px solid rgba(132,79,52,0.18)"
+                            borderRadius="10px"
+                            boxShadow="0 14px 32px rgba(49,32,24,0.14)"
+                            overflow="hidden"
+                          >
+                            {customerLookup.isSearching ? (
+                              <Text px={3} py={2} fontSize="sm" color="#705A50">
+                                Searching customers...
+                              </Text>
+                            ) : (
+                              customerLookup.results.map((result) => (
+                                <Button
+                                  key={result.localId}
+                                  variant="ghost"
+                                  w="full"
+                                  h="auto"
+                                  justifyContent="flex-start"
+                                  borderRadius={0}
+                                  px={3}
+                                  py={2}
+                                  onMouseDown={(event) => {
+                                    event.preventDefault();
+                                    selectCustomerSuggestion(index, result);
+                                  }}
+                                >
+                                  <VStack align="start" spacing={0}>
+                                    <Text fontWeight={800}>{result.name}</Text>
+                                    <Text fontSize="xs" color="#705A50">
+                                      {result.phone}
+                                    </Text>
+                                  </VStack>
+                                </Button>
+                              ))
+                            )}
+                          </Box>
+                        ) : null}
+                      </Box>
+                    );
+                  })}
+                </VStack>
+              </Box>
               <Box border="1px solid rgba(132,79,52,0.16)" borderRadius="12px" p={3}>
                 <HStack justify="space-between" mb={2} flexWrap="wrap" gap={2}>
                   <Text fontWeight={800}>Snooker Products (Optional)</Text>
