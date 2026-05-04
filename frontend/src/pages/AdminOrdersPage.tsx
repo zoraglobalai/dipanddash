@@ -88,6 +88,17 @@ const paymentModeOptions: Array<{ label: string; value: InvoicePaymentMode }> = 
   { label: "Pending", value: "pending" }
 ];
 
+type OrderPaymentMode = InvoicePaymentMode | "half_paid";
+
+const orderPaymentModeOptions: Array<{ label: string; value: OrderPaymentMode }> = [
+  { label: "Cash", value: "cash" },
+  { label: "Card", value: "card" },
+  { label: "UPI", value: "upi" },
+  { label: "Mixed", value: "mixed" },
+  { label: "Half Paid", value: "half_paid" },
+  { label: "Pending", value: "pending" }
+];
+
 const orderTypeOptions: Array<{ label: string; value: InvoiceOrderType }> = [
   { label: "Dine In", value: "dine_in" },
   { label: "Takeaway", value: "takeaway" },
@@ -133,7 +144,7 @@ type OrderFormState = {
   tableLabel: string;
   status: InvoiceStatus;
   kitchenStatus: InvoiceKitchenStatus;
-  paymentMode: InvoicePaymentMode;
+  paymentMode: OrderPaymentMode;
   couponCode: string;
   couponDiscountAmount: string;
   manualDiscountAmount: string;
@@ -264,6 +275,12 @@ const createPaymentDraft = (mode: PaymentDraftMode = "cash"): PaymentDraftRow =>
   referenceNo: "",
   paidAt: new Date().toISOString()
 });
+
+const createMixedPaymentDrafts = () =>
+  (["cash", "card", "upi"] as PaymentDraftMode[]).map((mode) => createPaymentDraft(mode));
+
+const getActivePaymentMode = (formPaymentMode: OrderPaymentMode): InvoicePaymentMode =>
+  formPaymentMode === "half_paid" ? "pending" : formPaymentMode;
 
 const createDefaultForm = (): OrderFormState => ({
   invoiceNumber: createInvoiceNumber(),
@@ -522,6 +539,16 @@ export const AdminOrdersPage = () => {
     [form.couponDiscountAmount, form.manualDiscountAmount, hydratedLines]
   );
 
+  const paymentEntryEnabled = form.status === "paid" || form.paymentMode === "mixed" || form.paymentMode === "half_paid";
+  const draftPaidAmount = useMemo(
+    () => paymentDrafts.reduce((sum, payment) => sum + Math.max(0, parseNumber(payment.amount)), 0),
+    [paymentDrafts]
+  );
+  const draftPendingAmount = useMemo(
+    () => Math.max(totals.totalAmount - draftPaidAmount, 0),
+    [draftPaidAmount, totals.totalAmount]
+  );
+
   const loadCatalog = useCallback(async () => {
     if (catalogSnapshot) {
       return catalogSnapshot;
@@ -581,7 +608,13 @@ export const AdminOrdersPage = () => {
   }, [debouncedSearch, statusFilter, kitchenStatusFilter, paymentModeFilter, dateFromFilter, dateToFilter, limit]);
 
   useEffect(() => {
-    if (!orderModal.isOpen || form.status !== "paid" || paymentDrafts.length !== 1) {
+    if (
+      !orderModal.isOpen ||
+      form.status !== "paid" ||
+      form.paymentMode === "half_paid" ||
+      form.paymentMode === "mixed" ||
+      paymentDrafts.length !== 1
+    ) {
       return;
     }
     setPaymentDrafts((previous) => {
@@ -595,11 +628,12 @@ export const AdminOrdersPage = () => {
       return [
         {
           ...previous[0],
+          mode: toPaymentDraftMode(getActivePaymentMode(form.paymentMode)),
           amount: totals.totalAmount.toFixed(2)
         }
       ];
     });
-  }, [form.status, orderModal.isOpen, paymentDrafts.length, totals.totalAmount]);
+  }, [form.paymentMode, form.status, orderModal.isOpen, paymentDrafts.length, totals.totalAmount]);
 
   const resetDetailsState = () => {
     setSelectedInvoice(null);
@@ -667,6 +701,13 @@ export const AdminOrdersPage = () => {
       try {
         const response = await invoicesService.getInvoice(row.id);
         const { invoice, lines, payments } = response.data;
+        const collectedAmount = payments
+          .filter((payment) => payment.status === "success")
+          .reduce((sum, payment) => sum + Number(payment.amount ?? 0), 0);
+        const formPaymentMode: OrderPaymentMode =
+          invoice.status === "pending" && collectedAmount > 0.001 && collectedAmount < invoice.totalAmount - 0.001
+            ? "half_paid"
+            : invoice.paymentMode;
 
         setEditingRow(row);
         setForm({
@@ -678,7 +719,7 @@ export const AdminOrdersPage = () => {
           tableLabel: invoice.tableLabel ?? "",
           status: invoice.status,
           kitchenStatus: invoice.kitchenStatus,
-          paymentMode: invoice.paymentMode,
+          paymentMode: formPaymentMode,
           couponCode: invoice.couponCode ?? "",
           couponDiscountAmount: String(invoice.couponDiscountAmount ?? 0),
           manualDiscountAmount: String(invoice.manualDiscountAmount ?? 0),
@@ -710,7 +751,9 @@ export const AdminOrdersPage = () => {
                 referenceNo: payment.referenceNo ?? "",
                 paidAt: payment.paidAt
               }))
-            : [createPaymentDraft(toPaymentDraftMode(invoice.paymentMode))]
+            : formPaymentMode === "mixed"
+              ? createMixedPaymentDrafts()
+              : [createPaymentDraft(toPaymentDraftMode(getActivePaymentMode(formPaymentMode)))]
         );
 
         const matchedOffer = snapshot.offers.find(
@@ -819,8 +862,10 @@ export const AdminOrdersPage = () => {
     const sourceCreatedAtIso = toIsoDateTime(form.sourceCreatedAt);
     const usageDate = (sourceCreatedAtIso ?? new Date().toISOString()).slice(0, 10);
 
+    const shouldPersistPayments =
+      form.status === "paid" || form.paymentMode === "mixed" || form.paymentMode === "half_paid";
     const normalizedPayments =
-      form.status === "paid"
+      shouldPersistPayments
         ? paymentDrafts
             .map((payment) => ({
               mode: payment.mode,
@@ -831,15 +876,17 @@ export const AdminOrdersPage = () => {
             .filter((payment) => payment.amount > 0)
         : [];
 
+    const activePaymentModes = Array.from(new Set(normalizedPayments.map((payment) => payment.mode)));
     const paymentMode: InvoicePaymentMode =
-      normalizedPayments.length > 1
+      activePaymentModes.length > 1
         ? "mixed"
-        : normalizedPayments.length === 1
-          ? normalizedPayments[0].mode
-          : form.paymentMode;
+        : activePaymentModes.length === 1
+          ? activePaymentModes[0]
+          : getActivePaymentMode(form.paymentMode);
+    const invoiceStatus: InvoiceStatus = form.paymentMode === "half_paid" ? "pending" : form.status;
 
     const usageEvents =
-      form.status === "paid" && catalogSnapshot
+      invoiceStatus === "paid" && catalogSnapshot
         ? buildUsageEventsForInvoice(
             hydratedLines.map((line) => ({
               lineType: line.lineType,
@@ -866,7 +913,7 @@ export const AdminOrdersPage = () => {
       orderType: form.orderType,
       tableLabel: cleanText(form.tableLabel) ?? null,
       kitchenStatus: form.kitchenStatus,
-      status: form.status,
+      status: invoiceStatus,
       paymentMode,
       subtotal: totals.subtotal,
       itemDiscountAmount: totals.itemDiscountAmount,
@@ -931,7 +978,10 @@ export const AdminOrdersPage = () => {
       return false;
     }
 
-    if (form.status === "paid") {
+    const shouldValidatePayments =
+      form.status === "paid" || form.paymentMode === "mixed" || form.paymentMode === "half_paid";
+
+    if (shouldValidatePayments) {
       const payments = paymentDrafts
         .map((payment) => ({
           mode: payment.mode,
@@ -941,13 +991,27 @@ export const AdminOrdersPage = () => {
         .filter((payment) => payment.amount > 0);
 
       if (!payments.length && totals.totalAmount > 0) {
-        toast.warning("Add at least one payment row for paid orders.");
+        toast.warning("Add at least one payment row.");
         return false;
       }
 
       const totalPaid = payments.reduce((sum, payment) => sum + payment.amount, 0);
-      if (totals.totalAmount > 0 && Math.abs(totalPaid - totals.totalAmount) > 0.5) {
+      if (form.paymentMode === "half_paid") {
+        if (totalPaid <= 0.001) {
+          toast.warning("Enter the amount received for half paid orders.");
+          return false;
+        }
+        if (totalPaid >= totals.totalAmount - 0.5) {
+          toast.warning("Half paid amount should be less than final amount.");
+          return false;
+        }
+      } else if (totals.totalAmount > 0 && Math.abs(totalPaid - totals.totalAmount) > 0.5) {
         toast.warning("Payment amount and final total should match.");
+        return false;
+      }
+
+      if (form.paymentMode === "mixed" && new Set(payments.map((payment) => payment.mode)).size < 2) {
+        toast.warning("Mixed payment needs at least two payment modes.");
         return false;
       }
 
@@ -962,7 +1026,16 @@ export const AdminOrdersPage = () => {
     }
 
     return true;
-  }, [form.invoiceNumber, form.status, hydratedLines.length, lineDrafts, paymentDrafts, toast, totals.totalAmount]);
+  }, [
+    form.invoiceNumber,
+    form.paymentMode,
+    form.status,
+    hydratedLines.length,
+    lineDrafts,
+    paymentDrafts,
+    toast,
+    totals.totalAmount
+  ]);
 
   const handleSaveOrder = useCallback(async () => {
     if (!validateBeforeSave()) {
@@ -1360,12 +1433,35 @@ export const AdminOrdersPage = () => {
                   <FormLabel>Status</FormLabel>
                   <Select
                     value={form.status}
-                    onChange={(event) =>
+                    onChange={(event) => {
+                      const nextStatus = event.target.value as InvoiceStatus;
                       setForm((previous) => ({
                         ...previous,
-                        status: event.target.value as InvoiceStatus
-                      }))
-                    }
+                        status: nextStatus,
+                        paymentMode:
+                          nextStatus === "paid" && (previous.paymentMode === "pending" || previous.paymentMode === "half_paid")
+                            ? "cash"
+                            : previous.paymentMode
+                      }));
+                      if (nextStatus === "paid") {
+                        const activeMode = getActivePaymentMode(form.paymentMode);
+                        if (activeMode === "mixed") {
+                          setPaymentDrafts(createMixedPaymentDrafts());
+                          return;
+                        }
+                        setPaymentDrafts((previous) => {
+                          if (previous.length === 1 && parseNumber(previous[0].amount) > 0) {
+                            return [{ ...previous[0], mode: toPaymentDraftMode(activeMode) }];
+                          }
+                          return [
+                            {
+                              ...createPaymentDraft(toPaymentDraftMode(activeMode)),
+                              amount: totals.totalAmount.toFixed(2)
+                            }
+                          ];
+                        });
+                      }
+                    }}
                   >
                     {orderBoardStatusOptions.map((option) => (
                       <option key={option.value} value={option.value}>
@@ -1399,14 +1495,45 @@ export const AdminOrdersPage = () => {
                   <FormLabel>Payment Mode</FormLabel>
                   <Select
                     value={form.paymentMode}
-                    onChange={(event) =>
+                    onChange={(event) => {
+                      const nextPaymentMode = event.target.value as OrderPaymentMode;
                       setForm((previous) => ({
                         ...previous,
-                        paymentMode: event.target.value as InvoicePaymentMode
-                      }))
-                    }
+                        paymentMode: nextPaymentMode,
+                        status:
+                          nextPaymentMode === "half_paid"
+                            ? "pending"
+                            : nextPaymentMode === "mixed"
+                              ? "paid"
+                              : previous.status
+                      }));
+                      if (nextPaymentMode === "mixed") {
+                        setPaymentDrafts(createMixedPaymentDrafts());
+                      } else if (nextPaymentMode === "half_paid") {
+                        setPaymentDrafts((previous) =>
+                          previous.some((payment) => parseNumber(payment.amount) > 0)
+                            ? previous
+                            : [createPaymentDraft("cash")]
+                        );
+                      } else if (nextPaymentMode === "pending") {
+                        setPaymentDrafts([createPaymentDraft("cash")]);
+                      } else {
+                        setPaymentDrafts((previous) => {
+                          const currentAmount =
+                            form.status === "paid" && previous.length === 1 && parseNumber(previous[0].amount) > 0
+                              ? previous[0].amount
+                              : "0";
+                          return [
+                            {
+                              ...createPaymentDraft(toPaymentDraftMode(nextPaymentMode)),
+                              amount: currentAmount
+                            }
+                          ];
+                        });
+                      }
+                    }}
                   >
-                    {paymentModeOptions.map((option) => (
+                    {orderPaymentModeOptions.map((option) => (
                       <option key={option.value} value={option.value}>
                         {option.label}
                       </option>
@@ -1614,14 +1741,22 @@ export const AdminOrdersPage = () => {
                       variant="outline"
                       leftIcon={<Plus size={14} />}
                       onClick={() => setPaymentDrafts((previous) => [...previous, createPaymentDraft("cash")])}
-                      isDisabled={form.status !== "paid"}
+                      isDisabled={!paymentEntryEnabled}
                     >
                       Add Payment
                     </AppButton>
                   </HStack>
                   <Text fontSize="xs" color="#7A6258">
-                    For paid orders, Card/UPI payment rows require reference ID.
+                    Enter Cash/Card/UPI separately. Half paid orders stay pending with the balance due.
                   </Text>
+                  <HStack spacing={4} flexWrap="wrap">
+                    <Text fontSize="sm" fontWeight={700}>
+                      Paid: {formatCurrency(draftPaidAmount)}
+                    </Text>
+                    <Text fontSize="sm" fontWeight={700} color={draftPendingAmount > 0.001 ? "#9A4E18" : "#247A3D"}>
+                      Pending: {formatCurrency(draftPendingAmount)}
+                    </Text>
+                  </HStack>
 
                   {paymentDrafts.map((payment) => (
                     <SimpleGrid key={payment.id} columns={{ base: 1, md: 2, xl: 5 }} spacing={3}>
@@ -1638,7 +1773,7 @@ export const AdminOrdersPage = () => {
                               )
                             )
                           }
-                          isDisabled={form.status !== "paid"}
+                          isDisabled={!paymentEntryEnabled}
                         >
                           <option value="cash">Cash</option>
                           <option value="card">Card</option>
@@ -1651,7 +1786,7 @@ export const AdminOrdersPage = () => {
                         min={0}
                         step="0.01"
                         value={payment.amount}
-                        isDisabled={form.status !== "paid"}
+                        isDisabled={!paymentEntryEnabled}
                         onChange={(event) =>
                           setPaymentDrafts((previous) =>
                             previous.map((entry) =>
@@ -1665,7 +1800,7 @@ export const AdminOrdersPage = () => {
                       <AppInput
                         label="Reference ID"
                         value={payment.referenceNo}
-                        isDisabled={form.status !== "paid"}
+                        isDisabled={!paymentEntryEnabled}
                         onChange={(event) =>
                           setPaymentDrafts((previous) =>
                             previous.map((entry) =>
@@ -1680,7 +1815,7 @@ export const AdminOrdersPage = () => {
                         label="Paid At"
                         type="datetime-local"
                         value={toDateTimeLocalInput(payment.paidAt)}
-                        isDisabled={form.status !== "paid"}
+                        isDisabled={!paymentEntryEnabled}
                         onChange={(event) =>
                           setPaymentDrafts((previous) =>
                             previous.map((entry) =>
@@ -1699,7 +1834,7 @@ export const AdminOrdersPage = () => {
                         <AppButton
                           variant="outline"
                           colorScheme="red"
-                          isDisabled={paymentDrafts.length <= 1 || form.status !== "paid"}
+                          isDisabled={paymentDrafts.length <= 1 || !paymentEntryEnabled}
                           onClick={() =>
                             setPaymentDrafts((previous) =>
                               previous.filter((entry) => entry.id !== payment.id)

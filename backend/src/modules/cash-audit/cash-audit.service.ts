@@ -286,7 +286,7 @@ export class CashAuditService {
       .select("payment.mode", "mode")
       .addSelect("COALESCE(SUM(payment.amount), 0)", "amount")
       .where("payment.status = 'success'")
-      .andWhere("invoice.status = 'paid'")
+      .andWhere("invoice.status IN (:...revenueStatuses)", { revenueStatuses: ["paid", "pending"] })
       .andWhere("invoice.orderType != 'snooker'")
       .andWhere("invoice.createdAt >= :fromDate", { fromDate: from })
       .andWhere("invoice.createdAt <= :toDate", { toDate: to })

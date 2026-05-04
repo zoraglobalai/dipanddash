@@ -8,6 +8,7 @@ import { DailyAllocation } from "../ingredients/daily-allocation.entity";
 import { Ingredient } from "../ingredients/ingredient.entity";
 import { IngredientStock } from "../ingredients/ingredient-stock.entity";
 import { InvoiceLine } from "../invoices/invoice-line.entity";
+import { InvoicePayment } from "../invoices/invoice-payment.entity";
 import { InvoiceUsageEvent } from "../invoices/invoice-usage-event.entity";
 import { Invoice } from "../invoices/invoice.entity";
 import { AddOn } from "../items/add-on.entity";
@@ -273,6 +274,7 @@ const toIso = (value: Date | null | undefined) => (value ? value.toISOString() :
 export class ReportsService {
   private readonly userRepository = AppDataSource.getRepository(User);
   private readonly invoiceRepository = AppDataSource.getRepository(Invoice);
+  private readonly invoicePaymentRepository = AppDataSource.getRepository(InvoicePayment);
   private readonly invoiceLineRepository = AppDataSource.getRepository(InvoiceLine);
   private readonly usageRepository = AppDataSource.getRepository(InvoiceUsageEvent);
   private readonly purchaseRepository = AppDataSource.getRepository(PurchaseOrder);
@@ -683,24 +685,47 @@ export class ReportsService {
   }
 
   private async generatePaymentMethodReport(from: Date, to: Date): Promise<ReportPayload> {
-    const rows = await this.applyDateFilter(
-      this.invoiceRepository
-        .createQueryBuilder("invoice")
-        .where("invoice.status = 'paid'")
-        .select("invoice.paymentMode", "paymentMode")
-        .addSelect("COUNT(invoice.id)", "count")
-        .addSelect("COALESCE(SUM(invoice.totalAmount),0)", "amount")
-        .groupBy("invoice.paymentMode")
-        .orderBy("COALESCE(SUM(invoice.totalAmount),0)", "DESC"),
-      from,
-      to
-    ).getRawMany<{ paymentMode: string; count: string; amount: string }>();
+    const paymentRows = await this.invoicePaymentRepository
+      .createQueryBuilder("payment")
+      .innerJoin(Invoice, "invoice", "invoice.id = payment.invoiceId")
+      .where("payment.status = 'success'")
+      .andWhere("invoice.status IN (:...revenueStatuses)", { revenueStatuses: ["paid", "pending"] })
+      .andWhere("invoice.createdAt >= :from AND invoice.createdAt <= :to", { from, to })
+      .select("payment.mode", "paymentMode")
+      .addSelect("COUNT(DISTINCT invoice.id)", "count")
+      .addSelect("COALESCE(SUM(payment.amount),0)", "amount")
+      .groupBy("payment.mode")
+      .getRawMany<{ paymentMode: string; count: string; amount: string }>();
 
-    const parsedRows = rows.map((row) => ({
-      paymentMode: row.paymentMode,
-      invoices: Number(row.count ?? 0),
-      amount: toMoney(row.amount)
-    }));
+    const fallbackRows = await this.invoiceRepository
+      .createQueryBuilder("invoice")
+      .where("invoice.status = 'paid'")
+      .andWhere("invoice.createdAt >= :from AND invoice.createdAt <= :to", { from, to })
+      .andWhere((query) => {
+        const subQuery = query
+          .subQuery()
+          .select("1")
+          .from(InvoicePayment, "invoicePayment")
+          .where("invoicePayment.invoiceId = invoice.id")
+          .getQuery();
+        return `NOT EXISTS ${subQuery}`;
+      })
+      .select("invoice.paymentMode", "paymentMode")
+      .addSelect("COUNT(invoice.id)", "count")
+      .addSelect("COALESCE(SUM(invoice.totalAmount),0)", "amount")
+      .groupBy("invoice.paymentMode")
+      .getRawMany<{ paymentMode: string; count: string; amount: string }>();
+
+    const paymentMap = new Map<string, { paymentMode: string; invoices: number; amount: number }>();
+    [...paymentRows, ...fallbackRows].forEach((row) => {
+      const paymentMode = row.paymentMode ?? "cash";
+      const current = paymentMap.get(paymentMode) ?? { paymentMode, invoices: 0, amount: 0 };
+      current.invoices += Number(row.count ?? 0);
+      current.amount = toMoney(current.amount + toMoney(row.amount));
+      paymentMap.set(paymentMode, current);
+    });
+
+    const parsedRows = [...paymentMap.values()].sort((a, b) => b.amount - a.amount);
 
     return {
       stats: [

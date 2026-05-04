@@ -335,7 +335,7 @@ export class DashboardService {
           .createQueryBuilder("payment")
           .innerJoin(Invoice, "invoice", "invoice.id = payment.invoiceId")
           .where("payment.status = 'success'")
-          .andWhere("invoice.status = 'paid'")
+          .andWhere("invoice.status IN (:...revenueStatuses)", { revenueStatuses: ["paid", "pending"] })
           .andWhere("invoice.orderType != 'snooker'")
           .andWhere("invoice.createdAt >= :fromDate", { fromDate: safeFrom })
           .andWhere("invoice.createdAt <= :toDate", { toDate: safeTo })
