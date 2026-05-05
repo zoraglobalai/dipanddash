@@ -246,6 +246,7 @@ export type GamingBookingStatus = "upcoming" | "ongoing" | "completed" | "cancel
 export type GamingPaymentStatus = "pending" | "paid" | "refunded";
 export type GamingPaymentChannel = "cash" | "upi" | "card";
 export type GamingPaymentMode = GamingPaymentChannel | "mixed";
+export type GamingDiscountType = "none" | "manual" | "percentage";
 export type GamingResourceCode =
   | "board_1"
   | "board_2"
@@ -282,6 +283,9 @@ export type GamingBooking = {
   systemCalculatedAmount: number;
   extraMemberCount: number;
   extraMemberCharge: number;
+  discountType?: GamingDiscountType;
+  discountValue?: number;
+  discountAmount?: number;
   amountOverrideReason: string | null;
   status: GamingBookingStatus;
   paymentStatus: GamingPaymentStatus;
@@ -419,6 +423,9 @@ export type SyncQueueEvent =
         systemCalculatedAmount?: number;
         extraMemberCount?: number;
         extraMemberCharge?: number;
+        discountType?: GamingDiscountType;
+        discountValue?: number;
+        discountAmount?: number;
         amountOverrideReason?: string;
         foodOrderReference?: string;
         foodInvoiceNumber?: string;

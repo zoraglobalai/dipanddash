@@ -19,6 +19,7 @@ import {
 } from "@chakra-ui/react";
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 
+import { PosLoadingState } from "@/components/common/PosLoadingState";
 import { CartPanel } from "@/components/pos/CartPanel";
 import { CustomerStartModal } from "@/components/pos/CustomerStartModal";
 import { ItemGrid } from "@/components/pos/ItemGrid";
@@ -459,9 +460,7 @@ export const NewOrderPage = ({ channel }: NewOrderPageProps) => {
 
   if (isBootstrapping) {
     return (
-      <VStack minH="100vh" justify="center">
-        <Text>Loading POS session...</Text>
-      </VStack>
+      <PosLoadingState message="Loading POS session..." detail="Fetching menu, stock, and staff shift data" minH="100vh" />
     );
   }
 

@@ -1,6 +1,5 @@
 import { env } from "@/config/env";
 import { gamingBookingsRepository } from "@/db/repositories/gaming-bookings.repository";
-import { syncQueueRepository } from "@/db/repositories/sync-queue.repository";
 import { apiClient } from "@/lib/api-client";
 import { makeId } from "@/utils/idempotency";
 import type {
@@ -10,11 +9,11 @@ import type {
   GamingBookingType,
   GamingPaymentChannel,
   GamingCustomerMember,
+  GamingDiscountType,
   GamingPaymentMode,
   GamingPaymentStatus,
   GamingResourceCode,
-  StaffSession,
-  SyncQueueRow
+  StaffSession
 } from "@/types/pos";
 
 type ApiSuccess<T> = {
@@ -42,6 +41,9 @@ type GamingBookingApiRow = {
   systemCalculatedAmount?: number;
   extraMemberCount?: number;
   extraMemberCharge?: number;
+  discountType?: GamingDiscountType;
+  discountValue?: number;
+  discountAmount?: number;
   amountOverrideReason?: string | null;
   status: GamingBookingStatus;
   paymentStatus: GamingPaymentStatus;
@@ -145,14 +147,56 @@ const derivePaymentModeFromBreakdown = (breakdown: PaymentBreakdown): GamingPaym
   return "mixed";
 };
 
-const getCollectibleAmount = (booking: Pick<GamingBooking, "status" | "finalAmount" | "systemCalculatedAmount">) => {
+const getCollectibleAmount = (
+  booking: Pick<GamingBooking, "status" | "finalAmount" | "systemCalculatedAmount"> & { discountAmount?: number }
+) => {
   const finalAmount = roundCurrency(Math.max(0, Number(booking.finalAmount) || 0));
   const systemAmount = roundCurrency(Math.max(0, Number(booking.systemCalculatedAmount) || 0));
   if (booking.status === "completed") {
-    return finalAmount > 0 ? finalAmount : systemAmount;
+    return finalAmount > 0 ? finalAmount : getDiscountedAmount(systemAmount, Number(booking.discountAmount ?? 0));
   }
-  return systemAmount;
+  return getDiscountedAmount(systemAmount, Number(booking.discountAmount ?? 0));
 };
+
+const normalizeDiscount = (
+  input: {
+    discountType?: GamingDiscountType | null;
+    discountValue?: number | null;
+    discountAmount?: number | null;
+  },
+  systemAmount: number
+) => {
+  const safeSystemAmount = roundCurrency(Math.max(0, systemAmount));
+  const type = input.discountType ?? (Number(input.discountAmount ?? 0) > AMOUNT_DIFF_THRESHOLD ? "manual" : "none");
+  if (type === "percentage") {
+    const value = roundCurrency(Math.min(100, Math.max(0, Number(input.discountValue ?? 0) || 0)));
+    return {
+      discountType: "percentage" as const,
+      discountValue: value,
+      discountAmount: roundCurrency(Math.min(safeSystemAmount, (safeSystemAmount * value) / 100))
+    };
+  }
+  if (type === "manual") {
+    const value = roundCurrency(Math.max(0, Number(input.discountValue ?? input.discountAmount ?? 0) || 0));
+    return {
+      discountType: "manual" as const,
+      discountValue: value,
+      discountAmount: roundCurrency(Math.min(safeSystemAmount, value))
+    };
+  }
+  return {
+    discountType: "none" as const,
+    discountValue: 0,
+    discountAmount: 0
+  };
+};
+
+type GamingBookingResponse = {
+  booking: GamingBookingApiRow;
+};
+
+const getDiscountedAmount = (systemAmount: number, discountAmount: number) =>
+  roundCurrency(Math.max(0, roundCurrency(systemAmount) - roundCurrency(Math.max(0, discountAmount))));
 
 const getPaymentBreakdownFromBooking = (
   booking: Pick<GamingBooking, "paidCashAmount" | "paidCardAmount" | "paidUpiAmount">
@@ -210,62 +254,59 @@ const computeSystemCalculatedAmount = (
   booking: Pick<GamingBooking, "checkInAt" | "checkOutAt" | "hourlyRate" | "status" | "bookingType" | "playerCount" | "foodAndBeverageAmount">
 ) => roundCurrency(computeCalculatedAmount(booking) + Math.max(0, Number(booking.foodAndBeverageAmount) || 0));
 
-const buildSyncEvent = (booking: GamingBooking, idempotencyKey: string) => ({
-  eventType: "gaming_booking_upsert" as const,
-  idempotencyKey,
-  deviceId: env.deviceId,
-  payload: {
-    bookingNumber: booking.bookingNumber,
-    bookingType: booking.bookingType,
-    resourceCode: booking.resourceCode,
-    resourceCodes: booking.resourceCodes,
-    playerCount: booking.playerCount,
-    checkInAt: booking.checkInAt,
-    checkOutAt: booking.checkOutAt ?? undefined,
-    hourlyRate: booking.hourlyRate,
-    customers: booking.customers,
-    bookingChannel: booking.bookingChannel ?? undefined,
-    note: booking.note ?? undefined,
-    sourceDeviceId: booking.sourceDeviceId ?? undefined,
-    status: booking.status,
-    paymentStatus: booking.paymentStatus,
-    paymentMode: booking.paymentMode ?? undefined,
-    paymentBreakdown:
-      booking.paymentStatus === "paid"
-        ? {
-            cash: roundCurrency(Math.max(0, booking.paidCashAmount || 0)),
-            card: roundCurrency(Math.max(0, booking.paidCardAmount || 0)),
-            upi: roundCurrency(Math.max(0, booking.paidUpiAmount || 0))
-          }
-        : undefined,
-    finalAmount: booking.finalAmount,
-    systemCalculatedAmount: booking.systemCalculatedAmount,
-    extraMemberCount: booking.extraMemberCount,
-    extraMemberCharge: booking.extraMemberCharge,
-    amountOverrideReason: booking.amountOverrideReason ?? undefined,
-    foodOrderReference: booking.foodOrderReference ?? undefined,
-    foodInvoiceNumber: booking.foodInvoiceNumber ?? undefined,
-    foodInvoiceStatus: booking.foodInvoiceStatus,
-    foodAndBeverageAmount: booking.foodAndBeverageAmount,
-    staffId: booking.staffId
-  }
+const buildServerBookingPayload = (booking: GamingBooking) => ({
+  bookingNumber: booking.bookingNumber,
+  bookingType: booking.bookingType,
+  resourceCode: booking.resourceCode,
+  resourceCodes: booking.resourceCodes,
+  playerCount: booking.playerCount,
+  checkInAt: booking.checkInAt,
+  checkOutAt: booking.checkOutAt ?? undefined,
+  hourlyRate: booking.hourlyRate,
+  customers: booking.customers,
+  bookingChannel: booking.bookingChannel ?? undefined,
+  note: booking.note ?? undefined,
+  sourceDeviceId: booking.sourceDeviceId ?? undefined,
+  status: booking.status,
+  paymentStatus: booking.paymentStatus,
+  paymentMode: booking.paymentMode ?? undefined,
+  paymentBreakdown:
+    booking.paymentStatus === "paid"
+      ? {
+          cash: roundCurrency(Math.max(0, booking.paidCashAmount || 0)),
+          card: roundCurrency(Math.max(0, booking.paidCardAmount || 0)),
+          upi: roundCurrency(Math.max(0, booking.paidUpiAmount || 0))
+        }
+      : undefined,
+  finalAmount: booking.finalAmount,
+  systemCalculatedAmount: booking.systemCalculatedAmount,
+  extraMemberCount: booking.extraMemberCount,
+  extraMemberCharge: booking.extraMemberCharge,
+  discountType: booking.discountType ?? "none",
+  discountValue: booking.discountValue ?? 0,
+  discountAmount: booking.discountAmount ?? 0,
+  amountOverrideReason: booking.amountOverrideReason ?? undefined,
+  foodOrderReference: booking.foodOrderReference ?? undefined,
+  foodInvoiceNumber: booking.foodInvoiceNumber ?? undefined,
+  foodInvoiceStatus: booking.foodInvoiceStatus,
+  foodAndBeverageAmount: booking.foodAndBeverageAmount,
+  staffId: booking.staffId
 });
 
-const queueBookingSync = async (booking: GamingBooking) => {
-  const eventId = makeId();
-  const queueRow: SyncQueueRow = {
-    id: makeId(),
-    idempotencyKey: eventId,
-    eventType: "gaming_booking_upsert",
-    payload: buildSyncEvent(booking, eventId),
-    status: "pending",
-    retryCount: 0,
-    lastError: null,
-    nextRetryAt: null,
-    createdAt: nowIso(),
-    updatedAt: nowIso()
-  };
-  await syncQueueRepository.enqueue(queueRow);
+const findServerBookingIdByNumber = async (bookingNumber: string) => {
+  const normalized = bookingNumber.trim();
+  if (!normalized) {
+    return null;
+  }
+  const response = await apiClient.get<ApiSuccess<GamingBookingsListResponse>>("/gaming/bookings", {
+    params: {
+      search: normalized,
+      page: 1,
+      limit: 20
+    }
+  });
+  const exact = response.data.data.bookings.find((row) => row.bookingNumber === normalized);
+  return exact?.id ?? null;
 };
 
 const sanitizeCustomers = (customers: Array<{ name: string; phone: string }>): GamingCustomerMember[] => {
@@ -377,6 +418,12 @@ const normalizeResourceCodes = (
 const UNSYNCED_STATUSES = new Set<GamingBooking["syncStatus"]>(["pending", "syncing", "failed", "needs_attention"]);
 let lastServerPullAt = 0;
 
+const listCachedBookings = async (filters?: GamingBookingListFilter, limit?: number): Promise<GamingBooking[]> =>
+  (await gamingBookingsRepository.list(filters, limit)) as GamingBooking[];
+
+const getCachedBooking = async (localBookingId: string): Promise<GamingBooking | null> =>
+  (await gamingBookingsRepository.getById(localBookingId)) as GamingBooking | null;
+
 const toLocalBookingFromServer = (
   serverBooking: GamingBookingApiRow,
   existingLocal: GamingBooking | null
@@ -406,6 +453,14 @@ const toLocalBookingFromServer = (
   const systemCalculatedAmount = roundCurrency(
     Math.max(0, Number(serverBooking.systemCalculatedAmount ?? gameAmountForSlot + (serverBooking.foodAndBeverageAmount ?? 0)))
   );
+  const discount = normalizeDiscount(
+    {
+      discountType: serverBooking.discountType,
+      discountValue: serverBooking.discountValue,
+      discountAmount: serverBooking.discountAmount
+    },
+    systemCalculatedAmount
+  );
   const extraMemberCount = Math.max(
     0,
     Math.floor(Number(serverBooking.extraMemberCount ?? getExtraMemberCount(serverBooking.bookingType, playerCount)))
@@ -417,7 +472,8 @@ const toLocalBookingFromServer = (
   const collectibleAmount = getCollectibleAmount({
     status: serverBooking.status,
     finalAmount,
-    systemCalculatedAmount
+    systemCalculatedAmount,
+    discountAmount: discount.discountAmount
   });
   const serverBreakdown = normalizePaymentBreakdown({
     cash: serverBooking.paymentBreakdown?.cash,
@@ -454,6 +510,9 @@ const toLocalBookingFromServer = (
     systemCalculatedAmount,
     extraMemberCount,
     extraMemberCharge,
+    discountType: discount.discountType,
+    discountValue: discount.discountValue,
+    discountAmount: discount.discountAmount,
     amountOverrideReason: cleanText(serverBooking.amountOverrideReason),
     status: serverBooking.status,
     paymentStatus: serverBooking.paymentStatus,
@@ -479,6 +538,53 @@ const toLocalBookingFromServer = (
   };
 };
 
+const pushBookingToServer = async (booking: GamingBooking) => {
+  const payload = buildServerBookingPayload(booking);
+  const serverBookingId = booking.serverBookingId ?? (await findServerBookingIdByNumber(booking.bookingNumber));
+  const response =
+    !serverBookingId
+      ? await apiClient.post<ApiSuccess<GamingBookingResponse>>("/gaming/bookings", payload)
+      : booking.status === "completed"
+        ? await apiClient.patch<ApiSuccess<GamingBookingResponse>>(`/gaming/bookings/${serverBookingId}/checkout`, {
+            checkOutAt: payload.checkOutAt,
+            finalAmount: payload.finalAmount,
+            systemCalculatedAmount: payload.systemCalculatedAmount,
+            extraMemberCount: payload.extraMemberCount,
+            extraMemberCharge: payload.extraMemberCharge,
+            discountType: payload.discountType,
+            discountValue: payload.discountValue,
+            discountAmount: payload.discountAmount,
+            amountOverrideReason: payload.amountOverrideReason,
+            paymentStatus: payload.paymentStatus,
+            paymentMode: payload.paymentMode,
+            paymentBreakdown: payload.paymentBreakdown
+          })
+        : await apiClient.patch<ApiSuccess<GamingBookingResponse>>(`/gaming/bookings/${serverBookingId}`, {
+            customers: payload.customers,
+            playerCount: payload.playerCount,
+            paymentStatus: payload.paymentStatus,
+            paymentMode: payload.paymentMode,
+            paymentBreakdown: payload.paymentBreakdown,
+            finalAmount: payload.finalAmount,
+            systemCalculatedAmount: payload.systemCalculatedAmount,
+            extraMemberCount: payload.extraMemberCount,
+            extraMemberCharge: payload.extraMemberCharge,
+            amountOverrideReason: payload.amountOverrideReason,
+            foodOrderReference: payload.foodOrderReference,
+            foodInvoiceNumber: payload.foodInvoiceNumber,
+            foodInvoiceStatus: payload.foodInvoiceStatus,
+            foodAndBeverageAmount: payload.foodAndBeverageAmount,
+            discountType: payload.discountType,
+            discountValue: payload.discountValue,
+            discountAmount: payload.discountAmount
+          });
+
+  return {
+    ...toLocalBookingFromServer(response.data.data.booking, booking),
+    syncStatus: "synced" as const
+  };
+};
+
 export const gamingBookingsService = {
   async pullBookingsFromServer(force = false) {
     const now = Date.now();
@@ -486,8 +592,7 @@ export const gamingBookingsService = {
       return;
     }
     try {
-      const existingRows = await gamingBookingsRepository.list(undefined, 2000);
-      const unresolvedBookingNumbers = new Set(await syncQueueRepository.listUnresolvedGamingBookingNumbers());
+      const existingRows = await listCachedBookings(undefined, 2000);
       const existingByBookingNumber = new Map(existingRows.map((row) => [row.bookingNumber, row]));
       const existingByServerId = new Map(
         existingRows.filter((row) => row.serverBookingId).map((row) => [row.serverBookingId as string, row])
@@ -511,11 +616,6 @@ export const gamingBookingsService = {
             existingByServerId.get(serverRow.id) ??
             existingByBookingNumber.get(serverRow.bookingNumber) ??
             null;
-          const hasLocalOnlyPendingSync =
-            existing !== null && !existing.serverBookingId && unresolvedBookingNumbers.has(existing.bookingNumber);
-          if (hasLocalOnlyPendingSync) {
-            continue;
-          }
           const localRow = toLocalBookingFromServer(serverRow, existing);
           await gamingBookingsRepository.save(localRow);
           existingByBookingNumber.set(localRow.bookingNumber, localRow);
@@ -530,8 +630,7 @@ export const gamingBookingsService = {
 
       const staleSyncedLocalIds = existingRows
         .filter((row) => {
-          const hasLocalOnlyPendingSync = !row.serverBookingId && unresolvedBookingNumbers.has(row.bookingNumber);
-          if (hasLocalOnlyPendingSync) {
+          if (!row.serverBookingId) {
             return false;
           }
           if (row.serverBookingId) {
@@ -559,8 +658,8 @@ export const gamingBookingsService = {
     } catch {
       // ignore: offline or server unavailable; local guard still applies.
     }
-    const occupied = await gamingBookingsRepository.list({ status: "ongoing" }, 600);
-    const upcoming = await gamingBookingsRepository.list({ status: "upcoming" }, 600);
+    const occupied = await listCachedBookings({ status: "ongoing" }, 600);
+    const upcoming = await listCachedBookings({ status: "upcoming" }, 600);
     const conflict = [...occupied, ...upcoming].find(
       (booking) =>
         booking.localBookingId !== excludeLocalBookingId &&
@@ -582,7 +681,7 @@ export const gamingBookingsService = {
     } catch {
       // no-op: fallback to local snapshot when offline.
     }
-    return gamingBookingsRepository.list(filters, limit);
+    return listCachedBookings(filters, limit);
   },
 
   async listActiveBookings() {
@@ -595,7 +694,7 @@ export const gamingBookingsService = {
     } catch {
       // no-op
     }
-    const active = await gamingBookingsRepository.list({ status: "ongoing" }, 200);
+    const active = await listCachedBookings({ status: "ongoing" }, 200);
     const resources = bookingType ? this.getResourcesByType(bookingType) : ALL_RESOURCES;
     const activeByResource = new Map<GamingResourceCode, GamingBooking>();
     active.forEach((booking) => {
@@ -633,6 +732,9 @@ export const gamingBookingsService = {
       foodInvoiceNumber?: string;
       foodInvoiceStatus?: "none" | "pending" | "paid" | "cancelled";
       foodAndBeverageAmount?: number;
+      discountType?: GamingDiscountType;
+      discountValue?: number;
+      discountAmount?: number;
     },
     session: StaffSession
   ) {
@@ -666,10 +768,12 @@ export const gamingBookingsService = {
     const extraMemberCount = getExtraMemberCount(input.bookingType, playerCount);
     const extraMemberCharge = getExtraMemberCharge(input.bookingType, playerCount);
     const systemCalculatedAmount = roundCurrency(gameAmount + foodAndBeverageAmount);
+    const discount = normalizeDiscount(input, systemCalculatedAmount);
     const targetAmount = getCollectibleAmount({
       status,
       finalAmount: 0,
-      systemCalculatedAmount
+      systemCalculatedAmount,
+      discountAmount: discount.discountAmount
     });
     const payment = sanitizePayment(
       {
@@ -705,6 +809,9 @@ export const gamingBookingsService = {
       systemCalculatedAmount,
       extraMemberCount,
       extraMemberCharge,
+      discountType: discount.discountType,
+      discountValue: discount.discountValue,
+      discountAmount: discount.discountAmount,
       amountOverrideReason: null,
       status,
       paymentStatus: payment.paymentStatus,
@@ -726,9 +833,9 @@ export const gamingBookingsService = {
       syncStatus: "pending"
     };
 
-    await gamingBookingsRepository.save(booking);
-    await queueBookingSync(booking);
-    return booking;
+    const syncedBooking = await pushBookingToServer(booking);
+    await gamingBookingsRepository.save(syncedBooking);
+    return syncedBooking;
   },
 
   async checkoutBooking(
@@ -739,13 +846,16 @@ export const gamingBookingsService = {
       systemCalculatedAmount?: number;
       extraMemberCount?: number;
       extraMemberCharge?: number;
+      discountType?: GamingDiscountType;
+      discountValue?: number;
+      discountAmount?: number;
       amountOverrideReason?: string;
       paymentStatus?: "pending" | "paid";
       paymentMode?: GamingPaymentMode;
       paymentBreakdown?: PaymentBreakdownInput;
     }
   ) {
-    const booking = await gamingBookingsRepository.getById(localBookingId);
+    const booking = await getCachedBooking(localBookingId);
     if (!booking) {
       throw new Error("Booking not found.");
     }
@@ -770,17 +880,26 @@ export const gamingBookingsService = {
           : computed + (Number(booking.foodAndBeverageAmount) || 0)
       )
     );
+    const discount = normalizeDiscount(
+      {
+        discountType: input.discountType ?? booking.discountType,
+        discountValue: input.discountValue ?? booking.discountValue,
+        discountAmount: input.discountAmount ?? booking.discountAmount
+      },
+      systemCalculatedAmount
+    );
+    const expectedFinalAmount = getDiscountedAmount(systemCalculatedAmount, discount.discountAmount);
     const nextFinalAmount = roundCurrency(
       Math.max(
         0,
         typeof input.finalAmount === "number" && Number.isFinite(input.finalAmount)
           ? Number(input.finalAmount)
-          : systemCalculatedAmount
+          : expectedFinalAmount
       )
     );
     const overrideReason = cleanText(input.amountOverrideReason);
-    if (hasAmountDiff(nextFinalAmount, systemCalculatedAmount) && !overrideReason) {
-      throw new Error("Please enter reason for changing system amount.");
+    if (hasAmountDiff(nextFinalAmount, expectedFinalAmount) && !overrideReason) {
+      throw new Error("Please enter reason for changing discounted final amount.");
     }
     const payment = sanitizePayment(
       {
@@ -793,7 +912,7 @@ export const gamingBookingsService = {
         paymentMode: booking.paymentMode,
         paymentBreakdown: getPaymentBreakdownFromBooking(booking)
       },
-      nextFinalAmount > 0 ? nextFinalAmount : systemCalculatedAmount
+      nextFinalAmount > 0 ? nextFinalAmount : expectedFinalAmount
     );
 
     const nextBooking: GamingBooking = {
@@ -823,7 +942,10 @@ export const gamingBookingsService = {
             : getExtraMemberCharge(booking.bookingType, booking.playerCount)
         )
       ),
-      amountOverrideReason: hasAmountDiff(nextFinalAmount, systemCalculatedAmount) ? overrideReason : null,
+      discountType: discount.discountType,
+      discountValue: discount.discountValue,
+      discountAmount: discount.discountAmount,
+      amountOverrideReason: hasAmountDiff(nextFinalAmount, expectedFinalAmount) ? overrideReason : null,
       foodOrderReference: booking.foodOrderReference,
       foodInvoiceNumber: booking.foodInvoiceNumber,
       foodInvoiceStatus: booking.foodInvoiceStatus,
@@ -832,9 +954,9 @@ export const gamingBookingsService = {
       syncStatus: "pending"
     };
 
-    await gamingBookingsRepository.save(nextBooking);
-    await queueBookingSync(nextBooking);
-    return nextBooking;
+    const syncedBooking = await pushBookingToServer(nextBooking);
+    await gamingBookingsRepository.save(syncedBooking);
+    return syncedBooking;
   },
 
   async updateBooking(
@@ -856,10 +978,13 @@ export const gamingBookingsService = {
       systemCalculatedAmount?: number;
       extraMemberCount?: number;
       extraMemberCharge?: number;
+      discountType?: GamingDiscountType;
+      discountValue?: number;
+      discountAmount?: number;
       amountOverrideReason?: string;
     }
   ) {
-    const booking = await gamingBookingsRepository.getById(localBookingId);
+    const booking = await getCachedBooking(localBookingId);
     if (!booking) {
       throw new Error("Booking not found.");
     }
@@ -908,6 +1033,15 @@ export const gamingBookingsService = {
           : derivedSystemCalculatedAmount
       )
     );
+    const discount = normalizeDiscount(
+      {
+        discountType: input.discountType ?? booking.discountType,
+        discountValue: input.discountValue ?? booking.discountValue,
+        discountAmount: input.discountAmount ?? booking.discountAmount
+      },
+      nextSystemCalculatedAmount
+    );
+    const expectedFinalAmount = getDiscountedAmount(nextSystemCalculatedAmount, discount.discountAmount);
     const nextFinalAmount =
       typeof input.finalAmount === "number" && Number.isFinite(input.finalAmount)
       ? roundCurrency(Math.max(0, Number(input.finalAmount)))
@@ -915,8 +1049,8 @@ export const gamingBookingsService = {
     const nextOverrideReason = cleanText(input.amountOverrideReason ?? booking.amountOverrideReason);
     const shouldValidateOverride =
       input.finalAmount !== undefined || input.systemCalculatedAmount !== undefined || input.amountOverrideReason !== undefined;
-    if (shouldValidateOverride && hasAmountDiff(nextFinalAmount, nextSystemCalculatedAmount) && !nextOverrideReason) {
-      throw new Error("Please enter reason for changing system amount.");
+    if (shouldValidateOverride && hasAmountDiff(nextFinalAmount, expectedFinalAmount) && !nextOverrideReason) {
+      throw new Error("Please enter reason for changing discounted final amount.");
     }
     const payment = sanitizePayment(
       {
@@ -932,7 +1066,8 @@ export const gamingBookingsService = {
       getCollectibleAmount({
         status: nextStatus,
         finalAmount: nextFinalAmount,
-        systemCalculatedAmount: nextSystemCalculatedAmount
+        systemCalculatedAmount: nextSystemCalculatedAmount,
+        discountAmount: discount.discountAmount
       })
     );
 
@@ -967,8 +1102,11 @@ export const gamingBookingsService = {
             : getExtraMemberCharge(nextBookingType, nextPlayerCount)
         )
       ),
+      discountType: discount.discountType,
+      discountValue: discount.discountValue,
+      discountAmount: discount.discountAmount,
       amountOverrideReason: shouldValidateOverride
-        ? hasAmountDiff(nextFinalAmount, nextSystemCalculatedAmount)
+        ? hasAmountDiff(nextFinalAmount, expectedFinalAmount)
           ? nextOverrideReason
           : null
         : booking.amountOverrideReason,
@@ -990,9 +1128,9 @@ export const gamingBookingsService = {
     nextBooking.primaryCustomerName = primaryCustomer.name || booking.primaryCustomerName;
     nextBooking.primaryCustomerPhone = primaryCustomer.phone || booking.primaryCustomerPhone;
 
-    await gamingBookingsRepository.save(nextBooking);
-    await queueBookingSync(nextBooking);
-    return nextBooking;
+    const syncedBooking = await pushBookingToServer(nextBooking);
+    await gamingBookingsRepository.save(syncedBooking);
+    return syncedBooking;
   },
 
   async updatePaymentStatus(
@@ -1001,7 +1139,7 @@ export const gamingBookingsService = {
     paymentMode?: GamingPaymentMode,
     paymentBreakdown?: PaymentBreakdownInput
   ) {
-    const booking = await gamingBookingsRepository.getById(localBookingId);
+    const booking = await getCachedBooking(localBookingId);
     if (!booking) {
       throw new Error("Booking not found.");
     }
@@ -1036,9 +1174,9 @@ export const gamingBookingsService = {
       updatedAt: nowIso(),
       syncStatus: "pending"
     };
-    await gamingBookingsRepository.save(nextBooking);
-    await queueBookingSync(nextBooking);
-    return nextBooking;
+    const syncedBooking = await pushBookingToServer(nextBooking);
+    await gamingBookingsRepository.save(syncedBooking);
+    return syncedBooking;
   },
 
   async updateFoodOrderLink(
@@ -1050,7 +1188,7 @@ export const gamingBookingsService = {
       foodAndBeverageAmount?: number;
     }
   ) {
-    const booking = await gamingBookingsRepository.getById(localBookingId);
+    const booking = await getCachedBooking(localBookingId);
     if (!booking) {
       throw new Error("Booking not found.");
     }
@@ -1071,6 +1209,14 @@ export const gamingBookingsService = {
       status: booking.status,
       foodAndBeverageAmount: nextFoodAndBeverageAmount
     });
+    const discount = normalizeDiscount(
+      {
+        discountType: booking.discountType,
+        discountValue: booking.discountValue,
+        discountAmount: booking.discountAmount
+      },
+      nextSystemCalculatedAmount
+    );
 
     const nextBooking: GamingBooking = {
       ...booking,
@@ -1082,20 +1228,23 @@ export const gamingBookingsService = {
         input.foodInvoiceStatus === undefined ? booking.foodInvoiceStatus : input.foodInvoiceStatus,
       foodAndBeverageAmount: nextFoodAndBeverageAmount,
       systemCalculatedAmount: nextSystemCalculatedAmount,
+      discountType: discount.discountType,
+      discountValue: discount.discountValue,
+      discountAmount: discount.discountAmount,
       updatedAt: nowIso(),
       syncStatus: "pending"
     };
 
-    await gamingBookingsRepository.save(nextBooking);
-    await queueBookingSync(nextBooking);
-    return nextBooking;
+    const syncedBooking = await pushBookingToServer(nextBooking);
+    await gamingBookingsRepository.save(syncedBooking);
+    return syncedBooking;
   },
 
   getLiveAmount(booking: GamingBooking) {
     if (booking.status === "completed") {
       return booking.finalAmount;
     }
-    return computeCalculatedAmount(booking);
+    return getDiscountedAmount(computeCalculatedAmount(booking), booking.discountAmount ?? 0);
   },
 
   async getDashboardSnapshot() {
@@ -1104,7 +1253,7 @@ export const gamingBookingsService = {
     } catch {
       // no-op
     }
-    const all = await gamingBookingsRepository.list(undefined, 500);
+    const all = await listCachedBookings(undefined, 500);
     const now = Date.now();
 
     const ongoing = all.filter((booking) => booking.status === "ongoing");

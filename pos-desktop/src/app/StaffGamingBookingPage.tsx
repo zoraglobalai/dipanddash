@@ -31,6 +31,7 @@ import { FiEdit2, FiEye, FiPlus, FiShoppingBag } from "react-icons/fi";
 
 import { usePosAuth } from "@/app/PosAuthContext";
 import { usePos } from "@/app/PosContext";
+import { PosLoadingState } from "@/components/common/PosLoadingState";
 import { PosDataTable, type PosTableColumn } from "@/components/common/PosDataTable";
 import { customersService } from "@/services/customers.service";
 import { gamingBookingsService } from "@/services/gaming-bookings.service";
@@ -41,6 +42,7 @@ import type {
   GamingBooking,
   GamingBookingStatus,
   GamingBookingType,
+  GamingDiscountType,
   GamingPaymentMode,
   PosOrder
 } from "@/types/pos";
@@ -118,12 +120,13 @@ const SNOOKER_INCLUDED_MEMBERS = 4;
 const EXTRA_MEMBER_CHARGE = 50;
 const AMOUNT_DIFF_THRESHOLD = 0.01;
 const BOOKINGS_PER_PAGE = 10;
+const roundCheckoutAmount = (value: number) => Math.round(Math.max(0, Number(value) || 0));
 const parsePaymentSplitAmount = (value: string) => {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) {
     return 0;
   }
-  return Math.max(0, Number(parsed.toFixed(2)));
+  return roundCheckoutAmount(parsed);
 };
 const formatPaymentSplitSummary = (split: { cash: number; card: number; upi: number }) => {
   const parts: string[] = [];
@@ -138,6 +141,24 @@ const formatPaymentSplitSummary = (split: { cash: number; card: number; upi: num
   }
   return parts.join(" + ");
 };
+const formatDuration = (minutes: number) => {
+  const safeMinutes = Math.max(0, Math.floor(Number(minutes) || 0));
+  const hours = Math.floor(safeMinutes / 60);
+  const mins = safeMinutes % 60;
+  if (hours > 0 && mins > 0) return `${hours} hour${hours === 1 ? "" : "s"} ${mins} min${mins === 1 ? "" : "s"}`;
+  if (hours > 0) return `${hours} hour${hours === 1 ? "" : "s"}`;
+  return `${mins} min${mins === 1 ? "" : "s"}`;
+};
+const calculateDiscountAmount = (type: GamingDiscountType, value: string, systemAmount: number) => {
+  const parsedValue = roundCheckoutAmount(Number(value));
+  if (type === "percentage") {
+    return roundCheckoutAmount(Math.min(systemAmount, (systemAmount * Math.min(parsedValue, 100)) / 100));
+  }
+  if (type === "manual") {
+    return roundCheckoutAmount(Math.min(systemAmount, parsedValue));
+  }
+  return 0;
+};
 const normalizePhone = (value: string) => value.replace(/\D/g, "");
 
 const calcCheckoutAmount = (booking: GamingBooking, checkOutAtIso: string) => {
@@ -146,9 +167,9 @@ const calcCheckoutAmount = (booking: GamingBooking, checkOutAtIso: string) => {
   const extraMembers =
     booking.bookingType === "snooker" ? Math.max(0, booking.playerCount - SNOOKER_INCLUDED_MEMBERS) : 0;
   const extraCharge = extraMembers * EXTRA_MEMBER_CHARGE;
-  if (checkOut <= checkIn) return Number(extraCharge.toFixed(2));
+  if (checkOut <= checkIn) return roundCheckoutAmount(extraCharge);
   const minutes = Math.ceil((checkOut - checkIn) / 60000);
-  return Number((((minutes / 60) * booking.hourlyRate) + extraCharge).toFixed(2));
+  return roundCheckoutAmount(((minutes / 60) * booking.hourlyRate) + extraCharge);
 };
 
 const getGamingProductOptions = (snapshot: CatalogSnapshot | null) => {
@@ -239,6 +260,7 @@ export const StaffGamingBookingPage = () => {
   const foodModal = useDisclosure();
 
   const [bookings, setBookings] = useState<GamingBooking[]>([]);
+  const [isBookingsLoading, setIsBookingsLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState<GamingBookingStatus | "all">("all");
   const [search, setSearch] = useState("");
   const [tablePage, setTablePage] = useState(1);
@@ -264,6 +286,9 @@ export const StaffGamingBookingPage = () => {
   const [isCheckoutFoodOrderLoading, setIsCheckoutFoodOrderLoading] = useState(false);
   const [checkoutAtLocal, setCheckoutAtLocal] = useState(getNowLocalDateTime());
   const [checkoutFinalAmount, setCheckoutFinalAmount] = useState("0");
+  const [checkoutFinalAmountTouched, setCheckoutFinalAmountTouched] = useState(false);
+  const [checkoutDiscountType, setCheckoutDiscountType] = useState<GamingDiscountType>("none");
+  const [checkoutDiscountValue, setCheckoutDiscountValue] = useState("0");
   const [checkoutPaymentStatus, setCheckoutPaymentStatus] = useState<"pending" | "paid">("paid");
   const [checkoutPaymentMode, setCheckoutPaymentMode] = useState<GamingPaymentMode>("cash");
   const [checkoutSplitCash, setCheckoutSplitCash] = useState("");
@@ -288,11 +313,22 @@ export const StaffGamingBookingPage = () => {
   const productOptionMap = useMemo(() => new Map(productOptions.map((entry) => [entry.id, entry])), [productOptions]);
 
   const loadBookings = useCallback(async (forceServerSync = false) => {
-    const rows = await gamingBookingsService.listBookings({ status: statusFilter, search }, 500, {
-      forceServerSync
-    });
-    setBookings(rows);
-  }, [search, statusFilter]);
+    setIsBookingsLoading(true);
+    try {
+      const rows = await gamingBookingsService.listBookings({ status: statusFilter, search }, 500, {
+        forceServerSync
+      });
+      setBookings(rows);
+    } catch (error) {
+      toast({
+        status: "error",
+        title: "Unable to load bookings",
+        description: error instanceof Error ? error.message : "Please retry."
+      });
+    } finally {
+      setIsBookingsLoading(false);
+    }
+  }, [search, statusFilter, toast]);
 
   useEffect(() => { void loadBookings(); }, [loadBookings]);
 
@@ -585,13 +621,16 @@ export const StaffGamingBookingPage = () => {
       if (booking.status === "completed") return;
       const nowLocal = getNowLocalDateTime();
       const systemAmount = calcCheckoutAmount(booking, toIsoFromLocal(nowLocal));
-      const foodAmount = booking.foodAndBeverageAmount || 0;
-      const systemTotal = Number((systemAmount + foodAmount).toFixed(2));
+      const foodAmount = roundCheckoutAmount(booking.foodAndBeverageAmount || 0);
+      const systemTotal = roundCheckoutAmount(systemAmount + foodAmount);
       setCheckoutBooking(booking);
       setCheckoutFoodOrder(null);
       setIsCheckoutFoodOrderLoading(Boolean(booking.foodOrderReference));
       setCheckoutAtLocal(nowLocal);
       setCheckoutFinalAmount(String(systemTotal));
+      setCheckoutFinalAmountTouched(false);
+      setCheckoutDiscountType("none");
+      setCheckoutDiscountValue("0");
       setCheckoutPaymentStatus(booking.paymentStatus === "paid" ? "paid" : "pending");
       const initialPaymentMode = booking.paymentMode ?? "cash";
       setCheckoutPaymentMode(initialPaymentMode);
@@ -600,7 +639,7 @@ export const StaffGamingBookingPage = () => {
         card: Number(booking.paidCardAmount ?? 0),
         upi: Number(booking.paidUpiAmount ?? 0)
       };
-      const storedSplitTotal = Number((storedSplit.cash + storedSplit.card + storedSplit.upi).toFixed(2));
+      const storedSplitTotal = roundCheckoutAmount(storedSplit.cash + storedSplit.card + storedSplit.upi);
       if (booking.paymentStatus === "paid" && storedSplitTotal > AMOUNT_DIFF_THRESHOLD) {
         setCheckoutSplitCash(storedSplit.cash ? String(storedSplit.cash) : "");
         setCheckoutSplitCard(storedSplit.card ? String(storedSplit.card) : "");
@@ -627,12 +666,26 @@ export const StaffGamingBookingPage = () => {
 
   const checkoutSystemAmount = useMemo(() => (checkoutBooking ? calcCheckoutAmount(checkoutBooking, toIsoFromLocal(checkoutAtLocal)) : 0), [checkoutAtLocal, checkoutBooking]);
   const checkoutFoodAmount = useMemo(
-    () => checkoutFoodOrder?.totals.totalAmount ?? checkoutBooking?.foodAndBeverageAmount ?? 0,
+    () => roundCheckoutAmount(checkoutFoodOrder?.totals.totalAmount ?? checkoutBooking?.foodAndBeverageAmount ?? 0),
     [checkoutBooking, checkoutFoodOrder]
   );
   const checkoutSystemTotal = useMemo(
-    () => Number((checkoutSystemAmount + checkoutFoodAmount).toFixed(2)),
+    () => roundCheckoutAmount(checkoutSystemAmount + checkoutFoodAmount),
     [checkoutFoodAmount, checkoutSystemAmount]
+  );
+  const checkoutPlayMinutes = useMemo(() => {
+    if (!checkoutBooking) return 0;
+    const checkIn = new Date(checkoutBooking.checkInAt).getTime();
+    const checkOut = new Date(toIsoFromLocal(checkoutAtLocal)).getTime();
+    return Math.max(0, Math.ceil((checkOut - checkIn) / 60000));
+  }, [checkoutAtLocal, checkoutBooking]);
+  const checkoutDiscountAmount = useMemo(
+    () => calculateDiscountAmount(checkoutDiscountType, checkoutDiscountValue, checkoutSystemTotal),
+    [checkoutDiscountType, checkoutDiscountValue, checkoutSystemTotal]
+  );
+  const checkoutDiscountedFinalAmount = useMemo(
+    () => roundCheckoutAmount(checkoutSystemTotal - checkoutDiscountAmount),
+    [checkoutDiscountAmount, checkoutSystemTotal]
   );
   const checkoutExtraMembers = useMemo(
     () =>
@@ -642,13 +695,13 @@ export const StaffGamingBookingPage = () => {
     [checkoutBooking]
   );
   const checkoutExtraCharge = useMemo(
-    () => Number((checkoutExtraMembers * EXTRA_MEMBER_CHARGE).toFixed(2)),
+    () => roundCheckoutAmount(checkoutExtraMembers * EXTRA_MEMBER_CHARGE),
     [checkoutExtraMembers]
   );
   const checkoutProductLines = useMemo(() => checkoutFoodOrder?.lines ?? [], [checkoutFoodOrder]);
   const checkoutFinalAmountNumber = useMemo(() => {
     const parsed = Number(checkoutFinalAmount);
-    return Number.isFinite(parsed) ? Math.max(0, parsed) : checkoutSystemTotal;
+    return Number.isFinite(parsed) ? roundCheckoutAmount(parsed) : checkoutSystemTotal;
   }, [checkoutFinalAmount, checkoutSystemTotal]);
   const checkoutPaymentBreakdown = useMemo(
     () => ({
@@ -659,18 +712,11 @@ export const StaffGamingBookingPage = () => {
     [checkoutSplitCard, checkoutSplitCash, checkoutSplitUpi]
   );
   const checkoutPaymentBreakdownTotal = useMemo(
-    () =>
-      Number(
-        (
-          checkoutPaymentBreakdown.cash +
-          checkoutPaymentBreakdown.card +
-          checkoutPaymentBreakdown.upi
-        ).toFixed(2)
-      ),
+    () => roundCheckoutAmount(checkoutPaymentBreakdown.cash + checkoutPaymentBreakdown.card + checkoutPaymentBreakdown.upi),
     [checkoutPaymentBreakdown]
   );
   const checkoutPaymentSplitGap = useMemo(
-    () => Number((checkoutFinalAmountNumber - checkoutPaymentBreakdownTotal).toFixed(2)),
+    () => checkoutFinalAmountNumber - checkoutPaymentBreakdownTotal,
     [checkoutFinalAmountNumber, checkoutPaymentBreakdownTotal]
   );
   const checkoutPaymentSplitChannelCount = useMemo(
@@ -689,8 +735,8 @@ export const StaffGamingBookingPage = () => {
     [checkoutPaymentBreakdown]
   );
   const checkoutRequiresOverrideReason = useMemo(
-    () => Math.abs(checkoutFinalAmountNumber - checkoutSystemTotal) > AMOUNT_DIFF_THRESHOLD,
-    [checkoutFinalAmountNumber, checkoutSystemTotal]
+    () => Math.abs(checkoutFinalAmountNumber - checkoutDiscountedFinalAmount) > AMOUNT_DIFF_THRESHOLD,
+    [checkoutDiscountedFinalAmount, checkoutFinalAmountNumber]
   );
   const checkoutRequiresReference = useMemo(
     () =>
@@ -711,11 +757,17 @@ export const StaffGamingBookingPage = () => {
     if (checkoutPaymentMode === "mixed") {
       return;
     }
-    const total = Number(checkoutFinalAmountNumber.toFixed(2));
+    const total = checkoutFinalAmountNumber;
     setCheckoutSplitCash(checkoutPaymentMode === "cash" ? String(total) : "");
     setCheckoutSplitCard(checkoutPaymentMode === "card" ? String(total) : "");
     setCheckoutSplitUpi(checkoutPaymentMode === "upi" ? String(total) : "");
   }, [checkoutFinalAmountNumber, checkoutPaymentMode, checkoutPaymentStatus]);
+
+  useEffect(() => {
+    if (!checkoutFinalAmountTouched) {
+      setCheckoutFinalAmount(String(checkoutDiscountedFinalAmount));
+    }
+  }, [checkoutDiscountedFinalAmount, checkoutFinalAmountTouched]);
 
   const validateCheckoutPayment = useCallback(() => {
     if (checkoutPaymentStatus !== "paid") {
@@ -780,14 +832,16 @@ export const StaffGamingBookingPage = () => {
         if (paidFoodOrder) latestFoodAmount = paidFoodOrder.totals.totalAmount;
       }
 
-      const derivedSystemTotal = Number((checkoutSystemAmount + latestFoodAmount).toFixed(2));
+      const derivedSystemTotal = roundCheckoutAmount(checkoutSystemAmount + latestFoodAmount);
+      const derivedDiscountAmount = calculateDiscountAmount(checkoutDiscountType, checkoutDiscountValue, derivedSystemTotal);
+      const derivedDiscountedFinal = roundCheckoutAmount(derivedSystemTotal - derivedDiscountAmount);
       const grandTotal = checkoutFinalAmountNumber;
       const overrideReason = checkoutOverrideReason.trim();
-      if (Math.abs(grandTotal - derivedSystemTotal) > AMOUNT_DIFF_THRESHOLD && !overrideReason) {
+      if (Math.abs(grandTotal - derivedDiscountedFinal) > AMOUNT_DIFF_THRESHOLD && !overrideReason) {
         toast({
           status: "warning",
           title: "Reason required",
-          description: "Please enter why final amount differs from system amount."
+          description: "Please enter why final amount differs from discounted amount."
         });
         setSaving(false);
         return;
@@ -798,6 +852,9 @@ export const StaffGamingBookingPage = () => {
         systemCalculatedAmount: derivedSystemTotal,
         extraMemberCount: checkoutExtraMembers,
         extraMemberCharge: checkoutExtraCharge,
+        discountType: checkoutDiscountType,
+        discountValue: checkoutDiscountType === "none" ? 0 : roundCheckoutAmount(Number(checkoutDiscountValue)),
+        discountAmount: derivedDiscountAmount,
         amountOverrideReason: overrideReason || undefined,
         paymentStatus: checkoutPaymentStatus,
         paymentMode: checkoutPaymentStatus === "paid" ? checkoutPaymentMode : undefined,
@@ -826,7 +883,7 @@ export const StaffGamingBookingPage = () => {
       toast({
         status: "warning",
         title: "Reason required",
-        description: "Please enter why final amount differs from system amount."
+        description: "Please enter why final amount differs from discounted amount."
       });
       return;
     }
@@ -953,6 +1010,9 @@ export const StaffGamingBookingPage = () => {
                 Out: {formatDateTime(booking.checkOutAt)}
               </Text>
             ) : null}
+            <Text fontSize="xs" color="#705A50">
+              Playing {formatDuration(Math.ceil(((booking.checkOutAt ? new Date(booking.checkOutAt).getTime() : Date.now()) - new Date(booking.checkInAt).getTime()) / 60000))}
+            </Text>
           </Box>
         )
       },
@@ -967,6 +1027,12 @@ export const StaffGamingBookingPage = () => {
             <Text fontSize="xs" color="#705A50">
               System {formatINR(booking.systemCalculatedAmount)}
             </Text>
+            {(booking.discountAmount ?? 0) > AMOUNT_DIFF_THRESHOLD ? (
+              <Text fontSize="xs" color="#046C4E">
+                Discount {formatINR(booking.discountAmount ?? 0)}
+                {booking.discountType === "percentage" ? ` (${booking.discountValue ?? 0}%)` : ""}
+              </Text>
+            ) : null}
             {booking.amountOverrideReason ? (
               <Text fontSize="xs" color="#B45309">
                 Override: {booking.amountOverrideReason}
@@ -1092,7 +1158,7 @@ export const StaffGamingBookingPage = () => {
           <FormControl><FormLabel>Status</FormLabel><Select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value as GamingBookingStatus | "all")}><option value="all">All</option><option value="ongoing">Ongoing</option><option value="upcoming">Upcoming</option><option value="completed">Completed</option><option value="cancelled">Cancelled</option></Select></FormControl>
           <FormControl><FormLabel>Search</FormLabel><Input placeholder="Booking/customer/phone" value={search} onChange={(e) => setSearch(e.target.value)} /></FormControl>
           <Box display="flex" alignItems={{ base: "stretch", md: "end" }}>
-            <Button variant="outline" onClick={() => void refreshAllViews()} w={{ base: "full", md: "auto" }}>
+            <Button variant="outline" isLoading={isBookingsLoading} onClick={() => void refreshAllViews()} w={{ base: "full", md: "auto" }}>
               Refresh
             </Button>
           </Box>
@@ -1103,6 +1169,8 @@ export const StaffGamingBookingPage = () => {
           columns={bookingColumns}
           getRowId={(booking) => booking.localBookingId}
           emptyMessage="No bookings found for current filters."
+          loading={isBookingsLoading}
+          loadingMessage="Loading snooker bookings..."
           maxColumns={6}
         />
         <HStack justify="space-between" flexWrap="wrap" gap={3} mt={3}>
@@ -1357,7 +1425,7 @@ export const StaffGamingBookingPage = () => {
                   <Input value={bookingProductSearch} onChange={(e) => setBookingProductSearch(e.target.value)} placeholder="Type product name" />
                 </FormControl>
                 {isBookingProductLoading ? (
-                  <Text fontSize="sm" color="#705A50">Loading linked products...</Text>
+                  <PosLoadingState message="Loading linked products..." detail="Checking food order items for this booking" compact />
                 ) : (
                   <VStack align="stretch" spacing={2}>
                     {bookingProductLines.map((line) => {
@@ -1417,7 +1485,7 @@ export const StaffGamingBookingPage = () => {
               <Box p={3} borderRadius="12px" border="1px solid rgba(132,79,52,0.18)" bg="#FFFCF7"><Text fontWeight={800}>{foodBooking?.bookingNumber ?? "-"}</Text><Text fontSize="sm" color="#6D584E">{foodBooking?.primaryCustomerName} ({foodBooking?.primaryCustomerPhone}) • {foodBooking?.resourceLabel}</Text></Box>
               <FormControl><FormLabel>Search Product</FormLabel><Input value={foodSearch} onChange={(e) => setFoodSearch(e.target.value)} placeholder="Type to filter products" /></FormControl>
               {isFoodOrderLoading ? (
-                <Text fontSize="sm" color="#705A50">Loading linked products...</Text>
+                <PosLoadingState message="Loading linked products..." detail="Checking food order items for this booking" compact />
               ) : (
                 foodLines.map((line) => (
                   <SimpleGrid key={line.id} columns={{ base: 1, md: 3 }} spacing={3} border="1px solid rgba(132,79,52,0.14)" borderRadius="10px" p={3}>
@@ -1501,7 +1569,7 @@ export const StaffGamingBookingPage = () => {
               <Box>
                 <Text fontWeight={700} mb={2}>Products Bought</Text>
                 {isViewFoodOrderLoading ? (
-                  <Text fontSize="sm" color="#705A50">Loading linked products...</Text>
+                  <PosLoadingState message="Loading linked products..." detail="Checking food order items for this booking" compact />
                 ) : viewProductLines.length ? (
                   <VStack align="stretch" spacing={2}>
                     {viewProductLines.map((line) => (
@@ -1558,6 +1626,10 @@ export const StaffGamingBookingPage = () => {
                       <Text fontSize="xs" color="#705A50">Extra Charge</Text>
                       <Text fontWeight={700}>{formatINR(checkoutExtraCharge)}</Text>
                     </Box>
+                    <Box p={3} borderRadius="10px" border="1px solid rgba(132,79,52,0.14)">
+                      <Text fontSize="xs" color="#705A50">Playing Time</Text>
+                      <Text fontWeight={700}>{formatDuration(checkoutPlayMinutes)}</Text>
+                    </Box>
                   </SimpleGrid>
                   <SimpleGrid columns={{ base: 1, md: 2 }} spacing={3}>
                     <FormControl>
@@ -1575,14 +1647,65 @@ export const StaffGamingBookingPage = () => {
                       <Input value={formatINR(checkoutSystemTotal)} readOnly />
                     </FormControl>
                     <FormControl>
-                      <FormLabel>Final Amount (Editable)</FormLabel>
-                      <Input type="number" min={0} value={checkoutFinalAmount} onChange={(e) => setCheckoutFinalAmount(e.target.value)} />
+                      <FormLabel>Discount Type</FormLabel>
+                      <Select
+                        value={checkoutDiscountType}
+                        onChange={(event) => {
+                          const nextType = event.target.value as GamingDiscountType;
+                          setCheckoutDiscountType(nextType);
+                          setCheckoutFinalAmountTouched(false);
+                          if (nextType === "none") {
+                            setCheckoutDiscountValue("0");
+                          }
+                        }}
+                      >
+                        <option value="none">No Discount</option>
+                        <option value="manual">Manual Amount</option>
+                        <option value="percentage">Percentage</option>
+                      </Select>
+                    </FormControl>
+                  </SimpleGrid>
+                  <SimpleGrid columns={{ base: 1, md: 3 }} spacing={3} alignItems="end">
+                    <FormControl isDisabled={checkoutDiscountType === "none"}>
+                      <FormLabel whiteSpace="nowrap">
+                        {checkoutDiscountType === "percentage" ? "Discount %" : "Discount Amount"}
+                      </FormLabel>
+                      <Input
+                        type="number"
+                        min={0}
+                        max={checkoutDiscountType === "percentage" ? 100 : checkoutSystemTotal}
+                        step={1}
+                        value={checkoutDiscountValue}
+                        onChange={(event) => {
+                          const nextValue = event.target.value;
+                          setCheckoutFinalAmountTouched(false);
+                          setCheckoutDiscountValue(nextValue === "" ? "" : String(roundCheckoutAmount(Number(nextValue))));
+                        }}
+                      />
+                    </FormControl>
+                    <FormControl>
+                      <FormLabel whiteSpace="nowrap">Discount Applied</FormLabel>
+                      <Input value={formatINR(checkoutDiscountAmount)} readOnly />
+                    </FormControl>
+                    <FormControl>
+                      <FormLabel whiteSpace="nowrap">Final Amount (Editable)</FormLabel>
+                      <Input
+                        type="number"
+                        min={0}
+                        step={1}
+                        value={checkoutFinalAmount}
+                        onChange={(event) => {
+                          const nextValue = event.target.value;
+                          setCheckoutFinalAmountTouched(true);
+                          setCheckoutFinalAmount(nextValue === "" ? "" : String(roundCheckoutAmount(Number(nextValue))));
+                        }}
+                      />
                     </FormControl>
                   </SimpleGrid>
                   <FormControl isRequired={checkoutRequiresOverrideReason}>
                     <FormLabel>Amount Change Reason</FormLabel>
                     <Input
-                      placeholder="Why final amount changed from system amount?"
+                      placeholder="Why final amount changed after discount?"
                       value={checkoutOverrideReason}
                       onChange={(e) => setCheckoutOverrideReason(e.target.value)}
                     />
@@ -1629,9 +1752,9 @@ export const StaffGamingBookingPage = () => {
                           <Input
                             type="number"
                             min={0}
-                            step="0.01"
+                            step={1}
                             value={checkoutSplitCash}
-                            onChange={(event) => setCheckoutSplitCash(event.target.value)}
+                            onChange={(event) => setCheckoutSplitCash(event.target.value === "" ? "" : String(roundCheckoutAmount(Number(event.target.value))))}
                             placeholder="0"
                           />
                         </FormControl>
@@ -1640,9 +1763,9 @@ export const StaffGamingBookingPage = () => {
                           <Input
                             type="number"
                             min={0}
-                            step="0.01"
+                            step={1}
                             value={checkoutSplitUpi}
-                            onChange={(event) => setCheckoutSplitUpi(event.target.value)}
+                            onChange={(event) => setCheckoutSplitUpi(event.target.value === "" ? "" : String(roundCheckoutAmount(Number(event.target.value))))}
                             placeholder="0"
                           />
                         </FormControl>
@@ -1651,9 +1774,9 @@ export const StaffGamingBookingPage = () => {
                           <Input
                             type="number"
                             min={0}
-                            step="0.01"
+                            step={1}
                             value={checkoutSplitCard}
-                            onChange={(event) => setCheckoutSplitCard(event.target.value)}
+                            onChange={(event) => setCheckoutSplitCard(event.target.value === "" ? "" : String(roundCheckoutAmount(Number(event.target.value))))}
                             placeholder="0"
                           />
                         </FormControl>
@@ -1680,7 +1803,7 @@ export const StaffGamingBookingPage = () => {
                   <Box border="1px solid rgba(132,79,52,0.14)" borderRadius="10px" p={3}>
                     <Text fontWeight={700} mb={2}>Products Bought</Text>
                     {isCheckoutFoodOrderLoading ? (
-                      <Text fontSize="sm" color="#705A50">Loading linked products...</Text>
+                      <PosLoadingState message="Loading linked products..." detail="Checking food order items for checkout" compact />
                     ) : checkoutProductLines.length ? (
                       <VStack align="stretch" spacing={2} maxH="240px" overflowY="auto" pr={1}>
                         {checkoutProductLines.map((line) => (
@@ -1715,6 +1838,8 @@ export const StaffGamingBookingPage = () => {
               <Text>Booking: <b>{checkoutBooking?.bookingNumber ?? "-"}</b></Text>
               <Text>Customer: <b>{checkoutBooking?.primaryCustomerName ?? "-"}</b></Text>
               <Text>Players: <b>{checkoutBooking?.playerCount ?? 0}</b> (Extra: <b>{checkoutExtraMembers}</b>)</Text>
+              <Text>Playing Time: <b>{formatDuration(checkoutPlayMinutes)}</b></Text>
+              <Text>Discount: <b>{formatINR(checkoutDiscountAmount)}</b></Text>
               <Text>
                 Payment: <b>{checkoutPaymentStatus.toUpperCase()}</b>
                 {checkoutPaymentStatus === "paid" ? <> via <b>{checkoutPaymentMode.toUpperCase()}</b></> : null}

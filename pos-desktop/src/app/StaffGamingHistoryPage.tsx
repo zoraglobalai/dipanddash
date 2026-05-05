@@ -265,6 +265,7 @@ export const StaffGamingHistoryPage = () => {
             <Button
               leftIcon={<FiRefreshCw size={14} />}
               w={{ base: "full", xl: "auto" }}
+              isLoading={loading}
               onClick={() => void loadRows(true)}
             >
               Refresh
@@ -303,6 +304,7 @@ export const StaffGamingHistoryPage = () => {
           getRowId={(row) => row.localBookingId}
           emptyMessage="No bookings found for selected date."
           loading={loading}
+          loadingMessage="Loading booking history..."
           maxColumns={8}
         />
         <SimpleGrid columns={{ base: 1, md: 3 }} spacing={3} mt={3} alignItems="center">

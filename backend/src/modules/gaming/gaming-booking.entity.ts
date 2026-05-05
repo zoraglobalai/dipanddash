@@ -16,11 +16,13 @@ import {
   GAMING_PAYMENT_MODES,
   GAMING_PAYMENT_STATUSES,
   GAMING_PAYMENT_CHANNELS,
+  GAMING_DISCOUNT_TYPES,
   type GamingPaymentChannel,
   type GamingPaymentMode,
   type GamingBookingStatus,
   type GamingBookingType,
-  type GamingPaymentStatus
+  type GamingPaymentStatus,
+  type GamingDiscountType
 } from "./gaming.constants";
 
 type BookingCustomerMember = {
@@ -84,6 +86,15 @@ export class GamingBooking {
 
   @Column({ type: "numeric", precision: 12, scale: 2, default: 0 })
   extraMemberCharge!: number;
+
+  @Column({ type: "varchar", length: 20, default: GAMING_DISCOUNT_TYPES[0] })
+  discountType!: GamingDiscountType;
+
+  @Column({ type: "numeric", precision: 12, scale: 2, default: 0 })
+  discountValue!: number;
+
+  @Column({ type: "numeric", precision: 12, scale: 2, default: 0 })
+  discountAmount!: number;
 
   @Column({ type: "text", nullable: true })
   amountOverrideReason!: string | null;

@@ -2,6 +2,7 @@ export type GamingBookingType = "snooker" | "console";
 export type GamingBookingStatus = "upcoming" | "ongoing" | "completed" | "cancelled";
 export type GamingPaymentStatus = "pending" | "paid" | "refunded";
 export type GamingPaymentMode = "cash" | "upi" | "card" | "mixed";
+export type GamingDiscountType = "none" | "manual" | "percentage";
 export type GamingFoodInvoiceStatus = "none" | "pending" | "paid" | "cancelled";
 export type GamingBookingCustomer = { name: string; phone: string };
 export type GamingPaymentBreakdown = {
@@ -39,6 +40,9 @@ export type GamingBookingRow = {
   finalAmount: number;
   extraMemberCount: number;
   extraMemberCharge: number;
+  discountType: GamingDiscountType;
+  discountValue: number;
+  discountAmount: number;
   amountOverrideReason: string | null;
   isAmountOverridden: boolean;
   status: GamingBookingStatus;
@@ -79,6 +83,9 @@ export type GamingCreateBookingPayload = {
   systemCalculatedAmount?: number;
   extraMemberCount?: number;
   extraMemberCharge?: number;
+  discountType?: GamingDiscountType;
+  discountValue?: number;
+  discountAmount?: number;
   amountOverrideReason?: string;
   foodOrderReference?: string;
   foodInvoiceNumber?: string;

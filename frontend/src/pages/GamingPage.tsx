@@ -49,6 +49,7 @@ import type {
   GamingBookingStatus,
   GamingBookingType,
   GamingCreateBookingPayload,
+  GamingDiscountType,
   GamingPaymentMode,
   GamingPaymentStatus,
   GamingResourceAvailability,
@@ -68,6 +69,19 @@ const formatCurrency = (value: number) =>
   }).format(value);
 
 const formatDateTime = (value: string | null) => (value ? new Date(value).toLocaleString("en-IN") : "-");
+
+const formatDuration = (minutes: number) => {
+  const safeMinutes = Math.max(0, Math.floor(Number(minutes) || 0));
+  const hours = Math.floor(safeMinutes / 60);
+  const mins = safeMinutes % 60;
+  if (hours > 0 && mins > 0) {
+    return `${hours} hour${hours === 1 ? "" : "s"} ${mins} min${mins === 1 ? "" : "s"}`;
+  }
+  if (hours > 0) {
+    return `${hours} hour${hours === 1 ? "" : "s"}`;
+  }
+  return `${mins} min${mins === 1 ? "" : "s"}`;
+};
 
 const toDateTimeLocalInput = (value: string | null | undefined) => {
   if (!value) {
@@ -171,6 +185,17 @@ const resolvePayableAmountForForm = (input: {
     return Number(input.systemAmount.toFixed(2));
   }
   return Number(input.systemAmount.toFixed(2));
+};
+
+const calculateDiscountAmount = (type: GamingDiscountType, value: string, systemAmount: number) => {
+  const parsedValue = Math.max(0, Number(value) || 0);
+  if (type === "percentage") {
+    return Number(Math.min(systemAmount, (systemAmount * Math.min(parsedValue, 100)) / 100).toFixed(2));
+  }
+  if (type === "manual") {
+    return Number(Math.min(systemAmount, parsedValue).toFixed(2));
+  }
+  return 0;
 };
 
 type BookingProductLineDraft = {
@@ -285,6 +310,8 @@ type BookingFormState = {
   paymentSplitUpi: string;
   systemCalculatedAmount: string;
   finalAmount: string;
+  discountType: GamingDiscountType;
+  discountValue: string;
   amountOverrideReason: string;
   paymentReference: string;
   bookingChannel: string;
@@ -314,6 +341,8 @@ const createDefaultFormState = (resources: GamingResourceAvailability[]): Bookin
     paymentSplitUpi: "",
     systemCalculatedAmount: "",
     finalAmount: "",
+    discountType: "none",
+    discountValue: "0",
     amountOverrideReason: "",
     paymentReference: "",
     bookingChannel: "desktop",
@@ -343,6 +372,8 @@ const mapBookingToForm = (booking: GamingBookingRow): BookingFormState => ({
   paymentSplitUpi: booking.paymentBreakdown?.upi ? String(booking.paymentBreakdown.upi) : "",
   systemCalculatedAmount: String(booking.systemCalculatedAmount ?? 0),
   finalAmount: String(booking.finalAmount ?? 0),
+  discountType: booking.discountType ?? "none",
+  discountValue: String(booking.discountValue ?? 0),
   amountOverrideReason: booking.amountOverrideReason ?? "",
   paymentReference: extractUpiReferenceFromNote(booking.note),
   bookingChannel: booking.bookingChannel ?? "desktop",
@@ -706,7 +737,7 @@ export const GamingPage = () => {
     () => Math.max(0, Number(bookingForm.hourlyRate) || 0),
     [bookingForm.hourlyRate]
   );
-  const autoGameAmount = useMemo(() => {
+  const autoPlayMinutes = useMemo(() => {
     const checkIn = bookingForm.checkInAt ? new Date(bookingForm.checkInAt) : null;
     if (!checkIn || Number.isNaN(checkIn.getTime())) {
       return 0;
@@ -718,9 +749,12 @@ export const GamingPage = () => {
         : bookingForm.status === "upcoming"
           ? checkIn
           : new Date();
-    const minutes = Math.max(0, Math.ceil((effectiveOut.getTime() - checkIn.getTime()) / 60000));
-    return Number(((minutes / 60) * parsedHourlyRate).toFixed(2));
-  }, [bookingForm.checkInAt, bookingForm.checkOutAt, bookingForm.status, parsedHourlyRate]);
+    return Math.max(0, Math.ceil((effectiveOut.getTime() - checkIn.getTime()) / 60000));
+  }, [bookingForm.checkInAt, bookingForm.checkOutAt, bookingForm.status]);
+  const autoGameAmount = useMemo(
+    () => Number(((autoPlayMinutes / 60) * parsedHourlyRate).toFixed(2)),
+    [autoPlayMinutes, parsedHourlyRate]
+  );
   const autoExtraMemberCount = useMemo(
     () => (bookingForm.bookingType === "snooker" ? Math.max(0, playerCount - includedSnookerPlayers) : 0),
     [bookingForm.bookingType, includedSnookerPlayers, playerCount]
@@ -733,14 +767,22 @@ export const GamingPage = () => {
     () => Number((autoGameAmount + autoExtraCharge + bookingProductDraftTotal).toFixed(2)),
     [autoExtraCharge, autoGameAmount, bookingProductDraftTotal]
   );
+  const autoDiscountAmount = useMemo(
+    () => calculateDiscountAmount(bookingForm.discountType, bookingForm.discountValue, autoSystemAmount),
+    [autoSystemAmount, bookingForm.discountType, bookingForm.discountValue]
+  );
+  const autoFinalAmount = useMemo(
+    () => Number(Math.max(0, autoSystemAmount - autoDiscountAmount).toFixed(2)),
+    [autoDiscountAmount, autoSystemAmount]
+  );
   const formPayableAmount = useMemo(
     () =>
       resolvePayableAmountForForm({
         status: bookingForm.status,
         finalAmount: parseOptionalNumber(bookingForm.finalAmount),
-        systemAmount: autoSystemAmount
+        systemAmount: autoFinalAmount
       }),
-    [autoSystemAmount, bookingForm.finalAmount, bookingForm.status]
+    [autoFinalAmount, bookingForm.finalAmount, bookingForm.status]
   );
   const formPaymentSplit = useMemo(
     () => ({
@@ -811,9 +853,14 @@ export const GamingPage = () => {
   useEffect(() => {
     setBookingForm((current) => {
       const nextSystem = autoSystemAmount.toFixed(2);
+      const nextDiscountedFinal = autoFinalAmount.toFixed(2);
       const nextFinal =
-        !current.finalAmount.trim() || Math.abs((Number(current.systemCalculatedAmount) || 0) - (Number(current.finalAmount) || 0)) <= AMOUNT_DIFF_THRESHOLD
-          ? nextSystem
+        !current.finalAmount.trim() ||
+        Math.abs(
+          Math.max(0, (Number(current.systemCalculatedAmount) || 0) - calculateDiscountAmount(current.discountType, current.discountValue, Number(current.systemCalculatedAmount) || 0)) -
+            (Number(current.finalAmount) || 0)
+        ) <= AMOUNT_DIFF_THRESHOLD
+          ? nextDiscountedFinal
           : current.finalAmount;
       if (current.systemCalculatedAmount === nextSystem && current.finalAmount === nextFinal) {
         return current;
@@ -824,7 +871,7 @@ export const GamingPage = () => {
         finalAmount: nextFinal
       };
     });
-  }, [autoSystemAmount]);
+  }, [autoFinalAmount, autoSystemAmount]);
 
   const statusPieData = useMemo(
     () => [
@@ -1073,8 +1120,8 @@ export const GamingPage = () => {
     }
     const finalAmount = parseOptionalNumber(bookingForm.finalAmount);
     const overrideReason = cleanText(bookingForm.amountOverrideReason);
-    if (finalAmount !== undefined && Math.abs(finalAmount - autoSystemAmount) > AMOUNT_DIFF_THRESHOLD && !overrideReason) {
-      throw new Error("Override reason is required when final amount differs from system amount.");
+    if (finalAmount !== undefined && Math.abs(finalAmount - autoFinalAmount) > AMOUNT_DIFF_THRESHOLD && !overrideReason) {
+      throw new Error("Override reason is required when final amount differs from discounted amount.");
     }
 
     let paymentMode: GamingPaymentMode | undefined;
@@ -1158,6 +1205,9 @@ export const GamingPage = () => {
       systemCalculatedAmount: autoSystemAmount,
       extraMemberCount: autoExtraMemberCount,
       extraMemberCharge: autoExtraCharge,
+      discountType: bookingForm.discountType,
+      discountValue: Number(bookingForm.discountValue) || 0,
+      discountAmount: autoDiscountAmount,
       amountOverrideReason: overrideReason,
       foodAndBeverageAmount: bookingProductDraftTotal,
       bookingChannel: cleanText(bookingForm.bookingChannel),
@@ -1165,7 +1215,17 @@ export const GamingPage = () => {
     };
 
     return sharedPayload;
-  }, [autoExtraCharge, autoExtraMemberCount, autoSystemAmount, bookingForm, bookingProductDraftTotal, editingBooking?.note, playerCount]);
+  }, [
+    autoDiscountAmount,
+    autoExtraCharge,
+    autoExtraMemberCount,
+    autoFinalAmount,
+    autoSystemAmount,
+    bookingForm,
+    bookingProductDraftTotal,
+    editingBooking?.note,
+    playerCount
+  ]);
 
   const handleSaveBooking = useCallback(async () => {
     setSaveLoading(true);
@@ -1443,6 +1503,9 @@ export const GamingPage = () => {
               <Text fontSize="xs" color="#7A6258">
                 Out: {formatDateTime(row.checkOutAt)}
               </Text>
+              <Text fontSize="xs" color="#7A6258">
+                Playing {formatDuration(row.durationMinutes)}
+              </Text>
             </VStack>
           )
         },
@@ -1455,6 +1518,12 @@ export const GamingPage = () => {
                 System {formatCurrency(row.systemCalculatedAmount)}
               </Text>
               <Text fontWeight={700}>{formatCurrency(row.finalAmount)}</Text>
+              {row.discountAmount > AMOUNT_DIFF_THRESHOLD ? (
+                <Text fontSize="xs" color="#046C4E">
+                  Discount {formatCurrency(row.discountAmount)}
+                  {row.discountType === "percentage" ? ` (${row.discountValue}%)` : ""}
+                </Text>
+              ) : null}
               <Text fontSize="xs" color="#7A6258">
                 Game {formatCurrency(row.calculatedAmount)} | Extra {formatCurrency(row.extraMemberCharge)} (
                 {row.extraMemberCount})
@@ -2065,6 +2134,43 @@ export const GamingPage = () => {
                   value={autoSystemAmount.toFixed(2)}
                   isReadOnly
                 />
+                <AppInput label="Playing Time" value={formatDuration(autoPlayMinutes)} isReadOnly />
+              </SimpleGrid>
+
+              <SimpleGrid columns={{ base: 1, md: 2, xl: 4 }} spacing={3}>
+                <FormControl>
+                  <FormLabel>Discount Type</FormLabel>
+                  <Select
+                    value={bookingForm.discountType}
+                    onChange={(event) =>
+                      setBookingForm((current) => ({
+                        ...current,
+                        discountType: event.target.value as GamingDiscountType,
+                        discountValue: event.target.value === "none" ? "0" : current.discountValue
+                      }))
+                    }
+                  >
+                    <option value="none">No Discount</option>
+                    <option value="manual">Manual Amount</option>
+                    <option value="percentage">Percentage</option>
+                  </Select>
+                </FormControl>
+                <AppInput
+                  label={bookingForm.discountType === "percentage" ? "Discount %" : "Discount Amount"}
+                  type="number"
+                  min={0}
+                  max={bookingForm.discountType === "percentage" ? 100 : undefined}
+                  step="0.01"
+                  value={bookingForm.discountValue}
+                  isDisabled={bookingForm.discountType === "none"}
+                  onChange={(event) =>
+                    setBookingForm((current) => ({
+                      ...current,
+                      discountValue: (event.target as HTMLInputElement).value
+                    }))
+                  }
+                />
+                <AppInput label="Discount Applied" value={formatCurrency(autoDiscountAmount)} isReadOnly />
                 <AppInput
                   label="Final Amount"
                   type="number"
@@ -2096,7 +2202,8 @@ export const GamingPage = () => {
               <Text fontSize="sm" color="#7A6258">
                 Auto Calculation: Game {formatCurrency(autoGameAmount)} + Extra Player Charge{" "}
                 {formatCurrency(autoExtraCharge)} + Products {formatCurrency(bookingProductDraftTotal)} = System{" "}
-                {formatCurrency(autoSystemAmount)}
+                {formatCurrency(autoSystemAmount)} | Discount {formatCurrency(autoDiscountAmount)} | Final{" "}
+                {formatCurrency(autoFinalAmount)}
               </Text>
               {bookingForm.bookingType === "snooker" ? (
                 <Text fontSize="xs" color="#8A6F63">
@@ -2106,7 +2213,7 @@ export const GamingPage = () => {
               ) : null}
 
               <AppInput
-                label="Override Reason (required when Final differs from System)"
+                label="Override Reason (required when Final differs after discount)"
                 value={bookingForm.amountOverrideReason}
                 onChange={(event) =>
                   setBookingForm((current) => ({

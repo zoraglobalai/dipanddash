@@ -22,6 +22,8 @@ import {
 } from "@chakra-ui/react";
 import { useMemo, useState, type ReactNode } from "react";
 
+import { PosLoadingState } from "@/components/common/PosLoadingState";
+
 export type PosTableColumn<T> = {
   key: string;
   header: ReactNode;
@@ -122,7 +124,7 @@ export const PosDataTable = <T,>({
             {loading ? (
               <Tr>
                 <Td colSpan={visibleColumns.length + (hasHiddenColumns ? 1 : 0)}>
-                  <Text color="#6D584E">{loadingMessage}</Text>
+                  <PosLoadingState message={loadingMessage} compact minH="150px" />
                 </Td>
               </Tr>
             ) : rows.length ? (

@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
 import {
-  Box,
   Button,
   HStack,
   Modal,
@@ -17,14 +16,12 @@ import { PosProvider } from "@/app/PosContext";
 import { PosLoginPage } from "@/app/PosLoginPage";
 import { StaffDesktopShell } from "@/app/StaffDesktopShell";
 import { usePosAuth } from "@/app/PosAuthContext";
+import { PosLoadingState } from "@/components/common/PosLoadingState";
 import { checkForDesktopUpdates, type UpdateConfirmInput } from "@/lib/updater";
 
 const BootLoader = () => (
-  <VStack minH="100vh" justify="center" spacing={3} bg="linear-gradient(160deg, #FFF6E6 0%, #FFFDF9 48%, #FFFFFF 100%)">
-    <Box w="42px" h="42px" borderRadius="full" border="4px solid rgba(197, 135, 36, 0.2)" borderTopColor="#C58724" />
-    <Text color="#6D584E" fontWeight={600}>
-      Restoring staff session...
-    </Text>
+  <VStack minH="100vh" justify="center" bg="linear-gradient(160deg, #FFF6E6 0%, #FFFDF9 48%, #FFFFFF 100%)">
+    <PosLoadingState message="Restoring staff session..." detail="Preparing live POS workspace" minH="100vh" />
   </VStack>
 );
 

@@ -17,6 +17,7 @@ import {
   GAMING_PAYMENT_STATUSES,
   GAMING_RESOURCE_LABELS,
   SNOOKER_RESOURCES,
+  type GamingDiscountType,
   type GamingPaymentChannel,
   type GamingPaymentMode,
   type GamingBookingStatus,
@@ -75,6 +76,9 @@ type CreateBookingInput = {
   systemCalculatedAmount?: number;
   extraMemberCount?: number;
   extraMemberCharge?: number;
+  discountType?: GamingDiscountType;
+  discountValue?: number;
+  discountAmount?: number;
   amountOverrideReason?: string;
   checkOutAt?: string;
   foodOrderReference?: string;
@@ -103,6 +107,9 @@ type UpdateBookingInput = {
   systemCalculatedAmount?: number;
   extraMemberCount?: number;
   extraMemberCharge?: number;
+  discountType?: GamingDiscountType;
+  discountValue?: number;
+  discountAmount?: number;
   amountOverrideReason?: string;
   foodOrderReference?: string;
   foodInvoiceNumber?: string;
@@ -168,6 +175,42 @@ const EMPTY_PAYMENT_BREAKDOWN: PaymentBreakdown = {
 
 const getPaymentBreakdownTotal = (value: PaymentBreakdown) =>
   roundCurrency(value.cash + value.card + value.upi);
+
+const normalizeDiscount = (
+  input: {
+    discountType?: GamingDiscountType | null;
+    discountValue?: number | null;
+    discountAmount?: number | null;
+  },
+  systemAmount: number
+) => {
+  const type = input.discountType ?? (toNumber(input.discountAmount) > AMOUNT_DIFF_THRESHOLD ? "manual" : "none");
+  const safeSystemAmount = roundCurrency(Math.max(0, systemAmount));
+  if (type === "percentage") {
+    const value = roundCurrency(Math.min(Math.max(0, toNumber(input.discountValue)), 100));
+    return {
+      discountType: "percentage" as const,
+      discountValue: value,
+      discountAmount: roundCurrency(Math.min((safeSystemAmount * value) / 100, safeSystemAmount))
+    };
+  }
+  if (type === "manual") {
+    const value = roundCurrency(Math.max(0, toNumber(input.discountValue, toNumber(input.discountAmount))));
+    return {
+      discountType: "manual" as const,
+      discountValue: value,
+      discountAmount: roundCurrency(Math.min(value, safeSystemAmount))
+    };
+  }
+  return {
+    discountType: "none" as const,
+    discountValue: 0,
+    discountAmount: 0
+  };
+};
+
+const getDiscountedAmount = (systemAmount: number, discountAmount: number) =>
+  roundCurrency(Math.max(0, roundCurrency(systemAmount) - roundCurrency(Math.max(0, discountAmount))));
 
 const buildDateRange = (input: { dateFrom?: string; dateTo?: string }) => {
   const from = input.dateFrom ? parseDateOrThrow(`${input.dateFrom}T00:00:00.000Z`, "Date from") : null;
@@ -318,14 +361,16 @@ export class GamingService {
   }
 
   private getCollectibleAmountForBooking(
-    booking: Pick<GamingBooking, "status" | "finalAmount" | "systemCalculatedAmount">
+    booking: Pick<GamingBooking, "status" | "finalAmount" | "systemCalculatedAmount"> & {
+      discountAmount?: number;
+    }
   ) {
     const finalAmount = toNumber(booking.finalAmount);
     const systemAmount = toNumber(booking.systemCalculatedAmount);
     if (booking.status === "completed") {
-      return roundCurrency(finalAmount > 0 ? finalAmount : systemAmount);
+      return roundCurrency(finalAmount > 0 ? finalAmount : getDiscountedAmount(systemAmount, toNumber(booking.discountAmount)));
     }
-    return roundCurrency(systemAmount);
+    return getDiscountedAmount(systemAmount, toNumber(booking.discountAmount));
   }
 
   private sanitizePayment(
@@ -452,9 +497,9 @@ export class GamingService {
     };
   }
 
-  private assertAmountOverrideReason(finalAmount: number, systemCalculatedAmount: number, reason: string | null) {
+  private assertAmountOverrideReason(finalAmount: number, expectedFinalAmount: number, reason: string | null) {
     void finalAmount;
-    void systemCalculatedAmount;
+    void expectedFinalAmount;
     void reason;
   }
 
@@ -489,7 +534,15 @@ export class GamingService {
     const extraMemberCountStored = Math.max(0, Math.floor(toNumber(booking.extraMemberCount, systemFromFormula.extraMemberCount)));
     const extraMemberChargeStored = roundCurrency(Math.max(0, toNumber(booking.extraMemberCharge, systemFromFormula.extraMemberCharge)));
 
-    const fallbackFinalAmount = systemFromFormula.systemCalculatedAmount;
+    const discount = normalizeDiscount(
+      {
+        discountType: booking.discountType,
+        discountValue: toNumber(booking.discountValue),
+        discountAmount: toNumber(booking.discountAmount)
+      },
+      systemCalculatedAmountStored
+    );
+    const fallbackFinalAmount = getDiscountedAmount(systemCalculatedAmountStored, discount.discountAmount);
     const finalAmount =
       booking.status === "completed"
         ? (finalAmountStored > 0 ? finalAmountStored : fallbackFinalAmount)
@@ -497,7 +550,8 @@ export class GamingService {
     const targetPayableAmount = this.getCollectibleAmountForBooking({
       status: booking.status,
       finalAmount,
-      systemCalculatedAmount: systemCalculatedAmountStored
+      systemCalculatedAmount: systemCalculatedAmountStored,
+      discountAmount: discount.discountAmount
     });
     const paymentBreakdownStored = this.getPaymentBreakdownFromBooking(booking);
     const paymentBreakdownTotal = getPaymentBreakdownTotal(paymentBreakdownStored);
@@ -537,8 +591,11 @@ export class GamingService {
       finalAmount,
       extraMemberCount: extraMemberCountStored,
       extraMemberCharge: extraMemberChargeStored,
+      discountType: discount.discountType,
+      discountValue: discount.discountValue,
+      discountAmount: discount.discountAmount,
       amountOverrideReason: cleanText(booking.amountOverrideReason),
-      isAmountOverridden: hasAmountDiff(finalAmount, systemCalculatedAmountStored),
+      isAmountOverridden: hasAmountDiff(finalAmount, fallbackFinalAmount),
       status: booking.status,
       paymentStatus: booking.paymentStatus,
       paymentMode: normalizedPaymentMode,
@@ -693,15 +750,17 @@ export class GamingService {
       gameAmount: calculated.amount,
       foodAndBeverageAmount: initialFoodAmount
     });
+    const discount = normalizeDiscount(input, systemSnapshot.systemCalculatedAmount);
+    const expectedFinalAmount = getDiscountedAmount(systemSnapshot.systemCalculatedAmount, discount.discountAmount);
     const overrideReason = cleanText(input.amountOverrideReason);
     const finalizedAmount = roundCurrency(
-      Math.max(0, toNumber(input.finalAmount, status === "completed" ? systemSnapshot.systemCalculatedAmount : 0))
+      Math.max(0, toNumber(input.finalAmount, status === "completed" ? expectedFinalAmount : 0))
     );
     if (status === "completed") {
-      this.assertAmountOverrideReason(finalizedAmount, systemSnapshot.systemCalculatedAmount, overrideReason);
+      this.assertAmountOverrideReason(finalizedAmount, expectedFinalAmount, overrideReason);
     }
     const targetPayableAmount =
-      status === "completed" ? (finalizedAmount > 0 ? finalizedAmount : systemSnapshot.systemCalculatedAmount) : systemSnapshot.systemCalculatedAmount;
+      status === "completed" ? (finalizedAmount > 0 ? finalizedAmount : expectedFinalAmount) : expectedFinalAmount;
     const payment = this.sanitizePayment(
       {
         paymentStatus: input.paymentStatus,
@@ -733,8 +792,11 @@ export class GamingService {
       systemCalculatedAmount: systemSnapshot.systemCalculatedAmount,
       extraMemberCount: systemSnapshot.extraMemberCount,
       extraMemberCharge: systemSnapshot.extraMemberCharge,
+      discountType: discount.discountType,
+      discountValue: discount.discountValue,
+      discountAmount: discount.discountAmount,
       amountOverrideReason:
-        status === "completed" && hasAmountDiff(finalizedAmount, systemSnapshot.systemCalculatedAmount)
+        status === "completed" && hasAmountDiff(finalizedAmount, expectedFinalAmount)
           ? overrideReason
           : null,
       status,
@@ -913,23 +975,35 @@ export class GamingService {
     booking.extraMemberCharge = roundCurrency(
       Math.max(0, toNumber(input.extraMemberCharge, derivedSystemSnapshot.extraMemberCharge))
     );
+    const discount = normalizeDiscount(
+      {
+        discountType: input.discountType ?? booking.discountType,
+        discountValue: input.discountValue ?? toNumber(booking.discountValue),
+        discountAmount: input.discountAmount ?? toNumber(booking.discountAmount)
+      },
+      booking.systemCalculatedAmount
+    );
+    const expectedFinalAmount = getDiscountedAmount(booking.systemCalculatedAmount, discount.discountAmount);
+    booking.discountType = discount.discountType;
+    booking.discountValue = discount.discountValue;
+    booking.discountAmount = discount.discountAmount;
 
     if (input.finalAmount !== undefined) {
       const nextFinalAmount = roundCurrency(Math.max(0, toNumber(input.finalAmount)));
       const overrideReason = cleanText(input.amountOverrideReason);
-      this.assertAmountOverrideReason(nextFinalAmount, booking.systemCalculatedAmount, overrideReason);
+      this.assertAmountOverrideReason(nextFinalAmount, expectedFinalAmount, overrideReason);
       booking.finalAmount = nextFinalAmount;
       booking.amountOverrideReason =
-        hasAmountDiff(nextFinalAmount, booking.systemCalculatedAmount) && overrideReason ? overrideReason : null;
+        hasAmountDiff(nextFinalAmount, expectedFinalAmount) && overrideReason ? overrideReason : null;
     } else if (booking.status === "completed" && toNumber(booking.finalAmount) <= 0) {
-      booking.finalAmount = booking.systemCalculatedAmount;
+      booking.finalAmount = expectedFinalAmount;
     }
 
     if (booking.status === "completed") {
       const overrideReason = cleanText(input.amountOverrideReason ?? booking.amountOverrideReason);
-      this.assertAmountOverrideReason(toNumber(booking.finalAmount), booking.systemCalculatedAmount, overrideReason);
+      this.assertAmountOverrideReason(toNumber(booking.finalAmount), expectedFinalAmount, overrideReason);
       booking.amountOverrideReason =
-        hasAmountDiff(toNumber(booking.finalAmount), booking.systemCalculatedAmount) && overrideReason
+        hasAmountDiff(toNumber(booking.finalAmount), expectedFinalAmount) && overrideReason
           ? overrideReason
           : null;
       if (!booking.checkOutAt) {
@@ -953,7 +1027,8 @@ export class GamingService {
       this.getCollectibleAmountForBooking({
         status: booking.status,
         finalAmount: booking.finalAmount,
-        systemCalculatedAmount: booking.systemCalculatedAmount
+        systemCalculatedAmount: booking.systemCalculatedAmount,
+        discountAmount: booking.discountAmount
       })
     );
     booking.paymentStatus = payment.paymentStatus;
@@ -981,6 +1056,9 @@ export class GamingService {
       systemCalculatedAmount?: number;
       extraMemberCount?: number;
       extraMemberCharge?: number;
+      discountType?: GamingDiscountType;
+      discountValue?: number;
+      discountAmount?: number;
       amountOverrideReason?: string;
       paymentStatus?: "pending" | "paid";
       paymentMode?: GamingPaymentMode;
@@ -1029,9 +1107,18 @@ export class GamingService {
     const extraMemberCharge = roundCurrency(
       Math.max(0, toNumber(input.extraMemberCharge, derivedSystemSnapshot.extraMemberCharge))
     );
-    const finalAmount = roundCurrency(Math.max(0, toNumber(input.finalAmount, systemCalculatedAmount)));
+    const discount = normalizeDiscount(
+      {
+        discountType: input.discountType ?? booking.discountType,
+        discountValue: input.discountValue ?? toNumber(booking.discountValue),
+        discountAmount: input.discountAmount ?? toNumber(booking.discountAmount)
+      },
+      systemCalculatedAmount
+    );
+    const expectedFinalAmount = getDiscountedAmount(systemCalculatedAmount, discount.discountAmount);
+    const finalAmount = roundCurrency(Math.max(0, toNumber(input.finalAmount, expectedFinalAmount)));
     const amountOverrideReason = cleanText(input.amountOverrideReason);
-    this.assertAmountOverrideReason(finalAmount, systemCalculatedAmount, amountOverrideReason);
+    this.assertAmountOverrideReason(finalAmount, expectedFinalAmount, amountOverrideReason);
     const payment = this.sanitizePayment(
       {
         paymentStatus: input.paymentStatus ?? booking.paymentStatus,
@@ -1043,7 +1130,7 @@ export class GamingService {
         paymentMode: booking.paymentMode,
         paymentBreakdown: this.getPaymentBreakdownFromBooking(booking)
       },
-      finalAmount > 0 ? finalAmount : systemCalculatedAmount
+      finalAmount > 0 ? finalAmount : expectedFinalAmount
     );
 
     booking.checkOutAt = checkOutAt;
@@ -1053,7 +1140,10 @@ export class GamingService {
     booking.systemCalculatedAmount = systemCalculatedAmount;
     booking.extraMemberCount = extraMemberCount;
     booking.extraMemberCharge = extraMemberCharge;
-    booking.amountOverrideReason = hasAmountDiff(finalAmount, systemCalculatedAmount) ? amountOverrideReason : null;
+    booking.discountType = discount.discountType;
+    booking.discountValue = discount.discountValue;
+    booking.discountAmount = discount.discountAmount;
+    booking.amountOverrideReason = hasAmountDiff(finalAmount, expectedFinalAmount) ? amountOverrideReason : null;
     booking.paymentStatus = payment.paymentStatus;
     booking.paymentMode = payment.paymentMode;
     booking.paidCashAmount = payment.paymentBreakdown.cash;
@@ -1106,7 +1196,8 @@ export class GamingService {
       this.getCollectibleAmountForBooking({
         status: booking.status,
         finalAmount: booking.finalAmount,
-        systemCalculatedAmount: booking.systemCalculatedAmount
+        systemCalculatedAmount: booking.systemCalculatedAmount,
+        discountAmount: booking.discountAmount
       })
     );
     booking.paymentStatus = payment.paymentStatus;
@@ -1475,17 +1566,29 @@ export class GamingService {
     existing.extraMemberCharge = roundCurrency(
       Math.max(0, toNumber(input.extraMemberCharge, derivedSystemSnapshot.extraMemberCharge))
     );
+    const discount = normalizeDiscount(
+      {
+        discountType: input.discountType ?? existing.discountType,
+        discountValue: input.discountValue ?? toNumber(existing.discountValue),
+        discountAmount: input.discountAmount ?? toNumber(existing.discountAmount)
+      },
+      existing.systemCalculatedAmount
+    );
+    const expectedFinalAmount = getDiscountedAmount(existing.systemCalculatedAmount, discount.discountAmount);
+    existing.discountType = discount.discountType;
+    existing.discountValue = discount.discountValue;
+    existing.discountAmount = discount.discountAmount;
 
     const overrideReason = cleanText(input.amountOverrideReason);
     if (Number.isFinite(input.finalAmount)) {
       existing.finalAmount = roundCurrency(Math.max(0, Number(input.finalAmount)));
     } else if (status === "completed" && toNumber(existing.finalAmount) <= 0) {
-      existing.finalAmount = existing.systemCalculatedAmount;
+      existing.finalAmount = expectedFinalAmount;
     }
     if (status === "completed") {
-      this.assertAmountOverrideReason(toNumber(existing.finalAmount), existing.systemCalculatedAmount, overrideReason);
+      this.assertAmountOverrideReason(toNumber(existing.finalAmount), expectedFinalAmount, overrideReason);
       existing.amountOverrideReason =
-        hasAmountDiff(toNumber(existing.finalAmount), existing.systemCalculatedAmount) && overrideReason
+        hasAmountDiff(toNumber(existing.finalAmount), expectedFinalAmount) && overrideReason
           ? overrideReason
           : null;
     } else if (input.amountOverrideReason !== undefined) {
@@ -1510,7 +1613,8 @@ export class GamingService {
       this.getCollectibleAmountForBooking({
         status: existing.status,
         finalAmount: existing.finalAmount,
-        systemCalculatedAmount: existing.systemCalculatedAmount
+        systemCalculatedAmount: existing.systemCalculatedAmount,
+        discountAmount: existing.discountAmount
       })
     );
     existing.paymentStatus = payment.paymentStatus;

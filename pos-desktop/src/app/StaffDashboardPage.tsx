@@ -1,6 +1,7 @@
 import { Alert, AlertIcon, Box, SimpleGrid, Text, VStack, useToast } from "@chakra-ui/react";
 import { useEffect, useState } from "react";
 
+import { PosLoadingState } from "@/components/common/PosLoadingState";
 import { staffDashboardService } from "@/services/staff-dashboard.service";
 import type { StaffDashboardData } from "@/types/dashboard";
 
@@ -33,6 +34,11 @@ export const StaffDashboardPage = () => {
 
   return (
     <VStack spacing={4} align="stretch">
+      {loading ? (
+        <Box bg="white" borderRadius="14px" border="1px solid rgba(132, 79, 52, 0.2)">
+          <PosLoadingState message="Loading dashboard..." detail="Syncing staff shift, kitchen, and billing totals" minH="260px" />
+        </Box>
+      ) : null}
       <Box p={4} bg="white" borderRadius="14px" border="1px solid rgba(132, 79, 52, 0.2)">
         <Text fontSize="2xl" fontWeight={900} color="#2A1A14">
           {loading ? "Loading dashboard..." : data?.welcomeTitle ?? "Welcome"}

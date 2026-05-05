@@ -69,6 +69,13 @@ export const gamingService = {
     payload?: {
       checkOutAt?: string;
       finalAmount?: number;
+      systemCalculatedAmount?: number;
+      extraMemberCount?: number;
+      extraMemberCharge?: number;
+      discountType?: "none" | "manual" | "percentage";
+      discountValue?: number;
+      discountAmount?: number;
+      amountOverrideReason?: string;
       paymentStatus?: "pending" | "paid";
       paymentMode?: GamingPaymentMode;
       paymentBreakdown?: {

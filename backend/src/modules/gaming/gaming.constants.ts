@@ -3,12 +3,14 @@ export const GAMING_BOOKING_STATUSES = ["upcoming", "ongoing", "completed", "can
 export const GAMING_PAYMENT_STATUSES = ["pending", "paid", "refunded"] as const;
 export const GAMING_PAYMENT_CHANNELS = ["cash", "upi", "card"] as const;
 export const GAMING_PAYMENT_MODES = [...GAMING_PAYMENT_CHANNELS, "mixed"] as const;
+export const GAMING_DISCOUNT_TYPES = ["none", "manual", "percentage"] as const;
 
 export type GamingBookingType = (typeof GAMING_BOOKING_TYPES)[number];
 export type GamingBookingStatus = (typeof GAMING_BOOKING_STATUSES)[number];
 export type GamingPaymentStatus = (typeof GAMING_PAYMENT_STATUSES)[number];
 export type GamingPaymentChannel = (typeof GAMING_PAYMENT_CHANNELS)[number];
 export type GamingPaymentMode = (typeof GAMING_PAYMENT_MODES)[number];
+export type GamingDiscountType = (typeof GAMING_DISCOUNT_TYPES)[number];
 
 export const SNOOKER_RESOURCES = [
   "board_1",
