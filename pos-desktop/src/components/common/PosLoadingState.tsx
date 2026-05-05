@@ -1,4 +1,4 @@
-import { Box, HStack, Text, VStack } from "@chakra-ui/react";
+import { Box, Text, VStack } from "@chakra-ui/react";
 import { keyframes } from "@emotion/react";
 
 type PosLoadingStateProps = {
@@ -8,21 +8,36 @@ type PosLoadingStateProps = {
   compact?: boolean;
 };
 
-const roll = keyframes`
-  0% { transform: translateX(-18px) rotate(0deg); }
-  50% { transform: translateX(18px) rotate(180deg); }
-  100% { transform: translateX(-18px) rotate(360deg); }
+const spinColor = keyframes`
+  0% {
+    transform: rotate(0deg);
+    border-top-color: #1f7a5a;
+    border-right-color: #d99a2b;
+  }
+  33% {
+    border-top-color: #d94f35;
+    border-right-color: #1f7a5a;
+  }
+  66% {
+    border-top-color: #2f6fd6;
+    border-right-color: #d94f35;
+  }
+  100% {
+    transform: rotate(360deg);
+    border-top-color: #1f7a5a;
+    border-right-color: #d99a2b;
+  }
 `;
 
-const steam = keyframes`
-  0% { opacity: 0.2; transform: translateY(8px) scaleY(0.7); }
-  50% { opacity: 0.85; transform: translateY(-4px) scaleY(1); }
-  100% { opacity: 0.2; transform: translateY(8px) scaleY(0.7); }
-`;
-
-const glow = keyframes`
-  0%, 100% { box-shadow: 0 0 0 0 rgba(197, 135, 36, 0.24); }
-  50% { box-shadow: 0 0 0 8px rgba(197, 135, 36, 0.04); }
+const pulseRing = keyframes`
+  0%, 100% {
+    transform: scale(0.92);
+    opacity: 0.36;
+  }
+  50% {
+    transform: scale(1.08);
+    opacity: 0.12;
+  }
 `;
 
 export const PosLoadingState = ({
@@ -39,51 +54,29 @@ export const PosLoadingState = ({
     spacing={compact ? 2 : 4}
     color="#4B352C"
   >
-    <Box position="relative" w={compact ? "92px" : "128px"} h={compact ? "46px" : "62px"}>
+    <Box
+      position="relative"
+      display="grid"
+      placeItems="center"
+      w={compact ? "42px" : "58px"}
+      h={compact ? "42px" : "58px"}
+    >
       <Box
         position="absolute"
-        left="50%"
-        top={compact ? "16px" : "22px"}
-        w={compact ? "68px" : "94px"}
-        h={compact ? "18px" : "24px"}
-        transform="translateX(-50%)"
-        borderRadius="999px"
-        bg="linear-gradient(90deg, #244C3A 0%, #2F6B50 48%, #244C3A 100%)"
-        border="2px solid rgba(42, 26, 20, 0.16)"
-        animation={`${glow} 1.8s ease-in-out infinite`}
-      />
-      <Box
-        position="absolute"
-        left="50%"
-        top={compact ? "19px" : "26px"}
-        w={compact ? "13px" : "17px"}
-        h={compact ? "13px" : "17px"}
-        ml={compact ? "-6.5px" : "-8.5px"}
+        inset={0}
         borderRadius="full"
-        bg="#FFFDF7"
-        border="2px solid #A93D2B"
-        animation={`${roll} 1.45s ease-in-out infinite`}
+        bg="rgba(31, 122, 90, 0.18)"
+        animation={`${pulseRing} 1.4s ease-in-out infinite`}
       />
-      <HStack position="absolute" right={compact ? "2px" : "0"} top={compact ? "3px" : "4px"} spacing={compact ? 0.5 : 1}>
-        {[0, 1, 2].map((item) => (
-          <Box
-            key={item}
-            w={compact ? "3px" : "4px"}
-            h={compact ? "16px" : "22px"}
-            borderRadius="full"
-            bg="rgba(197, 135, 36, 0.58)"
-            animation={`${steam} ${1.1 + item * 0.16}s ease-in-out infinite`}
-          />
-        ))}
-      </HStack>
       <Box
-        position="absolute"
-        right={compact ? "12px" : "18px"}
-        bottom={compact ? "2px" : "0"}
-        w={compact ? "28px" : "38px"}
-        h={compact ? "8px" : "10px"}
-        borderRadius="0 0 999px 999px"
-        bg="#C58724"
+        w={compact ? "30px" : "40px"}
+        h={compact ? "30px" : "40px"}
+        borderRadius="full"
+        border={compact ? "3px solid" : "4px solid"}
+        borderColor="rgba(75, 53, 44, 0.14)"
+        borderTopColor="#1f7a5a"
+        borderRightColor="#d99a2b"
+        animation={`${spinColor} 0.9s linear infinite`}
       />
     </Box>
     <VStack spacing={1}>
