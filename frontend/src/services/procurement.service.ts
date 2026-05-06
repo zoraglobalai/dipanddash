@@ -4,6 +4,7 @@ import type {
   CreatePurchaseOrderInput,
   ProductBulkImportResult,
   ProductDayLedgerResponse,
+  ProductStockHistoryResponse,
   PurchaseBulkImportResult,
   ProcurementMetaResponse,
   ProcurementStatsResponse,
@@ -245,6 +246,26 @@ export const procurementService = {
     const response = await apiClient.get<ApiSuccess<ProductDayLedgerResponse>>("/procurement/products/ledger", {
       params
     });
+    return response.data;
+  },
+
+  getProductStockHistory: async (
+    productId: string,
+    params?: {
+      dateFrom?: string;
+      dateTo?: string;
+      purchasePage?: number;
+      purchaseLimit?: number;
+      consumptionPage?: number;
+      consumptionLimit?: number;
+    }
+  ) => {
+    const response = await apiClient.get<ApiSuccess<ProductStockHistoryResponse>>(
+      `/procurement/products/${productId}/stock-history`,
+      {
+        params
+      }
+    );
     return response.data;
   },
 

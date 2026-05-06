@@ -129,6 +129,18 @@ export class ProcurementController {
     return sendSuccess(res, StatusCodes.OK, "Product fetched successfully", { product });
   };
 
+  getProductStockHistory = async (req: Request, res: Response): Promise<Response> => {
+    const data = await this.procurementService.getProductStockHistory(req.params.id, {
+      dateFrom: typeof req.query.dateFrom === "string" ? req.query.dateFrom : undefined,
+      dateTo: typeof req.query.dateTo === "string" ? req.query.dateTo : undefined,
+      purchasePage: parsePositiveInt(req.query.purchasePage, 1),
+      purchaseLimit: parsePositiveInt(req.query.purchaseLimit, 10),
+      consumptionPage: parsePositiveInt(req.query.consumptionPage, 1),
+      consumptionLimit: parsePositiveInt(req.query.consumptionLimit, 10)
+    });
+    return sendSuccess(res, StatusCodes.OK, "Product stock history fetched successfully", data);
+  };
+
   listProductLedger = async (req: Request, res: Response): Promise<Response> => {
     const data = await this.procurementService.getProductDayLedger({
       date: typeof req.query.date === "string" ? req.query.date : undefined,

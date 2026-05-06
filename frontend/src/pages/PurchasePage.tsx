@@ -54,6 +54,7 @@ import type {
   ProductDayLedgerResponse,
   ProductListItem,
   ProductListResponse,
+  ProductStockHistoryResponse,
   ProductExpiryStatus,
   ProcurementMetaResponse,
   ProcurementStatsResponse,
@@ -89,6 +90,21 @@ const formatDate = (value: string) => {
     return value;
   }
   return date.toLocaleDateString("en-IN", { year: "numeric", month: "short", day: "2-digit" });
+};
+
+const formatDateTime = (value: string) => {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleString("en-IN", {
+    year: "numeric",
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true
+  });
 };
 
 const getTodayDate = () => {
@@ -167,6 +183,17 @@ const formatTargetSectionLabel = (value: ProductTargetSection) => {
 
 const formatPurchaseSectionLabel = (value: PurchaseSection) =>
   value === "gaming" ? "Snooker / Gaming" : "Dip & Dash";
+
+const formatOrderTypeLabel = (value: string) => {
+  if (value === "snooker") {
+    return "Snooker / Gaming";
+  }
+  return value
+    .split("_")
+    .filter(Boolean)
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(" ");
+};
 
 type DraftPurchaseLine = {
   id: string;
@@ -1201,6 +1228,8 @@ const ProductFormModal = memo(({ isOpen, onClose, loading, initialData, supplier
 ProductFormModal.displayName = "ProductFormModal";
 
 type ProductLedgerRow = ProductDayLedgerResponse["rows"][number];
+type ProductStockHistoryPurchaseRow = ProductStockHistoryResponse["purchases"]["rows"][number];
+type ProductStockHistoryConsumptionRow = ProductStockHistoryResponse["consumptions"]["rows"][number];
 
 type ProductLedgerEditModalProps = {
   isOpen: boolean;
@@ -1497,6 +1526,13 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
   const debouncedStockOverviewSearch = useDebouncedValue(stockOverviewSearch, 350);
   const [stockOverviewPage, setStockOverviewPage] = useState(1);
   const stockOverviewLimit = 10;
+  const [stockHistoryProduct, setStockHistoryProduct] = useState<ProductListItem | null>(null);
+  const [stockHistoryData, setStockHistoryData] = useState<ProductStockHistoryResponse | null>(null);
+  const [stockHistoryLoading, setStockHistoryLoading] = useState(false);
+  const [stockHistoryPurchasePage, setStockHistoryPurchasePage] = useState(1);
+  const [stockHistoryConsumptionPage, setStockHistoryConsumptionPage] = useState(1);
+  const stockHistoryPurchaseLimit = 10;
+  const stockHistoryConsumptionLimit = 10;
   const [productSearch, setProductSearch] = useState("");
   const debouncedProductSearch = useDebouncedValue(productSearch, 350);
   const [productCategoryFilter, setProductCategoryFilter] = useState("");
@@ -1551,6 +1587,7 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
   const ledgerEditModal = useDisclosure();
   const resetLedgerDialog = useDisclosure();
   const deleteLedgerDialog = useDisclosure();
+  const stockHistoryModal = useDisclosure();
 
   const loadMeta = useCallback(
     async (date?: string) => {
@@ -1655,6 +1692,33 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
     }
   }, [debouncedStockOverviewSearch, stockOverviewPage, toast]);
 
+  const loadProductStockHistory = useCallback(async () => {
+    if (!stockHistoryProduct) {
+      return;
+    }
+    setStockHistoryLoading(true);
+    try {
+      const response = await procurementService.getProductStockHistory(stockHistoryProduct.id, {
+        purchasePage: stockHistoryPurchasePage,
+        purchaseLimit: stockHistoryPurchaseLimit,
+        consumptionPage: stockHistoryConsumptionPage,
+        consumptionLimit: stockHistoryConsumptionLimit
+      });
+      setStockHistoryData(response.data);
+    } catch (error) {
+      toast.error("Unable to fetch product stock history", extractErrorMessage(error));
+    } finally {
+      setStockHistoryLoading(false);
+    }
+  }, [
+    stockHistoryConsumptionLimit,
+    stockHistoryConsumptionPage,
+    stockHistoryProduct,
+    stockHistoryPurchaseLimit,
+    stockHistoryPurchasePage,
+    toast
+  ]);
+
   const loadProductLedger = useCallback(async () => {
     setProductLedgerLoading(true);
     try {
@@ -1705,6 +1769,13 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
   useEffect(() => {
     void loadStockOverview();
   }, [loadStockOverview]);
+
+  useEffect(() => {
+    if (!stockHistoryModal.isOpen || !stockHistoryProduct) {
+      return;
+    }
+    void loadProductStockHistory();
+  }, [loadProductStockHistory, stockHistoryModal.isOpen, stockHistoryProduct]);
 
   useEffect(() => {
     setProductPage(1);
@@ -1857,6 +1928,17 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
       deleteLedgerDialog.onOpen();
     },
     [deleteLedgerDialog]
+  );
+
+  const openProductStockHistory = useCallback(
+    (row: ProductListItem) => {
+      setStockHistoryProduct(row);
+      setStockHistoryData(null);
+      setStockHistoryPurchasePage(1);
+      setStockHistoryConsumptionPage(1);
+      stockHistoryModal.onOpen();
+    },
+    [stockHistoryModal]
   );
 
   const openViewOrder = useCallback(
@@ -2395,6 +2477,15 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
                   >
                     {getStockOverviewCalculatedCurrentStock(row) <= row.minStock ? "Low Stock" : "Healthy"}
                   </Box>
+                )
+              },
+              {
+                key: "history",
+                header: "History",
+                render: (row: ProductListItem) => (
+                  <AppButton size="sm" variant="outline" onClick={() => openProductStockHistory(row)}>
+                    View History
+                  </AppButton>
                 )
               }
             ]}
@@ -3206,6 +3297,248 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
           productOptions={productLedgerEditOptions}
           onSubmit={handleSaveLedgerRecord}
         />
+      ) : null}
+
+      {stockHistoryModal.isOpen ? (
+        <Modal
+          isOpen={stockHistoryModal.isOpen}
+          onClose={() => {
+            stockHistoryModal.onClose();
+            setStockHistoryProduct(null);
+            setStockHistoryData(null);
+            setStockHistoryPurchasePage(1);
+            setStockHistoryConsumptionPage(1);
+          }}
+          size="7xl"
+          closeOnOverlayClick={false}
+        >
+          <ModalOverlay />
+          <ModalContent borderRadius="16px">
+            <ModalHeader>
+              Product Stock History
+              {stockHistoryProduct ? (
+                <Text mt={1} fontSize="sm" color="#7A6359" fontWeight={500}>
+                  {stockHistoryProduct.name} | {stockHistoryProduct.category}
+                </Text>
+              ) : null}
+            </ModalHeader>
+            <ModalCloseButton />
+            <ModalBody>
+              {stockHistoryLoading ? (
+                <SkeletonTable rows={8} />
+              ) : stockHistoryData ? (
+                <VStack align="stretch" spacing={4}>
+                  <SimpleGrid columns={{ base: 1, md: 3 }} spacing={3}>
+                    <AppCard p={3}>
+                      <Text fontSize="xs" color="#7B645B">Total Purchase</Text>
+                      <Text fontSize="xl" fontWeight={900}>
+                        {stockHistoryData.summary.totalPurchasedQuantity} {stockHistoryData.product.unit}
+                      </Text>
+                    </AppCard>
+                    <AppCard p={3}>
+                      <Text fontSize="xs" color="#7B645B">Total Consumption</Text>
+                      <Text fontSize="xl" fontWeight={900}>
+                        {stockHistoryData.summary.totalConsumptionQuantity} {stockHistoryData.product.unit}
+                      </Text>
+                    </AppCard>
+                    <AppCard p={3}>
+                      <Text fontSize="xs" color="#7B645B">Current Stock</Text>
+                      <Text fontSize="xl" fontWeight={900}>
+                        {stockHistoryData.summary.currentStock} {stockHistoryData.product.unit}
+                      </Text>
+                    </AppCard>
+                  </SimpleGrid>
+
+                  <AppCard p={4}>
+                    <Text fontWeight={800} mb={3}>Purchase History</Text>
+                    <DataTable
+                      columns={[
+                        {
+                          key: "purchaseDate",
+                          header: "Date",
+                          render: (row: ProductStockHistoryPurchaseRow) => formatDate(row.purchaseDate)
+                        },
+                        {
+                          key: "purchaseId",
+                          header: "Purchase ID",
+                          render: (row: ProductStockHistoryPurchaseRow) => (
+                            <Box>
+                              <Text fontWeight={700}>{row.purchaseNumber}</Text>
+                              <Text fontSize="xs" color="#7A6359">
+                                {formatPurchaseSectionLabel(row.purchaseSection)}
+                              </Text>
+                            </Box>
+                          )
+                        },
+                        {
+                          key: "supplier",
+                          header: "Supplier / Store",
+                          render: (row: ProductStockHistoryPurchaseRow) => (
+                            <Box>
+                              <Text fontWeight={700}>{row.supplierName}</Text>
+                              <Text fontSize="xs" color="#7A6359">{row.storeName || "-"}</Text>
+                            </Box>
+                          )
+                        },
+                        {
+                          key: "quantity",
+                          header: "Quantity",
+                          render: (row: ProductStockHistoryPurchaseRow) =>
+                            `${row.quantity} ${row.quantityUnit}`
+                        },
+                        {
+                          key: "lineTotal",
+                          header: "Amount",
+                          render: (row: ProductStockHistoryPurchaseRow) => formatCurrency(row.lineTotal)
+                        },
+                        {
+                          key: "createdAt",
+                          header: "Recorded At",
+                          render: (row: ProductStockHistoryPurchaseRow) => formatDateTime(row.createdAt)
+                        }
+                      ]}
+                      rows={stockHistoryData.purchases.rows}
+                      emptyState={
+                        <EmptyState
+                          title="No purchase history"
+                          description="No purchase entries found for this product."
+                        />
+                      }
+                    />
+                    <HStack justify="space-between" mt={3} flexWrap="wrap" gap={3}>
+                      <Text color="#6F594F" fontSize="sm">
+                        Showing {stockHistoryData.purchases.rows.length} of {stockHistoryData.purchases.pagination.total}
+                      </Text>
+                      <HStack>
+                        <AppButton
+                          variant="outline"
+                          isDisabled={stockHistoryPurchasePage <= 1}
+                          onClick={() => setStockHistoryPurchasePage((prev) => prev - 1)}
+                        >
+                          Previous
+                        </AppButton>
+                        <Text fontWeight={700}>
+                          Page {stockHistoryData.purchases.pagination.page} of {stockHistoryData.purchases.pagination.totalPages}
+                        </Text>
+                        <AppButton
+                          variant="outline"
+                          isDisabled={
+                            stockHistoryData.purchases.pagination.page >=
+                            stockHistoryData.purchases.pagination.totalPages
+                          }
+                          onClick={() => setStockHistoryPurchasePage((prev) => prev + 1)}
+                        >
+                          Next
+                        </AppButton>
+                      </HStack>
+                    </HStack>
+                  </AppCard>
+
+                  <AppCard p={4}>
+                    <Text fontWeight={800} mb={3}>Consumption History</Text>
+                    <DataTable
+                      columns={[
+                        {
+                          key: "consumptionDate",
+                          header: "Date",
+                          render: (row: ProductStockHistoryConsumptionRow) => formatDate(row.consumptionDate)
+                        },
+                        {
+                          key: "invoiceId",
+                          header: "Invoice ID",
+                          render: (row: ProductStockHistoryConsumptionRow) => (
+                            <Box>
+                              <Text fontWeight={700}>{row.invoiceNumber}</Text>
+                              <Text fontSize="xs" color="#7A6359">{formatOrderTypeLabel(row.orderType)}</Text>
+                            </Box>
+                          )
+                        },
+                        {
+                          key: "customer",
+                          header: "Customer",
+                          render: (row: ProductStockHistoryConsumptionRow) => (
+                            <Box>
+                              <Text fontWeight={700}>{row.customerName || "Walk-in"}</Text>
+                              <Text fontSize="xs" color="#7A6359">{row.customerPhone || "-"}</Text>
+                            </Box>
+                          )
+                        },
+                        {
+                          key: "quantity",
+                          header: "Quantity",
+                          render: (row: ProductStockHistoryConsumptionRow) => `${row.quantity} ${row.unit}`
+                        },
+                        {
+                          key: "lineTotal",
+                          header: "Amount",
+                          render: (row: ProductStockHistoryConsumptionRow) => formatCurrency(row.lineTotal)
+                        },
+                        {
+                          key: "createdAt",
+                          header: "Recorded At",
+                          render: (row: ProductStockHistoryConsumptionRow) => formatDateTime(row.createdAt)
+                        }
+                      ]}
+                      rows={stockHistoryData.consumptions.rows}
+                      emptyState={
+                        <EmptyState
+                          title="No consumption history"
+                          description="No consumption entries found for this product."
+                        />
+                      }
+                    />
+                    <HStack justify="space-between" mt={3} flexWrap="wrap" gap={3}>
+                      <Text color="#6F594F" fontSize="sm">
+                        Showing {stockHistoryData.consumptions.rows.length} of {stockHistoryData.consumptions.pagination.total}
+                      </Text>
+                      <HStack>
+                        <AppButton
+                          variant="outline"
+                          isDisabled={stockHistoryConsumptionPage <= 1}
+                          onClick={() => setStockHistoryConsumptionPage((prev) => prev - 1)}
+                        >
+                          Previous
+                        </AppButton>
+                        <Text fontWeight={700}>
+                          Page {stockHistoryData.consumptions.pagination.page} of {stockHistoryData.consumptions.pagination.totalPages}
+                        </Text>
+                        <AppButton
+                          variant="outline"
+                          isDisabled={
+                            stockHistoryData.consumptions.pagination.page >=
+                            stockHistoryData.consumptions.pagination.totalPages
+                          }
+                          onClick={() => setStockHistoryConsumptionPage((prev) => prev + 1)}
+                        >
+                          Next
+                        </AppButton>
+                      </HStack>
+                    </HStack>
+                  </AppCard>
+                </VStack>
+              ) : (
+                <EmptyState
+                  title="No history loaded"
+                  description="Select a product again to load purchase and consumption history."
+                />
+              )}
+            </ModalBody>
+            <ModalFooter>
+              <AppButton
+                variant="outline"
+                onClick={() => {
+                  stockHistoryModal.onClose();
+                  setStockHistoryProduct(null);
+                  setStockHistoryData(null);
+                  setStockHistoryPurchasePage(1);
+                  setStockHistoryConsumptionPage(1);
+                }}
+              >
+                Close
+              </AppButton>
+            </ModalFooter>
+          </ModalContent>
+        </Modal>
       ) : null}
 
       {orderDetailModal.isOpen ? (

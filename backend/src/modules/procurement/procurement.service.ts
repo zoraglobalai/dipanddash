@@ -60,6 +60,15 @@ type ProductDayLedgerFilters = PaginationFilters & {
   targetSection?: ProductTargetSection;
 };
 
+type ProductStockHistoryFilters = {
+  dateFrom?: string;
+  dateTo?: string;
+  purchasePage: number;
+  purchaseLimit: number;
+  consumptionPage: number;
+  consumptionLimit: number;
+};
+
 type UpsertProductDayLedgerPayload = {
   productId?: string;
   date?: string;
@@ -1910,6 +1919,202 @@ export class ProcurementService {
       nextExpiryDate: expiryMetricsRow?.nextExpiryDate ?? null,
       latestExpiryDate: expiryMetricsRow?.latestExpiryDate ?? null
     });
+  }
+
+  async getProductStockHistory(productId: string, filters: ProductStockHistoryFilters) {
+    const product = await this.getProductOrFail(productId);
+    const dateFrom = filters.dateFrom?.trim() || undefined;
+    const dateTo = filters.dateTo?.trim() || undefined;
+    if (dateFrom) {
+      resolveDayRangeInUtc(dateFrom);
+    }
+    if (dateTo) {
+      resolveDayRangeInUtc(dateTo);
+    }
+    if (dateFrom && dateTo && dateFrom > dateTo) {
+      throw new AppError(422, "Date to must be on or after date from.");
+    }
+
+    const purchasePage = Math.max(1, filters.purchasePage || 1);
+    const purchaseLimit = Math.min(200, Math.max(1, filters.purchaseLimit || 10));
+    const purchaseOffset = (purchasePage - 1) * purchaseLimit;
+    const consumptionPage = Math.max(1, filters.consumptionPage || 1);
+    const consumptionLimit = Math.min(200, Math.max(1, filters.consumptionLimit || 10));
+    const consumptionOffset = (consumptionPage - 1) * consumptionLimit;
+
+    const purchaseBaseQuery = this.purchaseOrderLineRepository
+      .createQueryBuilder("line")
+      .leftJoin("line.purchaseOrder", "purchaseOrder")
+      .leftJoin("purchaseOrder.supplier", "supplier")
+      .where("line.lineType = :lineType", { lineType: "product" })
+      .andWhere("line.productId = :productId", { productId })
+      .andWhere(dateFrom ? "purchaseOrder.purchaseDate >= :dateFrom" : "1=1", { dateFrom })
+      .andWhere(dateTo ? "purchaseOrder.purchaseDate <= :dateTo" : "1=1", { dateTo });
+
+    const consumptionBaseQuery = this.invoiceLineRepository
+      .createQueryBuilder("line")
+      .leftJoin("line.invoice", "invoice")
+      .leftJoin("invoice.customer", "customer")
+      .where("line.lineType = :lineType", { lineType: "product" })
+      .andWhere("CAST(line.\"referenceId\" AS text) = :productId", { productId })
+      .andWhere("invoice.status = :status", { status: "paid" })
+      .andWhere(dateFrom ? "CAST(timezone('Asia/Kolkata', invoice.\"createdAt\") AS date) >= :dateFrom" : "1=1", { dateFrom })
+      .andWhere(dateTo ? "CAST(timezone('Asia/Kolkata', invoice.\"createdAt\") AS date) <= :dateTo" : "1=1", { dateTo });
+
+    const [
+      purchaseTotal,
+      consumptionTotal,
+      purchaseTotalQuantityRow,
+      consumptionTotalQuantityRow,
+      purchaseRows,
+      consumptionRows
+    ] = await Promise.all([
+      purchaseBaseQuery.clone().getCount(),
+      consumptionBaseQuery.clone().getCount(),
+      purchaseBaseQuery
+        .clone()
+        .select("COALESCE(SUM(line.stockAdded), 0)", "quantity")
+        .getRawOne<{ quantity: string }>(),
+      consumptionBaseQuery
+        .clone()
+        .select("COALESCE(SUM(line.quantity), 0)", "quantity")
+        .getRawOne<{ quantity: string }>(),
+      purchaseBaseQuery
+        .clone()
+        .select("line.id", "id")
+        .addSelect("to_char(purchaseOrder.purchaseDate, 'YYYY-MM-DD')", "purchaseDate")
+        .addSelect("purchaseOrder.id", "purchaseOrderId")
+        .addSelect("purchaseOrder.purchaseNumber", "purchaseNumber")
+        .addSelect("purchaseOrder.purchaseSection", "purchaseSection")
+        .addSelect("supplier.name", "supplierName")
+        .addSelect("supplier.\"storeName\"", "storeName")
+        .addSelect("line.stockAdded", "stockAdded")
+        .addSelect("line.enteredQuantity", "enteredQuantity")
+        .addSelect("line.unit", "unit")
+        .addSelect("line.enteredUnit", "enteredUnit")
+        .addSelect("line.unitPrice", "unitPrice")
+        .addSelect("line.gstValue", "gstValue")
+        .addSelect("line.lineTotal", "lineTotal")
+        .addSelect("line.expiryDate", "expiryDate")
+        .addSelect("line.createdAt", "createdAt")
+        .orderBy("purchaseOrder.purchaseDate", "DESC")
+        .addOrderBy("line.createdAt", "DESC")
+        .skip(purchaseOffset)
+        .take(purchaseLimit)
+        .getRawMany<{
+          id: string;
+          purchaseDate: string;
+          purchaseOrderId: string;
+          purchaseNumber: string;
+          purchaseSection: PurchaseSection;
+          supplierName: string;
+          storeName: string | null;
+          stockAdded: string;
+          enteredQuantity: string | null;
+          unit: string;
+          enteredUnit: string | null;
+          unitPrice: string;
+          gstValue: string;
+          lineTotal: string;
+          expiryDate: string | null;
+          createdAt: string;
+        }>(),
+      consumptionBaseQuery
+        .clone()
+        .select("line.id", "id")
+        .addSelect("to_char(timezone('Asia/Kolkata', invoice.\"createdAt\"), 'YYYY-MM-DD')", "consumptionDate")
+        .addSelect("invoice.id", "invoiceId")
+        .addSelect("invoice.\"invoiceNumber\"", "invoiceNumber")
+        .addSelect("invoice.\"orderType\"", "orderType")
+        .addSelect(
+          `COALESCE(customer.name, invoice."customerSnapshot"->>'name', invoice."customerSnapshot"->>'customerName', 'Walk-in')`,
+          "customerName"
+        )
+        .addSelect(
+          `COALESCE(customer.phone, invoice."customerSnapshot"->>'phone', invoice."customerSnapshot"->>'customerPhone', '-')`,
+          "customerPhone"
+        )
+        .addSelect("line.quantity", "quantity")
+        .addSelect("line.unitPrice", "unitPrice")
+        .addSelect("line.lineTotal", "lineTotal")
+        .addSelect("line.createdAt", "createdAt")
+        .orderBy("invoice.createdAt", "DESC")
+        .addOrderBy("line.createdAt", "DESC")
+        .skip(consumptionOffset)
+        .take(consumptionLimit)
+        .getRawMany<{
+          id: string;
+          consumptionDate: string;
+          invoiceId: string;
+          invoiceNumber: string;
+          orderType: string;
+          customerName: string;
+          customerPhone: string;
+          quantity: string;
+          unitPrice: string;
+          lineTotal: string;
+          createdAt: string;
+        }>()
+    ]);
+
+    return {
+      product: {
+        id: product.id,
+        name: product.name,
+        category: product.category,
+        sku: product.sku,
+        unit: product.unit,
+        targetSection: product.targetSection,
+        currentStock: toFixedQuantity(toNumber(product.currentStock))
+      },
+      dateFrom: dateFrom ?? null,
+      dateTo: dateTo ?? null,
+      summary: {
+        totalPurchasedQuantity: toFixedQuantity(toNumber(purchaseTotalQuantityRow?.quantity ?? 0)),
+        totalConsumptionQuantity: toFixedQuantity(toNumber(consumptionTotalQuantityRow?.quantity ?? 0)),
+        currentStock: toFixedQuantity(toNumber(product.currentStock)),
+        purchaseEntries: purchaseTotal,
+        consumptionEntries: consumptionTotal
+      },
+      purchases: {
+        rows: purchaseRows.map((row) => ({
+          id: row.id,
+          purchaseDate: toYmd(row.purchaseDate),
+          purchaseOrderId: row.purchaseOrderId,
+          purchaseNumber: row.purchaseNumber,
+          purchaseSection: row.purchaseSection,
+          supplierName: row.supplierName,
+          storeName: row.storeName,
+          quantity: toFixedQuantity(toNumber(row.enteredQuantity ?? row.stockAdded)),
+          quantityUnit: row.enteredUnit || row.unit,
+          baseQuantity: toFixedQuantity(toNumber(row.stockAdded)),
+          baseUnit: row.unit,
+          unitPrice: toFixedPrice(toNumber(row.unitPrice)),
+          gstValue: toFixedPrice(toNumber(row.gstValue)),
+          lineTotal: toFixedPrice(toNumber(row.lineTotal)),
+          expiryDate: row.expiryDate,
+          createdAt: row.createdAt
+        })),
+        pagination: getPaginationMeta(purchasePage, purchaseLimit, purchaseTotal)
+      },
+      consumptions: {
+        rows: consumptionRows.map((row) => ({
+          id: row.id,
+          consumptionDate: toYmd(row.consumptionDate),
+          invoiceId: row.invoiceId,
+          invoiceNumber: row.invoiceNumber,
+          orderType: row.orderType,
+          customerName: row.customerName,
+          customerPhone: row.customerPhone,
+          quantity: toFixedQuantity(toNumber(row.quantity)),
+          unit: product.unit,
+          unitPrice: toFixedPrice(toNumber(row.unitPrice)),
+          lineTotal: toFixedPrice(toNumber(row.lineTotal)),
+          createdAt: row.createdAt
+        })),
+        pagination: getPaginationMeta(consumptionPage, consumptionLimit, consumptionTotal)
+      }
+    };
   }
 
   private async getProductLedgerOpeningBeforeDate(productId: string, date: string) {

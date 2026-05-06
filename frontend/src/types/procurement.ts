@@ -258,6 +258,65 @@ export type ProductDayLedgerResponse = {
   };
 };
 
+export type ProductStockHistoryResponse = {
+  product: {
+    id: string;
+    name: string;
+    category: string;
+    sku: string | null;
+    unit: ProductUnit;
+    targetSection: ProductTargetSection;
+    currentStock: number;
+  };
+  dateFrom: string | null;
+  dateTo: string | null;
+  summary: {
+    totalPurchasedQuantity: number;
+    totalConsumptionQuantity: number;
+    currentStock: number;
+    purchaseEntries: number;
+    consumptionEntries: number;
+  };
+  purchases: {
+    rows: Array<{
+      id: string;
+      purchaseDate: string;
+      purchaseOrderId: string;
+      purchaseNumber: string;
+      purchaseSection: PurchaseSection;
+      supplierName: string;
+      storeName: string | null;
+      quantity: number;
+      quantityUnit: string;
+      baseQuantity: number;
+      baseUnit: string;
+      unitPrice: number;
+      gstValue: number;
+      lineTotal: number;
+      expiryDate: string | null;
+      createdAt: string;
+    }>;
+    pagination: PaginationData;
+  };
+  consumptions: {
+    rows: Array<{
+      id: string;
+      consumptionDate: string;
+      invoiceId: string;
+      invoiceNumber: string;
+      orderType: string;
+      customerName: string;
+      customerPhone: string;
+      quantity: number;
+      unit: ProductUnit;
+      unitPrice: number;
+      lineTotal: number;
+      createdAt: string;
+    }>;
+    pagination: PaginationData;
+  };
+};
+
 export type PurchaseOrderDetail = {
   id: string;
   purchaseNumber: string;

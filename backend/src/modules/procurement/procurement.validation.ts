@@ -133,6 +133,20 @@ export const getProductSchema = z.object({
   })
 });
 
+export const productStockHistorySchema = z.object({
+  params: z.object({
+    id: z.string().uuid("Invalid product id")
+  }),
+  query: z.object({
+    dateFrom: z.string().regex(datePattern, "Date must be in YYYY-MM-DD format").optional(),
+    dateTo: z.string().regex(datePattern, "Date must be in YYYY-MM-DD format").optional(),
+    purchasePage: z.coerce.number().int().min(1).default(1),
+    purchaseLimit: z.coerce.number().int().min(1).max(200).default(10),
+    consumptionPage: z.coerce.number().int().min(1).default(1),
+    consumptionLimit: z.coerce.number().int().min(1).max(200).default(10)
+  })
+});
+
 export const updateProductSchema = z.object({
   params: z.object({
     id: z.string().uuid("Invalid product id")

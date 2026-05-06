@@ -22,6 +22,7 @@ import {
   procurementMetaSchema,
   procurementStatsSchema,
   procurementUnitsSchema,
+  productStockHistorySchema,
   purchaseOrderByIdSchema,
   purchaseOrderListSchema,
   supplierListSchema,
@@ -124,6 +125,12 @@ router.post(
   authorizeAssetsOrPurchaseModule,
   purchaseBulkUpload.single("file"),
   asyncHandler(procurementController.bulkImportProducts)
+);
+router.get(
+  "/products/:id/stock-history",
+  authorizeAssetsOrPurchaseModule,
+  validateRequest(productStockHistorySchema),
+  asyncHandler(procurementController.getProductStockHistory)
 );
 router.get(
   "/products/:id",
