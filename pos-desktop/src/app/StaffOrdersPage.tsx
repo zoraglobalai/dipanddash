@@ -399,7 +399,7 @@ export const StaffOrdersPage = () => {
             Completed Invoices
           </Text>
           <Text fontSize="sm" color="#705B52">
-            Server-synced completed bills with quick preview and print.
+            Live completed bills with quick preview and print.
           </Text>
         </VStack>
         <HStack align="end" flexWrap="wrap" gap={3} w={{ base: "full", "2xl": "auto" }}>

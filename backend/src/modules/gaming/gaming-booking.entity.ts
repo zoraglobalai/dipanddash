@@ -108,6 +108,9 @@ export class GamingBooking {
   @Column({ type: "varchar", length: 20, nullable: true })
   paymentMode!: GamingPaymentMode | null;
 
+  @Column({ type: "varchar", length: 120, nullable: true })
+  paymentReference!: string | null;
+
   @Column({ type: "numeric", precision: 12, scale: 2, default: 0 })
   paidCashAmount!: number;
 

@@ -901,8 +901,19 @@ export class PendingService {
         state.booking.paidUpiAmount > 0.001 ? "upi" : null
       ].filter((mode): mode is "cash" | "card" | "upi" => Boolean(mode));
       const derivedPaymentMode = activeModes.length <= 1 ? (activeModes[0] ?? null) : "mixed";
+      const digitalReferences = steps
+        .filter((step) => step.mode === "card" || step.mode === "upi")
+        .map((step) => cleanOptionalText(step.referenceNo))
+        .filter((reference): reference is string => Boolean(reference));
 
       state.booking.paymentMode = derivedPaymentMode;
+      if (digitalReferences.length) {
+        const existingReferences = cleanOptionalText(state.booking.paymentReference)
+          ?.split(",")
+          .map((reference) => reference.trim())
+          .filter(Boolean) ?? [];
+        state.booking.paymentReference = [...new Set([...existingReferences, ...digitalReferences])].join(", ");
+      }
       if (remainingAmount <= 0.001) {
         state.booking.paymentStatus = "paid";
       }

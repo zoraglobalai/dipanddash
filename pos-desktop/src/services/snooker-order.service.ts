@@ -314,23 +314,6 @@ export const snookerOrderService = {
         }
       : buildNewPendingOrder(input.booking, normalizedLines, notes);
 
-    await ordersRepository.save(order);
-    if (order.status !== "paid") {
-      await ordersRepository.upsertPendingBill({
-        localOrderId: order.localOrderId,
-        invoiceNumber: order.invoiceNumber,
-        customerName: order.customer?.name ?? input.booking.primaryCustomerName,
-        customerPhone: order.customer?.phone ?? input.booking.primaryCustomerPhone,
-        orderType: order.orderType,
-        orderChannel: order.orderChannel,
-        tableLabel: order.tableLabel,
-        kitchenStatus: order.kitchenStatus,
-        totalAmount: order.totals.totalAmount,
-        lineCount: order.lines.length,
-        updatedAt: order.updatedAt
-      });
-    }
-
     await queueInvoiceSync(order, input.snapshot, order.status === "paid" ? "paid" : "pending");
     await gamingBookingsService.updateFoodOrderLink(input.booking.localBookingId, {
       foodOrderReference: order.localOrderId,
@@ -377,8 +360,6 @@ export const snookerOrderService = {
       syncStatus: "pending"
     };
 
-    await ordersRepository.save(paidOrder);
-    await ordersRepository.removePendingBill(paidOrder.localOrderId);
     await queueInvoiceSync(paidOrder, input.snapshot, "paid", {
       mode: input.paymentMode,
       paymentBreakdown: input.paymentBreakdown,
@@ -493,8 +474,6 @@ export const snookerOrderService = {
       })
     };
 
-    await ordersRepository.save(order);
-    await ordersRepository.removePendingBill(order.localOrderId);
     await queueInvoiceSync(order, input.snapshot, "paid", {
       mode: paymentMode,
       referenceNo: paymentReference || null

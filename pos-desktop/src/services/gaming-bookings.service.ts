@@ -1,5 +1,4 @@
 import { env } from "@/config/env";
-import { gamingBookingsRepository } from "@/db/repositories/gaming-bookings.repository";
 import { apiClient } from "@/lib/api-client";
 import { makeId } from "@/utils/idempotency";
 import type {
@@ -48,6 +47,7 @@ type GamingBookingApiRow = {
   status: GamingBookingStatus;
   paymentStatus: GamingPaymentStatus;
   paymentMode: GamingPaymentMode | null;
+  paymentReference?: string | null;
   paymentBreakdown?: {
     cash?: number;
     card?: number;
@@ -101,7 +101,6 @@ const ALL_RESOURCES = [...SNOOKER_RESOURCES, ...CONSOLE_RESOURCES];
 
 const SNOOKER_INCLUDED_MEMBERS = 4;
 const EXTRA_MEMBER_CHARGE = 50;
-const SERVER_PULL_INTERVAL_MS = 30000;
 const AMOUNT_DIFF_THRESHOLD = 0.01;
 const GAMING_PAYMENT_CHANNELS: readonly GamingPaymentChannel[] = ["cash", "card", "upi"];
 const EMPTY_PAYMENT_BREAKDOWN: PaymentBreakdown = {
@@ -294,6 +293,7 @@ const buildServerBookingPayload = (booking: GamingBooking) => ({
   status: booking.status,
   paymentStatus: booking.paymentStatus,
   paymentMode: booking.paymentMode ?? undefined,
+  paymentReference: booking.paymentReference ?? extractPaymentReferenceFromNote(booking.note) ?? undefined,
   paymentBreakdown:
     booking.paymentStatus === "paid"
       ? {
@@ -439,14 +439,25 @@ const normalizeResourceCodes = (
   return [];
 };
 
-const UNSYNCED_STATUSES = new Set<GamingBooking["syncStatus"]>(["pending", "syncing", "failed", "needs_attention"]);
-let lastServerPullAt = 0;
+const fetchServerBookings = async (filters?: GamingBookingListFilter, limit = 400): Promise<GamingBooking[]> => {
+  const response = await apiClient.get<ApiSuccess<GamingBookingsListResponse>>("/gaming/bookings", {
+    params: {
+      search: filters?.search,
+      status: filters?.status && filters.status !== "all" ? filters.status : undefined,
+      paymentStatus: filters?.paymentStatus && filters.paymentStatus !== "all" ? filters.paymentStatus : undefined,
+      bookingType: filters?.bookingType && filters.bookingType !== "all" ? filters.bookingType : undefined,
+      page: 1,
+      limit
+    }
+  });
+  return response.data.data.bookings.map((row) => toLocalBookingFromServer(row, null));
+};
 
-const listCachedBookings = async (filters?: GamingBookingListFilter, limit?: number): Promise<GamingBooking[]> =>
-  (await gamingBookingsRepository.list(filters, limit)) as GamingBooking[];
-
-const getCachedBooking = async (localBookingId: string): Promise<GamingBooking | null> =>
-  (await gamingBookingsRepository.getById(localBookingId)) as GamingBooking | null;
+const getCachedBooking = async (localBookingId: string): Promise<GamingBooking | null> => {
+  const serverId = localBookingId.startsWith("server-") ? localBookingId.slice("server-".length) : null;
+  const rows = await fetchServerBookings(undefined, 1000);
+  return rows.find((row) => row.localBookingId === localBookingId || row.serverBookingId === serverId) ?? null;
+};
 
 const toLocalBookingFromServer = (
   serverBooking: GamingBookingApiRow,
@@ -541,6 +552,7 @@ const toLocalBookingFromServer = (
     status: serverBooking.status,
     paymentStatus: serverBooking.paymentStatus,
     paymentMode: serverBooking.paymentMode ?? null,
+    paymentReference: cleanText(serverBooking.paymentReference) ?? extractPaymentReferenceFromNote(serverBooking.note),
     paidCashAmount: normalizedBreakdown.cash,
     paidCardAmount: normalizedBreakdown.card,
     paidUpiAmount: normalizedBreakdown.upi,
@@ -553,10 +565,7 @@ const toLocalBookingFromServer = (
     sourceDeviceId: cleanText(serverBooking.sourceDeviceId),
     staffId: serverBooking.staffId,
     staffName: serverBooking.staffName || serverBooking.staffUsername || existingLocal?.staffName || "-",
-    syncStatus:
-      existingLocal && !existingLocal.serverBookingId && UNSYNCED_STATUSES.has(existingLocal.syncStatus)
-        ? existingLocal.syncStatus
-        : "synced",
+    syncStatus: "synced",
     createdAt: serverBooking.createdAt,
     updatedAt: serverBooking.updatedAt
   };
@@ -581,6 +590,7 @@ const pushBookingToServer = async (booking: GamingBooking) => {
             amountOverrideReason: payload.amountOverrideReason,
             paymentStatus: payload.paymentStatus,
             paymentMode: payload.paymentMode,
+            paymentReference: payload.paymentReference,
             paymentBreakdown: payload.paymentBreakdown
           })
         : await apiClient.patch<ApiSuccess<GamingBookingResponse>>(`/gaming/bookings/${serverBookingId}`, {
@@ -588,6 +598,7 @@ const pushBookingToServer = async (booking: GamingBooking) => {
             playerCount: payload.playerCount,
             paymentStatus: payload.paymentStatus,
             paymentMode: payload.paymentMode,
+            paymentReference: payload.paymentReference,
             paymentBreakdown: payload.paymentBreakdown,
             finalAmount: payload.finalAmount,
             systemCalculatedAmount: payload.systemCalculatedAmount,
@@ -611,65 +622,8 @@ const pushBookingToServer = async (booking: GamingBooking) => {
 
 export const gamingBookingsService = {
   async pullBookingsFromServer(force = false) {
-    const now = Date.now();
-    if (!force && now - lastServerPullAt < SERVER_PULL_INTERVAL_MS) {
-      return;
-    }
-    try {
-      const existingRows = await listCachedBookings(undefined, 2000);
-      const existingByBookingNumber = new Map(existingRows.map((row) => [row.bookingNumber, row]));
-      const existingByServerId = new Map(
-        existingRows.filter((row) => row.serverBookingId).map((row) => [row.serverBookingId as string, row])
-      );
-      const serverBookingIdsSeen = new Set<string>();
-      const serverBookingNumbersSeen = new Set<string>();
-
-      let page = 1;
-      let totalPages = 1;
-      const limit = 200;
-      do {
-        const response = await apiClient.get<ApiSuccess<GamingBookingsListResponse>>("/gaming/bookings", {
-          params: { page, limit }
-        });
-        const payload = response.data.data;
-
-        for (const serverRow of payload.bookings) {
-          serverBookingIdsSeen.add(serverRow.id);
-          serverBookingNumbersSeen.add(serverRow.bookingNumber);
-          const existing =
-            existingByServerId.get(serverRow.id) ??
-            existingByBookingNumber.get(serverRow.bookingNumber) ??
-            null;
-          const localRow = toLocalBookingFromServer(serverRow, existing);
-          await gamingBookingsRepository.save(localRow);
-          existingByBookingNumber.set(localRow.bookingNumber, localRow);
-          if (localRow.serverBookingId) {
-            existingByServerId.set(localRow.serverBookingId, localRow);
-          }
-        }
-
-        totalPages = payload.pagination.totalPages || 1;
-        page += 1;
-      } while (page <= totalPages);
-
-      const staleSyncedLocalIds = existingRows
-        .filter((row) => {
-          if (!row.serverBookingId) {
-            return false;
-          }
-          if (row.serverBookingId) {
-            return !serverBookingIdsSeen.has(row.serverBookingId);
-          }
-          return !serverBookingNumbersSeen.has(row.bookingNumber);
-        })
-        .map((row) => row.localBookingId);
-
-      if (staleSyncedLocalIds.length) {
-        await gamingBookingsRepository.removeByIds(staleSyncedLocalIds);
-      }
-    } finally {
-      lastServerPullAt = now;
-    }
+    void force;
+    await fetchServerBookings(undefined, 1);
   },
 
   getResourcesByType(bookingType: GamingBookingType) {
@@ -677,13 +631,8 @@ export const gamingBookingsService = {
   },
 
   async assertResourcesAvailable(resourceCodes: GamingResourceCode[], excludeLocalBookingId?: string) {
-    try {
-      await this.pullBookingsFromServer(true);
-    } catch {
-      // ignore: offline or server unavailable; local guard still applies.
-    }
-    const occupied = await listCachedBookings({ status: "ongoing" }, 600);
-    const upcoming = await listCachedBookings({ status: "upcoming" }, 600);
+    const occupied = await fetchServerBookings({ status: "ongoing" }, 600);
+    const upcoming = await fetchServerBookings({ status: "upcoming" }, 600);
     const conflict = [...occupied, ...upcoming].find(
       (booking) =>
         booking.localBookingId !== excludeLocalBookingId &&
@@ -700,12 +649,8 @@ export const gamingBookingsService = {
   },
 
   async listBookings(filters?: GamingBookingListFilter, limit = 400, options?: { forceServerSync?: boolean }) {
-    try {
-      await this.pullBookingsFromServer(options?.forceServerSync ?? false);
-    } catch {
-      // no-op: fallback to local snapshot when offline.
-    }
-    return listCachedBookings(filters, limit);
+    void options;
+    return fetchServerBookings(filters, limit);
   },
 
   async listActiveBookings() {
@@ -713,12 +658,7 @@ export const gamingBookingsService = {
   },
 
   async getResourceAvailability(bookingType?: GamingBookingType) {
-    try {
-      await this.pullBookingsFromServer(false);
-    } catch {
-      // no-op
-    }
-    const active = await listCachedBookings({ status: "ongoing" }, 200);
+    const active = await fetchServerBookings({ status: "ongoing" }, 200);
     const resources = bookingType ? this.getResourcesByType(bookingType) : ALL_RESOURCES;
     const activeByResource = new Map<GamingResourceCode, GamingBooking>();
     active.forEach((booking) => {
@@ -751,6 +691,7 @@ export const gamingBookingsService = {
       status?: GamingBookingStatus;
       paymentStatus?: GamingPaymentStatus;
       paymentMode?: GamingPaymentMode;
+      paymentReference?: string;
       paymentBreakdown?: PaymentBreakdownInput;
       foodOrderReference?: string;
       foodInvoiceNumber?: string;
@@ -812,6 +753,16 @@ export const gamingBookingsService = {
       },
       targetAmount
     );
+    const inputNote = cleanText(input.note);
+    const inputPaymentReference = cleanText(input.paymentReference) ?? extractPaymentReferenceFromNote(inputNote);
+    const initialPaymentReference =
+      payment.paymentStatus === "paid" && hasDigitalPaymentBreakdown(payment.paymentBreakdown)
+        ? inputPaymentReference
+        : null;
+    const initialNote =
+      payment.paymentStatus === "paid" && hasDigitalPaymentBreakdown(payment.paymentBreakdown)
+        ? attachPaymentReferenceToNote(inputNote, initialPaymentReference)
+        : stripPaymentReferenceFromNote(inputNote);
     const now = nowIso();
 
     const booking: GamingBooking = {
@@ -840,6 +791,7 @@ export const gamingBookingsService = {
       status,
       paymentStatus: payment.paymentStatus,
       paymentMode: payment.paymentMode,
+      paymentReference: initialPaymentReference,
       paidCashAmount: payment.paymentBreakdown.cash,
       paidCardAmount: payment.paymentBreakdown.card,
       paidUpiAmount: payment.paymentBreakdown.upi,
@@ -847,7 +799,7 @@ export const gamingBookingsService = {
       foodInvoiceNumber: input.foodInvoiceNumber?.trim() || null,
       foodInvoiceStatus: input.foodInvoiceStatus ?? "none",
       foodAndBeverageAmount,
-      note: input.note?.trim() || null,
+      note: initialNote,
       bookingChannel: input.bookingChannel?.trim() || "desktop",
       sourceDeviceId: env.deviceId,
       staffId: session.userId,
@@ -858,7 +810,6 @@ export const gamingBookingsService = {
     };
 
     const syncedBooking = await pushBookingToServer(booking);
-    await gamingBookingsRepository.save(syncedBooking);
     return syncedBooking;
   },
 
@@ -943,7 +894,11 @@ export const gamingBookingsService = {
     const explicitPaymentReference =
       input.paymentReference !== undefined
         ? cleanText(input.paymentReference)
-        : existingPaymentReference;
+        : booking.paymentReference ?? existingPaymentReference;
+    const nextPaymentReference =
+      payment.paymentStatus === "paid" && hasDigitalPaymentBreakdown(payment.paymentBreakdown)
+        ? explicitPaymentReference
+        : null;
     const nextNote =
       payment.paymentStatus === "paid" && hasDigitalPaymentBreakdown(payment.paymentBreakdown)
         ? attachPaymentReferenceToNote(cleanText(booking.note), explicitPaymentReference)
@@ -955,6 +910,7 @@ export const gamingBookingsService = {
       status: "completed",
       paymentStatus: payment.paymentStatus,
       paymentMode: payment.paymentMode,
+      paymentReference: nextPaymentReference,
       paidCashAmount: payment.paymentBreakdown.cash,
       paidCardAmount: payment.paymentBreakdown.card,
       paidUpiAmount: payment.paymentBreakdown.upi,
@@ -990,7 +946,6 @@ export const gamingBookingsService = {
     };
 
     const syncedBooking = await pushBookingToServer(nextBooking);
-    await gamingBookingsRepository.save(syncedBooking);
     return syncedBooking;
   },
 
@@ -1009,6 +964,7 @@ export const gamingBookingsService = {
       paymentStatus?: "pending" | "paid";
       paymentMode?: GamingPaymentMode;
       paymentBreakdown?: PaymentBreakdownInput;
+      paymentReference?: string;
       finalAmount?: number;
       systemCalculatedAmount?: number;
       extraMemberCount?: number;
@@ -1105,6 +1061,18 @@ export const gamingBookingsService = {
         discountAmount: discount.discountAmount
       })
     );
+    const baseNote = input.note === undefined ? booking.note : input.note.trim() || null;
+    const existingPaymentReference = booking.paymentReference ?? extractPaymentReferenceFromNote(baseNote);
+    const explicitPaymentReference =
+      input.paymentReference !== undefined ? cleanText(input.paymentReference) : existingPaymentReference;
+    const nextPaymentReference =
+      payment.paymentStatus === "paid" && hasDigitalPaymentBreakdown(payment.paymentBreakdown)
+        ? explicitPaymentReference
+        : null;
+    const nextNote =
+      payment.paymentStatus === "paid" && hasDigitalPaymentBreakdown(payment.paymentBreakdown)
+        ? attachPaymentReferenceToNote(baseNote, explicitPaymentReference)
+        : stripPaymentReferenceFromNote(baseNote);
 
     const nextBooking: GamingBooking = {
       ...booking,
@@ -1146,9 +1114,10 @@ export const gamingBookingsService = {
           : null
         : booking.amountOverrideReason,
       status: nextStatus,
-      note: input.note === undefined ? booking.note : input.note.trim() || null,
+      note: nextNote,
       paymentStatus: payment.paymentStatus,
       paymentMode: payment.paymentMode,
+      paymentReference: nextPaymentReference,
       paidCashAmount: payment.paymentBreakdown.cash,
       paidCardAmount: payment.paymentBreakdown.card,
       paidUpiAmount: payment.paymentBreakdown.upi,
@@ -1164,7 +1133,6 @@ export const gamingBookingsService = {
     nextBooking.primaryCustomerPhone = primaryCustomer.phone || booking.primaryCustomerPhone;
 
     const syncedBooking = await pushBookingToServer(nextBooking);
-    await gamingBookingsRepository.save(syncedBooking);
     return syncedBooking;
   },
 
@@ -1199,6 +1167,10 @@ export const gamingBookingsService = {
       ...booking,
       paymentStatus: payment.paymentStatus,
       paymentMode: payment.paymentMode,
+      paymentReference:
+        payment.paymentStatus === "paid" && hasDigitalPaymentBreakdown(payment.paymentBreakdown)
+          ? booking.paymentReference ?? extractPaymentReferenceFromNote(booking.note)
+          : null,
       paidCashAmount: payment.paymentBreakdown.cash,
       paidCardAmount: payment.paymentBreakdown.card,
       paidUpiAmount: payment.paymentBreakdown.upi,
@@ -1210,7 +1182,6 @@ export const gamingBookingsService = {
       syncStatus: "pending"
     };
     const syncedBooking = await pushBookingToServer(nextBooking);
-    await gamingBookingsRepository.save(syncedBooking);
     return syncedBooking;
   },
 
@@ -1271,7 +1242,6 @@ export const gamingBookingsService = {
     };
 
     const syncedBooking = await pushBookingToServer(nextBooking);
-    await gamingBookingsRepository.save(syncedBooking);
     return syncedBooking;
   },
 
@@ -1283,12 +1253,7 @@ export const gamingBookingsService = {
   },
 
   async getDashboardSnapshot() {
-    try {
-      await this.pullBookingsFromServer(false);
-    } catch {
-      // no-op
-    }
-    const all = await listCachedBookings(undefined, 500);
+    const all = await fetchServerBookings(undefined, 500);
     const now = Date.now();
 
     const ongoing = all.filter((booking) => booking.status === "ongoing");

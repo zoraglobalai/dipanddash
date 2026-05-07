@@ -114,6 +114,7 @@ export const StaffGamingHistoryPage = () => {
             row.bookingNumber.toLowerCase().includes(normalizedSearch) ||
             row.primaryCustomerName.toLowerCase().includes(normalizedSearch) ||
             row.primaryCustomerPhone.toLowerCase().includes(normalizedSearch) ||
+            (row.paymentReference ?? "").toLowerCase().includes(normalizedSearch) ||
             row.resourceLabel.toLowerCase().includes(normalizedSearch)
           );
         })
@@ -223,6 +224,11 @@ export const StaffGamingHistoryPage = () => {
             <Text fontSize="xs" color="#705A50" textTransform="uppercase">
               {row.paymentMode ?? "-"}
             </Text>
+            {row.paymentReference ? (
+              <Text fontSize="xs" color="#705A50">
+                Ref {row.paymentReference}
+              </Text>
+            ) : null}
           </VStack>
         )
       }

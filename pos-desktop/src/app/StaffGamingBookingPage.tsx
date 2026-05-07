@@ -535,11 +535,11 @@ export const StaffGamingBookingPage = () => {
       return;
     }
     if (selectedProductLines.length > 0 && !catalog) {
-      toast({
-        status: "warning",
-        title: "Catalog still syncing",
-        description: "Please wait for product catalog sync and retry."
-      });
+        toast({
+          status: "warning",
+          title: "Catalog still loading",
+          description: "Please wait for live product catalog and retry."
+        });
       return;
     }
     setSaving(true);
@@ -653,7 +653,7 @@ export const StaffGamingBookingPage = () => {
         setCheckoutSplitCard("");
         setCheckoutSplitUpi("");
       }
-      setCheckoutPaymentReference("");
+      setCheckoutPaymentReference(booking.paymentReference ?? "");
       setCheckoutOverrideReason(booking.amountOverrideReason ?? "");
       checkoutConfirmModal.onClose();
       checkoutModal.onOpen();

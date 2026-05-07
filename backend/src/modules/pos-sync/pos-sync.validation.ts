@@ -184,6 +184,7 @@ const gamingBookingUpsertSchema = z.object({
       status: z.enum(["upcoming", "ongoing", "completed", "cancelled"]).optional(),
       paymentStatus: z.enum(["pending", "paid", "refunded"]).optional(),
       paymentMode: z.enum(["cash", "upi", "card", "mixed"]).optional(),
+      paymentReference: z.string().trim().max(120).optional(),
       paymentBreakdown: z
         .object({
           cash: z.coerce.number().min(0).optional(),

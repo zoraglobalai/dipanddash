@@ -61,6 +61,7 @@ const dispatchGamingBookingEvent = async (event: Extract<SyncQueueEvent, { event
       status: payload.status,
       paymentStatus: payload.paymentStatus,
       paymentMode: payload.paymentMode,
+      paymentReference: payload.paymentReference,
       paymentBreakdown: payload.paymentBreakdown,
       ...(isCompleted
         ? {
@@ -90,6 +91,7 @@ const dispatchGamingBookingEvent = async (event: Extract<SyncQueueEvent, { event
       amountOverrideReason: payload.amountOverrideReason,
       paymentStatus: payload.paymentStatus,
       paymentMode: payload.paymentMode,
+      paymentReference: payload.paymentReference,
       paymentBreakdown: payload.paymentBreakdown
     });
     return;
@@ -100,6 +102,7 @@ const dispatchGamingBookingEvent = async (event: Extract<SyncQueueEvent, { event
     playerCount: payload.playerCount,
     paymentStatus: payload.paymentStatus,
     paymentMode: payload.paymentMode,
+    paymentReference: payload.paymentReference,
     paymentBreakdown: payload.paymentBreakdown,
     foodOrderReference: payload.foodOrderReference,
     foodInvoiceNumber: payload.foodInvoiceNumber,

@@ -696,7 +696,7 @@ export const NewOrderPage = ({ channel }: NewOrderPageProps) => {
             toast({
               status: "success",
               title: "Bill moved to pending",
-              description: "Order saved as pending and queued for sync."
+              description: "Order saved directly to live billing."
             });
             return;
           }
@@ -706,7 +706,7 @@ export const NewOrderPage = ({ channel }: NewOrderPageProps) => {
           toast({
             status: "success",
             title: "Payment completed",
-            description: "Invoice saved locally and queued for sync."
+            description: "Invoice saved directly to live billing."
           });
         }}
       />

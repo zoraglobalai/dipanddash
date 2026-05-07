@@ -625,6 +625,7 @@ export class GamingService {
       status: booking.status,
       paymentStatus: booking.paymentStatus,
       paymentMode: normalizedPaymentMode,
+      paymentReference: cleanText(booking.paymentReference) ?? extractPaymentReferenceFromNote(booking.note),
       paymentBreakdown: {
         ...normalizedPaymentBreakdown,
         total: getPaymentBreakdownTotal(normalizedPaymentBreakdown)
@@ -837,6 +838,10 @@ export class GamingService {
       status,
       paymentStatus: payment.paymentStatus,
       paymentMode: payment.paymentMode,
+      paymentReference:
+        payment.paymentStatus === "paid" && hasDigitalPayment(payment.paymentBreakdown)
+          ? resolvedPaymentReference
+          : null,
       paidCashAmount: payment.paymentBreakdown.cash,
       paidCardAmount: payment.paymentBreakdown.card,
       paidUpiAmount: payment.paymentBreakdown.upi,
@@ -1072,11 +1077,15 @@ export class GamingService {
     booking.paidCardAmount = payment.paymentBreakdown.card;
     booking.paidUpiAmount = payment.paymentBreakdown.upi;
     const baseNote = input.note !== undefined ? cleanText(input.note) : cleanText(booking.note);
-    const existingPaymentReference = extractPaymentReferenceFromNote(baseNote);
+    const existingPaymentReference = cleanText(booking.paymentReference) ?? extractPaymentReferenceFromNote(baseNote);
     const explicitPaymentReference =
       input.paymentReference !== undefined
         ? cleanText(input.paymentReference)
         : existingPaymentReference;
+    booking.paymentReference =
+      payment.paymentStatus === "paid" && hasDigitalPayment(payment.paymentBreakdown)
+        ? explicitPaymentReference
+        : null;
     booking.note =
       payment.paymentStatus === "paid" && hasDigitalPayment(payment.paymentBreakdown)
         ? attachPaymentReferenceToNote(baseNote, explicitPaymentReference)
@@ -1195,11 +1204,15 @@ export class GamingService {
     booking.paidCashAmount = payment.paymentBreakdown.cash;
     booking.paidCardAmount = payment.paymentBreakdown.card;
     booking.paidUpiAmount = payment.paymentBreakdown.upi;
-    const existingPaymentReference = extractPaymentReferenceFromNote(booking.note);
+    const existingPaymentReference = cleanText(booking.paymentReference) ?? extractPaymentReferenceFromNote(booking.note);
     const explicitPaymentReference =
       input.paymentReference !== undefined
         ? cleanText(input.paymentReference)
         : existingPaymentReference;
+    booking.paymentReference =
+      payment.paymentStatus === "paid" && hasDigitalPayment(payment.paymentBreakdown)
+        ? explicitPaymentReference
+        : null;
     booking.note =
       payment.paymentStatus === "paid" && hasDigitalPayment(payment.paymentBreakdown)
         ? attachPaymentReferenceToNote(cleanText(booking.note), explicitPaymentReference)
@@ -1261,9 +1274,13 @@ export class GamingService {
     booking.paidCashAmount = payment.paymentBreakdown.cash;
     booking.paidCardAmount = payment.paymentBreakdown.card;
     booking.paidUpiAmount = payment.paymentBreakdown.upi;
-    const existingPaymentReference = extractPaymentReferenceFromNote(booking.note);
+    const existingPaymentReference = cleanText(booking.paymentReference) ?? extractPaymentReferenceFromNote(booking.note);
     const explicitPaymentReference =
       paymentReference !== undefined ? cleanText(paymentReference) : existingPaymentReference;
+    booking.paymentReference =
+      payment.paymentStatus === "paid" && hasDigitalPayment(payment.paymentBreakdown)
+        ? explicitPaymentReference
+        : null;
     booking.note =
       payment.paymentStatus === "paid" && hasDigitalPayment(payment.paymentBreakdown)
         ? attachPaymentReferenceToNote(cleanText(booking.note), explicitPaymentReference)
@@ -1685,6 +1702,18 @@ export class GamingService {
     existing.paidCashAmount = payment.paymentBreakdown.cash;
     existing.paidCardAmount = payment.paymentBreakdown.card;
     existing.paidUpiAmount = payment.paymentBreakdown.upi;
+    const existingPaymentReference =
+      input.paymentReference !== undefined
+        ? cleanText(input.paymentReference)
+        : cleanText(existing.paymentReference) ?? extractPaymentReferenceFromNote(existing.note);
+    existing.paymentReference =
+      payment.paymentStatus === "paid" && hasDigitalPayment(payment.paymentBreakdown)
+        ? existingPaymentReference
+        : null;
+    existing.note =
+      payment.paymentStatus === "paid" && hasDigitalPayment(payment.paymentBreakdown)
+        ? attachPaymentReferenceToNote(cleanText(existing.note), existingPaymentReference)
+        : stripPaymentReferenceFromNote(cleanText(existing.note));
 
     const saved = await this.bookingRepository.save(existing);
     return this.toDto(saved);

@@ -375,7 +375,7 @@ const mapBookingToForm = (booking: GamingBookingRow): BookingFormState => ({
   discountType: booking.discountType ?? "none",
   discountValue: String(booking.discountValue ?? 0),
   amountOverrideReason: booking.amountOverrideReason ?? "",
-  paymentReference: extractUpiReferenceFromNote(booking.note),
+  paymentReference: booking.paymentReference ?? extractUpiReferenceFromNote(booking.note),
   bookingChannel: booking.bookingChannel ?? "desktop",
   note: stripPaymentMetaFromNote(booking.note)
 });
@@ -1576,6 +1576,11 @@ export const GamingPage = () => {
                 {row.paymentStatus === "paid" && splitParts.length ? (
                   <Text fontSize="xs" color="#7A6258">
                     {splitParts.join(" | ")}
+                  </Text>
+                ) : null}
+                {row.paymentReference ? (
+                  <Text fontSize="xs" color="#7A6258">
+                    Ref {row.paymentReference}
                   </Text>
                 ) : null}
               </VStack>

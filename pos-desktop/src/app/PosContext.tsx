@@ -293,7 +293,7 @@ export const PosProvider = ({ children }: PropsWithChildren) => {
       if (!catalog) {
         return {
           ok: false as const,
-          message: "Menu is still syncing. Please wait a moment."
+          message: "Menu is still loading from live server. Please wait a moment."
         };
       }
 
@@ -743,6 +743,9 @@ export const PosProvider = ({ children }: PropsWithChildren) => {
     if (!currentOrder.lines.length) {
       return;
     }
+    if (!catalog) {
+      throw new Error("Catalog is not ready. Please refresh and try again.");
+    }
     const now = new Date().toISOString();
     const moveToCollections = input?.moveToCollections === true;
     const selectedPaymentMode = input?.paymentMode ?? "cash";
@@ -754,52 +757,31 @@ export const PosProvider = ({ children }: PropsWithChildren) => {
       syncStatus: "pending",
       updatedAt: now
     });
-    await ordersRepository.save(pendingOrder);
 
-    if (catalog) {
-      const payload = posBillingService.buildInvoiceSyncPayload({
-        order: pendingOrder,
-        payments: [],
-        snapshot: catalog,
-        forceStatus: "pending"
-      });
-      const idempotencyKey = makeId();
-      await syncQueueRepository.enqueue({
-        id: makeId(),
-        idempotencyKey,
+    const payload = posBillingService.buildInvoiceSyncPayload({
+      order: pendingOrder,
+      payments: [],
+      snapshot: catalog,
+      forceStatus: "pending"
+    });
+    const idempotencyKey = makeId();
+    await syncQueueRepository.enqueue({
+      id: makeId(),
+      idempotencyKey,
+      eventType: "invoice_upsert",
+      payload: {
         eventType: "invoice_upsert",
-        payload: {
-          eventType: "invoice_upsert",
-          idempotencyKey,
-          deviceId: env.deviceId,
-          payload
-        },
-        status: "pending",
-        retryCount: 0,
-        lastError: null,
-        nextRetryAt: null,
-        createdAt: now,
-        updatedAt: now
-      });
-    }
-
-    if (moveToCollections) {
-      await ordersRepository.removePendingBill(pendingOrder.localOrderId);
-    } else {
-      await ordersRepository.upsertPendingBill({
-        localOrderId: pendingOrder.localOrderId,
-        invoiceNumber: pendingOrder.invoiceNumber,
-        customerName: pendingOrder.customer?.name ?? "Walk-in",
-        customerPhone: pendingOrder.customer?.phone ?? "-",
-        orderType: pendingOrder.orderType,
-        orderChannel: pendingOrder.orderChannel,
-        tableLabel: pendingOrder.tableLabel,
-        kitchenStatus: pendingOrder.kitchenStatus,
-        totalAmount: pendingOrder.totals.totalAmount,
-        lineCount: pendingOrder.lines.length,
-        updatedAt: pendingOrder.updatedAt
-      });
-    }
+        idempotencyKey,
+        deviceId: env.deviceId,
+        payload
+      },
+      status: "pending",
+      retryCount: 0,
+      lastError: null,
+      nextRetryAt: null,
+      createdAt: now,
+      updatedAt: now
+    });
     await refreshPendingBills();
     await refreshRecentBills();
     await refreshCompletedBills();
@@ -830,21 +812,6 @@ export const PosProvider = ({ children }: PropsWithChildren) => {
       paymentMode: null,
       syncStatus: "pending",
       updatedAt: now
-    });
-
-    await ordersRepository.save(queuedOrder);
-    await ordersRepository.upsertPendingBill({
-      localOrderId: queuedOrder.localOrderId,
-      invoiceNumber: queuedOrder.invoiceNumber,
-      customerName: queuedOrder.customer?.name ?? "Walk-in",
-      customerPhone: queuedOrder.customer?.phone ?? "-",
-      orderType: queuedOrder.orderType,
-      orderChannel: queuedOrder.orderChannel,
-      tableLabel: queuedOrder.tableLabel,
-      kitchenStatus: queuedOrder.kitchenStatus,
-      totalAmount: queuedOrder.totals.totalAmount,
-      lineCount: queuedOrder.lines.length,
-      updatedAt: queuedOrder.updatedAt
     });
 
     const payload = posBillingService.buildInvoiceSyncPayload({
@@ -911,8 +878,6 @@ export const PosProvider = ({ children }: PropsWithChildren) => {
         kitchenStatus,
         status: existing.status === "draft" ? "pending" : existing.status
       });
-      await ordersRepository.save(updated);
-
       if (catalog) {
         const idempotencyKey = makeId();
         const payload = posBillingService.buildInvoiceSyncPayload({
@@ -952,7 +917,6 @@ export const PosProvider = ({ children }: PropsWithChildren) => {
         return;
       }
       setCurrentOrder(order);
-      await ordersRepository.removePendingBill(localOrderId);
       await refreshPendingBills();
       await refreshRecentBills();
       await refreshCompletedBills();
@@ -1070,9 +1034,6 @@ export const PosProvider = ({ children }: PropsWithChildren) => {
         syncStatus: "pending",
         updatedAt: now
       });
-
-      await ordersRepository.save(paidOrder);
-      await ordersRepository.removePendingBill(paidOrder.localOrderId);
 
       const payload = posBillingService.buildInvoiceSyncPayload({
         order: paidOrder,

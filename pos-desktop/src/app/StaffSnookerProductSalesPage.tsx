@@ -193,7 +193,7 @@ export const StaffSnookerProductSalesPage = () => {
       toast({
         status: "warning",
         title: "Catalog not ready",
-        description: "Please wait for sync and retry."
+        description: "Please wait for live catalog and retry."
       });
       return;
     }
@@ -249,7 +249,7 @@ export const StaffSnookerProductSalesPage = () => {
       try {
         await refreshCatalogSnapshot();
       } catch {
-        // No-op: sale is already queued locally for sync.
+        // No-op: sale is already saved in live billing.
       }
     } catch (error) {
       toast({

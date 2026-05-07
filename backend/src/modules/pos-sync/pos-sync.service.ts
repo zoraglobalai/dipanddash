@@ -128,6 +128,7 @@ type GamingBookingUpsertEvent = {
     status?: "upcoming" | "ongoing" | "completed" | "cancelled";
     paymentStatus?: "pending" | "paid" | "refunded";
     paymentMode?: "cash" | "upi" | "card" | "mixed";
+    paymentReference?: string;
     paymentBreakdown?: {
       cash?: number;
       card?: number;

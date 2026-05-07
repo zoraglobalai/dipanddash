@@ -2780,8 +2780,10 @@ export class ReportsService {
           : fallbackSplit;
         const invoiceLinkedInfo = paymentInfoByBookingId.get(row.id);
         const invoiceReferences = invoiceLinkedInfo ? Array.from(invoiceLinkedInfo.references) : [];
+        const storedPaymentReference = cleanOptionalText(row.paymentReference);
         const noteReference = extractGamingTransactionReference(row.note);
-        const paymentReferenceId = noteReference || (invoiceReferences.length ? invoiceReferences.join(", ") : "-");
+        const paymentReferenceId =
+          storedPaymentReference || noteReference || (invoiceReferences.length ? invoiceReferences.join(", ") : "-");
         const paidTotalAmount = toMoney(
           resolvedSplit.cashAmount + resolvedSplit.cardAmount + resolvedSplit.upiAmount
         );

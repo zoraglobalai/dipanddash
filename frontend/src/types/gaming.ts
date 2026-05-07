@@ -48,6 +48,7 @@ export type GamingBookingRow = {
   status: GamingBookingStatus;
   paymentStatus: GamingPaymentStatus;
   paymentMode: GamingPaymentMode | null;
+  paymentReference: string | null;
   paymentBreakdown: GamingPaymentBreakdown;
   foodOrderReference: string | null;
   foodInvoiceNumber: string | null;

@@ -290,6 +290,7 @@ export type GamingBooking = {
   status: GamingBookingStatus;
   paymentStatus: GamingPaymentStatus;
   paymentMode: GamingPaymentMode | null;
+  paymentReference: string | null;
   paidCashAmount: number;
   paidCardAmount: number;
   paidUpiAmount: number;
@@ -418,6 +419,7 @@ export type SyncQueueEvent =
         status?: GamingBookingStatus;
         paymentStatus?: GamingPaymentStatus;
         paymentMode?: GamingPaymentMode;
+        paymentReference?: string;
         paymentBreakdown?: Partial<Record<GamingPaymentChannel, number>>;
         finalAmount?: number;
         systemCalculatedAmount?: number;
