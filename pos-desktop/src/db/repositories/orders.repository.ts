@@ -17,6 +17,35 @@ const toNumber = (value: unknown, fallback = 0) => {
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
+const INVOICE_API_MAX_LIMIT = 200;
+
+type InvoiceListParams = Parameters<typeof invoicesService.list>[0];
+
+const listInvoiceRows = async (params: Omit<InvoiceListParams, "page" | "limit">, requestedLimit: number) => {
+  const target = Math.max(1, Math.floor(requestedLimit));
+  const rows: DesktopInvoiceListRow[] = [];
+  let page = 1;
+
+  while (rows.length < target) {
+    const remaining = target - rows.length;
+    const response = await invoicesService.list({
+      ...params,
+      page,
+      limit: Math.min(INVOICE_API_MAX_LIMIT, remaining)
+    });
+    const nextRows = response.data.invoices ?? [];
+    rows.push(...nextRows);
+
+    const pagination = response.data.pagination;
+    if (!nextRows.length || page >= Math.max(1, pagination?.totalPages ?? page)) {
+      break;
+    }
+    page += 1;
+  }
+
+  return rows.slice(0, target);
+};
+
 const parseAddOns = (meta: Record<string, unknown> | null | undefined): CartAddOnSelection[] => {
   if (!meta || typeof meta !== "object" || !Array.isArray(meta.addOns)) {
     return [];
@@ -191,22 +220,20 @@ export const ordersRepository = {
   listForSync: async (_limit?: number): Promise<PosOrder[]> => [],
   removeByIds: async (_localOrderIds: string[]) => undefined,
   listPendingBills: async () => {
-    const response = await invoicesService.list({ status: "pending", page: 1, limit: 500 });
-    return response.data.invoices.map(toPendingBill);
+    const rows = await listInvoiceRows({ status: "pending" }, 500);
+    return rows.map(toPendingBill);
   },
   listRecentBills: async (limit = 5) => {
-    const response = await invoicesService.list({ statuses: "pending,paid", page: 1, limit });
-    return response.data.invoices.map(toRecentBill);
+    const rows = await listInvoiceRows({ statuses: "pending,paid" }, limit);
+    return rows.map(toRecentBill);
   },
   listCompletedBills: async (limit = 500) => {
-    const response = await invoicesService.list({ status: "paid", page: 1, limit });
-    return response.data.invoices.map(toRecentBill);
+    const rows = await listInvoiceRows({ status: "paid" }, limit);
+    return rows.map(toRecentBill);
   },
   listKitchenOrders: async (limit = 500) => {
-    const response = await invoicesService.list({ status: "pending", page: 1, limit });
-    const kitchenRows = response.data.invoices.filter((row) =>
-      ["queued", "preparing", "ready"].includes(row.kitchenStatus)
-    );
+    const rows = await listInvoiceRows({ status: "pending" }, limit);
+    const kitchenRows = rows.filter((row) => ["queued", "preparing", "ready"].includes(row.kitchenStatus));
     return Promise.all(kitchenRows.map(getOrderFromRow));
   },
   upsertPendingBill: async (_bill: PendingBillSummary) => undefined,

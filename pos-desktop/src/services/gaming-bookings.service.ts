@@ -102,6 +102,7 @@ const ALL_RESOURCES = [...SNOOKER_RESOURCES, ...CONSOLE_RESOURCES];
 const SNOOKER_INCLUDED_MEMBERS = 4;
 const EXTRA_MEMBER_CHARGE = 50;
 const AMOUNT_DIFF_THRESHOLD = 0.01;
+const GAMING_BOOKINGS_API_MAX_LIMIT = 200;
 const GAMING_PAYMENT_CHANNELS: readonly GamingPaymentChannel[] = ["cash", "card", "upi"];
 const EMPTY_PAYMENT_BREAKDOWN: PaymentBreakdown = {
   cash: 0,
@@ -440,17 +441,33 @@ const normalizeResourceCodes = (
 };
 
 const fetchServerBookings = async (filters?: GamingBookingListFilter, limit = 400): Promise<GamingBooking[]> => {
-  const response = await apiClient.get<ApiSuccess<GamingBookingsListResponse>>("/gaming/bookings", {
-    params: {
-      search: filters?.search,
-      status: filters?.status && filters.status !== "all" ? filters.status : undefined,
-      paymentStatus: filters?.paymentStatus && filters.paymentStatus !== "all" ? filters.paymentStatus : undefined,
-      bookingType: filters?.bookingType && filters.bookingType !== "all" ? filters.bookingType : undefined,
-      page: 1,
-      limit
+  const target = Math.max(1, Math.floor(limit));
+  const rows: GamingBookingApiRow[] = [];
+  let page = 1;
+
+  while (rows.length < target) {
+    const remaining = target - rows.length;
+    const response = await apiClient.get<ApiSuccess<GamingBookingsListResponse>>("/gaming/bookings", {
+      params: {
+        search: filters?.search?.trim() || undefined,
+        status: filters?.status && filters.status !== "all" ? filters.status : undefined,
+        paymentStatus: filters?.paymentStatus && filters.paymentStatus !== "all" ? filters.paymentStatus : undefined,
+        bookingType: filters?.bookingType && filters.bookingType !== "all" ? filters.bookingType : undefined,
+        page,
+        limit: Math.min(GAMING_BOOKINGS_API_MAX_LIMIT, remaining)
+      }
+    });
+    const payload = response.data.data;
+    const nextRows = payload.bookings ?? [];
+    rows.push(...nextRows);
+
+    if (!nextRows.length || page >= Math.max(1, payload.pagination?.totalPages ?? page)) {
+      break;
     }
-  });
-  return response.data.data.bookings.map((row) => toLocalBookingFromServer(row, null));
+    page += 1;
+  }
+
+  return rows.slice(0, target).map((row) => toLocalBookingFromServer(row, null));
 };
 
 const getCachedBooking = async (localBookingId: string): Promise<GamingBooking | null> => {

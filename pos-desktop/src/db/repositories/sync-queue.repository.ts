@@ -113,7 +113,10 @@ const dispatchGamingBookingEvent = async (event: Extract<SyncQueueEvent, { event
 
 const dispatchEvent = async (event: SyncQueueEvent) => {
   if (event.eventType === "invoice_upsert") {
-    await apiClient.post("/invoices/sync-upsert", event.payload);
+    await apiClient.post("/invoices/sync-upsert", {
+      idempotencyKey: event.idempotencyKey,
+      ...event.payload
+    });
     return;
   }
 
