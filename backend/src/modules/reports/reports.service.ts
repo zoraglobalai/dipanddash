@@ -135,6 +135,7 @@ const toMoney = (value: unknown) => Number(toNumber(value).toFixed(2));
 const toQty = (value: unknown) => Number(toNumber(value).toFixed(3));
 const toPercent = (value: unknown) => Number(toNumber(value).toFixed(2));
 const IST_TIMEZONE = "Asia/Kolkata";
+const AMOUNT_DIFF_THRESHOLD = 0.01;
 
 const pad2 = (value: number) => String(value).padStart(2, "0");
 
@@ -190,6 +191,22 @@ const getIstDateKey = (value: Date) => {
 const formatIstDateLabel = (value: Date) => istDateLabelFormatter.format(value);
 const formatIstMonthLabel = (value: Date) => istMonthLabelFormatter.format(value);
 const formatIstTimeLabel = (value: Date) => `${istTimeFormatter.format(value)} IST`;
+
+const cleanOptionalText = (value: unknown) => {
+  if (typeof value !== "string") {
+    return "";
+  }
+  return value.trim();
+};
+
+const extractGamingTransactionReference = (note: unknown) => {
+  const normalized = cleanOptionalText(note);
+  if (!normalized) {
+    return "";
+  }
+  const match = normalized.match(/txn\s*ref\s*:\s*([^|]+)/i);
+  return match?.[1]?.trim() ?? "";
+};
 
 const formatDurationFromMinutes = (value: number) => {
   const safeMinutes = Math.max(0, Math.floor(value));
@@ -2591,6 +2608,150 @@ export class ReportsService {
       .orderBy("booking.checkInAt", "ASC")
       .getMany();
 
+    const orderReferenceSet = new Set<string>();
+    const invoiceNumberSet = new Set<string>();
+    rows.forEach((row) => {
+      const bookingOrderReference = cleanOptionalText(row.foodOrderReference);
+      const bookingInvoiceNumber = cleanOptionalText(row.foodInvoiceNumber);
+      const fallbackOrderReference = `GM-FOOD-${row.id}`;
+      if (bookingOrderReference) {
+        orderReferenceSet.add(bookingOrderReference);
+      }
+      orderReferenceSet.add(fallbackOrderReference);
+      if (bookingInvoiceNumber) {
+        invoiceNumberSet.add(bookingInvoiceNumber);
+      }
+    });
+
+    const linkedInvoiceRows =
+      orderReferenceSet.size || invoiceNumberSet.size
+        ? await (() => {
+            const query = this.invoiceRepository
+              .createQueryBuilder("invoice")
+              .select("invoice.id", "id")
+              .addSelect("invoice.orderReference", "orderReference")
+              .addSelect("invoice.invoiceNumber", "invoiceNumber")
+              .where("invoice.orderType = :orderType", { orderType: "snooker" });
+
+            if (orderReferenceSet.size && invoiceNumberSet.size) {
+              query.andWhere(
+                "(invoice.orderReference IN (:...orderReferences) OR invoice.invoiceNumber IN (:...invoiceNumbers))",
+                {
+                  orderReferences: Array.from(orderReferenceSet),
+                  invoiceNumbers: Array.from(invoiceNumberSet)
+                }
+              );
+            } else if (orderReferenceSet.size) {
+              query.andWhere("invoice.orderReference IN (:...orderReferences)", {
+                orderReferences: Array.from(orderReferenceSet)
+              });
+            } else {
+              query.andWhere("invoice.invoiceNumber IN (:...invoiceNumbers)", {
+                invoiceNumbers: Array.from(invoiceNumberSet)
+              });
+            }
+
+            return query.getRawMany<{ id: string; orderReference: string | null; invoiceNumber: string }>();
+          })()
+        : [];
+
+    const invoiceIds = linkedInvoiceRows.map((row) => row.id);
+    const invoicePaymentRows = invoiceIds.length
+      ? await this.invoicePaymentRepository
+          .createQueryBuilder("payment")
+          .select("payment.invoiceId", "invoiceId")
+          .addSelect("payment.mode", "mode")
+          .addSelect("payment.amount", "amount")
+          .addSelect("payment.referenceNo", "referenceNo")
+          .where("payment.invoiceId IN (:...invoiceIds)", { invoiceIds })
+          .andWhere("payment.status = :status", { status: "success" })
+          .getRawMany<{
+            invoiceId: string;
+            mode: "cash" | "card" | "upi" | "mixed" | "pending";
+            amount: string;
+            referenceNo: string | null;
+          }>()
+      : [];
+
+    const invoiceIdsByOrderReference = new Map<string, string[]>();
+    const invoiceIdsByInvoiceNumber = new Map<string, string[]>();
+    linkedInvoiceRows.forEach((row) => {
+      const orderReference = cleanOptionalText(row.orderReference);
+      const invoiceNumber = cleanOptionalText(row.invoiceNumber);
+      if (orderReference) {
+        const next = invoiceIdsByOrderReference.get(orderReference) ?? [];
+        next.push(row.id);
+        invoiceIdsByOrderReference.set(orderReference, next);
+      }
+      if (invoiceNumber) {
+        const next = invoiceIdsByInvoiceNumber.get(invoiceNumber) ?? [];
+        next.push(row.id);
+        invoiceIdsByInvoiceNumber.set(invoiceNumber, next);
+      }
+    });
+
+    const invoicePaymentInfoMap = new Map<
+      string,
+      { cashAmount: number; cardAmount: number; upiAmount: number; references: Set<string> }
+    >();
+    invoicePaymentRows.forEach((row) => {
+      const mode = row.mode;
+      const current = invoicePaymentInfoMap.get(row.invoiceId) ?? {
+        cashAmount: 0,
+        cardAmount: 0,
+        upiAmount: 0,
+        references: new Set<string>()
+      };
+      const amount = toMoney(row.amount);
+      if (mode === "cash") {
+        current.cashAmount = toMoney(current.cashAmount + amount);
+      } else if (mode === "card") {
+        current.cardAmount = toMoney(current.cardAmount + amount);
+      } else if (mode === "upi") {
+        current.upiAmount = toMoney(current.upiAmount + amount);
+      }
+      const referenceNo = cleanOptionalText(row.referenceNo);
+      if (referenceNo) {
+        current.references.add(referenceNo);
+      }
+      invoicePaymentInfoMap.set(row.invoiceId, current);
+    });
+
+    const paymentInfoByBookingId = new Map<
+      string,
+      { cashAmount: number; cardAmount: number; upiAmount: number; references: Set<string> }
+    >();
+    rows.forEach((row) => {
+      const bookingOrderReference = cleanOptionalText(row.foodOrderReference);
+      const bookingInvoiceNumber = cleanOptionalText(row.foodInvoiceNumber);
+      const fallbackOrderReference = `GM-FOOD-${row.id}`;
+      const linkedIds = new Set<string>();
+      [bookingOrderReference, fallbackOrderReference].forEach((ref) => {
+        (invoiceIdsByOrderReference.get(ref) ?? []).forEach((invoiceId) => linkedIds.add(invoiceId));
+      });
+      if (bookingInvoiceNumber) {
+        (invoiceIdsByInvoiceNumber.get(bookingInvoiceNumber) ?? []).forEach((invoiceId) => linkedIds.add(invoiceId));
+      }
+
+      const aggregate = {
+        cashAmount: 0,
+        cardAmount: 0,
+        upiAmount: 0,
+        references: new Set<string>()
+      };
+      linkedIds.forEach((invoiceId) => {
+        const invoiceInfo = invoicePaymentInfoMap.get(invoiceId);
+        if (!invoiceInfo) {
+          return;
+        }
+        aggregate.cashAmount = toMoney(aggregate.cashAmount + invoiceInfo.cashAmount);
+        aggregate.cardAmount = toMoney(aggregate.cardAmount + invoiceInfo.cardAmount);
+        aggregate.upiAmount = toMoney(aggregate.upiAmount + invoiceInfo.upiAmount);
+        invoiceInfo.references.forEach((ref) => aggregate.references.add(ref));
+      });
+      paymentInfoByBookingId.set(row.id, aggregate);
+    });
+
     const parsedRows = rows
       .map((row) => {
         const checkInAt = row.checkInAt;
@@ -2600,6 +2761,32 @@ export class ReportsService {
         const checkOutDateKey = checkOutAt ? getIstDateKey(checkOutAt) : null;
         const isOvernight = Boolean(checkOutDateKey && checkOutDateKey !== checkInDateKey);
         const totalMinutes = checkOutAt ? minutesBetween(checkInAt, checkOutAt) : 0;
+        const sessionAmount = toMoney(row.finalAmount);
+        const fnbAmount = toMoney(row.foodAndBeverageAmount);
+        const totalAmount = toMoney(sessionAmount + fnbAmount);
+        const paidCashAmount = toMoney(row.paidCashAmount);
+        const paidCardAmount = toMoney(row.paidCardAmount);
+        const paidUpiAmount = toMoney(row.paidUpiAmount);
+        const hasStoredSplit = paidCashAmount + paidCardAmount + paidUpiAmount > AMOUNT_DIFF_THRESHOLD;
+        const paymentMode = row.paymentMode ?? "-";
+        const normalizedPaymentMode = row.paymentMode;
+        const fallbackSplit = {
+          cashAmount: normalizedPaymentMode === "cash" ? totalAmount : 0,
+          cardAmount: normalizedPaymentMode === "card" ? totalAmount : 0,
+          upiAmount: normalizedPaymentMode === "upi" ? totalAmount : 0
+        };
+        const resolvedSplit = hasStoredSplit
+          ? { cashAmount: paidCashAmount, cardAmount: paidCardAmount, upiAmount: paidUpiAmount }
+          : fallbackSplit;
+        const invoiceLinkedInfo = paymentInfoByBookingId.get(row.id);
+        const invoiceReferences = invoiceLinkedInfo ? Array.from(invoiceLinkedInfo.references) : [];
+        const noteReference = extractGamingTransactionReference(row.note);
+        const paymentReferenceId = invoiceReferences.length
+          ? invoiceReferences.join(", ")
+          : noteReference || "-";
+        const paidTotalAmount = toMoney(
+          resolvedSplit.cashAmount + resolvedSplit.cardAmount + resolvedSplit.upiAmount
+        );
 
         return {
           bookingNumber: row.bookingNumber,
@@ -2615,11 +2802,16 @@ export class ReportsService {
           players: Math.max(1, Math.floor(toNumber(row.playerCount ?? row.customerGroup?.length ?? 1))),
           status: row.status,
           paymentStatus: row.paymentStatus,
-          paymentMode: row.paymentMode ?? "-",
+          paymentMode,
+          cashAmount: toMoney(resolvedSplit.cashAmount),
+          cardAmount: toMoney(resolvedSplit.cardAmount),
+          upiAmount: toMoney(resolvedSplit.upiAmount),
+          paidTotalAmount,
+          paymentReferenceId,
           hourlyRate: toMoney(row.hourlyRate),
-          finalAmount: toMoney(row.finalAmount),
-          foodAndBeverageAmount: toMoney(row.foodAndBeverageAmount),
-          totalAmount: toMoney(toNumber(row.finalAmount) + toNumber(row.foodAndBeverageAmount)),
+          finalAmount: sessionAmount,
+          foodAndBeverageAmount: fnbAmount,
+          totalAmount,
           staff: row.staff?.fullName ?? "-",
           _checkInSortTime: checkInAt.getTime()
         } satisfies ReportRow;
@@ -2648,6 +2840,11 @@ export class ReportsService {
         { key: "status", label: "Status" },
         { key: "paymentStatus", label: "Payment Status" },
         { key: "paymentMode", label: "Payment Mode" },
+        { key: "cashAmount", label: "Cash Amount" },
+        { key: "cardAmount", label: "Card Amount" },
+        { key: "upiAmount", label: "UPI Amount" },
+        { key: "paidTotalAmount", label: "Paid Total" },
+        { key: "paymentReferenceId", label: "Reference ID" },
         { key: "hourlyRate", label: "Rate / Hour" },
         { key: "finalAmount", label: "Session Amount" },
         { key: "foodAndBeverageAmount", label: "F&B Amount" },
