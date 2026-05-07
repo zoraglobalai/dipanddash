@@ -122,6 +122,7 @@ export const gamingCreateSchema = z.object({
     paymentStatus: z.enum(GAMING_PAYMENT_STATUSES).optional(),
     paymentMode: z.enum(GAMING_PAYMENT_MODES).optional(),
     paymentBreakdown: paymentBreakdownSchema.optional(),
+    paymentReference: z.string().trim().max(120).optional(),
     finalAmount: z.coerce.number().min(0).optional(),
     systemCalculatedAmount: z.coerce.number().min(0).optional(),
     extraMemberCount: z.coerce.number().int().min(0).optional(),
@@ -195,6 +196,7 @@ export const gamingUpdateSchema = z.object({
     paymentStatus: z.enum(GAMING_PAYMENT_STATUSES).optional(),
     paymentMode: z.enum(GAMING_PAYMENT_MODES).optional(),
     paymentBreakdown: paymentBreakdownSchema.optional(),
+    paymentReference: z.string().trim().max(120).optional(),
     finalAmount: z.coerce.number().min(0).optional(),
     systemCalculatedAmount: z.coerce.number().min(0).optional(),
     extraMemberCount: z.coerce.number().int().min(0).optional(),
@@ -253,7 +255,8 @@ export const gamingCheckoutSchema = z.object({
     amountOverrideReason: z.string().trim().max(500).optional(),
     paymentStatus: z.enum(["pending", "paid"]).default("pending"),
     paymentMode: z.enum(GAMING_PAYMENT_MODES).optional(),
-    paymentBreakdown: paymentBreakdownSchema.optional()
+    paymentBreakdown: paymentBreakdownSchema.optional(),
+    paymentReference: z.string().trim().max(120).optional()
   }).superRefine((body, ctx) => {
     if (body.paymentStatus === "paid" && !body.paymentMode && !hasPaymentBreakdownAmount(body.paymentBreakdown)) {
       ctx.addIssue({
@@ -273,7 +276,8 @@ export const gamingPaymentSchema = z.object({
   body: z.object({
     paymentStatus: z.enum(["pending", "paid"]),
     paymentMode: z.enum(GAMING_PAYMENT_MODES).optional(),
-    paymentBreakdown: paymentBreakdownSchema.optional()
+    paymentBreakdown: paymentBreakdownSchema.optional(),
+    paymentReference: z.string().trim().max(120).optional()
   }).superRefine((body, ctx) => {
     if (body.paymentStatus === "paid" && !body.paymentMode && !hasPaymentBreakdownAmount(body.paymentBreakdown)) {
       ctx.addIssue({

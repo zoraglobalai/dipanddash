@@ -1201,6 +1201,7 @@ export const GamingPage = () => {
       paymentStatus: bookingForm.paymentStatus,
       paymentMode: bookingForm.paymentStatus === "paid" ? paymentMode : undefined,
       paymentBreakdown: bookingForm.paymentStatus === "paid" ? paymentBreakdown : undefined,
+      paymentReference: transactionReference || undefined,
       finalAmount,
       systemCalculatedAmount: autoSystemAmount,
       extraMemberCount: autoExtraMemberCount,

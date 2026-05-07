@@ -858,7 +858,8 @@ export const StaffGamingBookingPage = () => {
         amountOverrideReason: overrideReason || undefined,
         paymentStatus: checkoutPaymentStatus,
         paymentMode: checkoutPaymentStatus === "paid" ? checkoutPaymentMode : undefined,
-        paymentBreakdown: checkoutPaymentStatus === "paid" ? checkoutPaymentBreakdown : undefined
+        paymentBreakdown: checkoutPaymentStatus === "paid" ? checkoutPaymentBreakdown : undefined,
+        paymentReference: checkoutRequiresReference ? checkoutPaymentReference.trim() : undefined
       });
 
       checkoutConfirmModal.onClose();

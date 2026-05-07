@@ -79,6 +79,7 @@ export type GamingCreateBookingPayload = {
   paymentStatus?: GamingPaymentStatus;
   paymentMode?: GamingPaymentMode;
   paymentBreakdown?: Partial<Pick<GamingPaymentBreakdown, "cash" | "card" | "upi">>;
+  paymentReference?: string;
   finalAmount?: number;
   systemCalculatedAmount?: number;
   extraMemberCount?: number;

@@ -83,6 +83,7 @@ export const gamingService = {
         card?: number;
         upi?: number;
       };
+      paymentReference?: string;
     }
   ) => {
     const response = await apiClient.patch<ApiSuccess<{ booking: GamingBookingRow }>>(
@@ -100,11 +101,12 @@ export const gamingService = {
       cash?: number;
       card?: number;
       upi?: number;
-    }
+    },
+    paymentReference?: string
   ) => {
     const response = await apiClient.patch<ApiSuccess<{ booking: GamingBookingRow }>>(
       `/gaming/bookings/${id}/payment-status`,
-      { paymentStatus, paymentMode, paymentBreakdown }
+      { paymentStatus, paymentMode, paymentBreakdown, paymentReference }
     );
     return response.data;
   }

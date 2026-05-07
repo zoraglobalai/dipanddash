@@ -2781,9 +2781,7 @@ export class ReportsService {
         const invoiceLinkedInfo = paymentInfoByBookingId.get(row.id);
         const invoiceReferences = invoiceLinkedInfo ? Array.from(invoiceLinkedInfo.references) : [];
         const noteReference = extractGamingTransactionReference(row.note);
-        const paymentReferenceId = invoiceReferences.length
-          ? invoiceReferences.join(", ")
-          : noteReference || "-";
+        const paymentReferenceId = noteReference || (invoiceReferences.length ? invoiceReferences.join(", ") : "-");
         const paidTotalAmount = toMoney(
           resolvedSplit.cashAmount + resolvedSplit.cardAmount + resolvedSplit.upiAmount
         );

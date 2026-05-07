@@ -120,6 +120,30 @@ const cleanText = (value?: string | null) => {
   const trimmed = value.trim();
   return trimmed.length ? trimmed : null;
 };
+const extractPaymentReferenceFromNote = (value?: string | null) => {
+  const normalized = value?.trim();
+  if (!normalized) {
+    return null;
+  }
+  const match = normalized.match(/(?:UPI Ref|Txn Ref):\s*([^|]+)/i);
+  return match?.[1]?.trim() || null;
+};
+const stripPaymentReferenceFromNote = (value?: string | null) => {
+  if (!value) {
+    return null;
+  }
+  const cleaned = value.replace(/\s*\|?\s*(?:UPI Ref|Txn Ref):\s*[^|]+/gi, "").trim();
+  return cleaned.length ? cleaned : null;
+};
+const attachPaymentReferenceToNote = (baseNote: string | null, paymentReference: string | null) => {
+  const withoutReference = stripPaymentReferenceFromNote(baseNote);
+  if (!paymentReference) {
+    return withoutReference;
+  }
+  return withoutReference ? `${withoutReference} | Txn Ref: ${paymentReference}` : `Txn Ref: ${paymentReference}`;
+};
+const hasDigitalPaymentBreakdown = (breakdown: PaymentBreakdown) =>
+  breakdown.card > AMOUNT_DIFF_THRESHOLD || breakdown.upi > AMOUNT_DIFF_THRESHOLD;
 const hasAmountDiff = (left: number, right: number) => Math.abs(left - right) > AMOUNT_DIFF_THRESHOLD;
 
 const normalizePaymentBreakdown = (input?: PaymentBreakdownInput | null): PaymentBreakdown => {
@@ -853,6 +877,7 @@ export const gamingBookingsService = {
       paymentStatus?: "pending" | "paid";
       paymentMode?: GamingPaymentMode;
       paymentBreakdown?: PaymentBreakdownInput;
+      paymentReference?: string;
     }
   ) {
     const booking = await getCachedBooking(localBookingId);
@@ -914,6 +939,15 @@ export const gamingBookingsService = {
       },
       nextFinalAmount > 0 ? nextFinalAmount : expectedFinalAmount
     );
+    const existingPaymentReference = extractPaymentReferenceFromNote(booking.note);
+    const explicitPaymentReference =
+      input.paymentReference !== undefined
+        ? cleanText(input.paymentReference)
+        : existingPaymentReference;
+    const nextNote =
+      payment.paymentStatus === "paid" && hasDigitalPaymentBreakdown(payment.paymentBreakdown)
+        ? attachPaymentReferenceToNote(cleanText(booking.note), explicitPaymentReference)
+        : stripPaymentReferenceFromNote(cleanText(booking.note));
 
     const nextBooking: GamingBooking = {
       ...booking,
@@ -950,6 +984,7 @@ export const gamingBookingsService = {
       foodInvoiceNumber: booking.foodInvoiceNumber,
       foodInvoiceStatus: booking.foodInvoiceStatus,
       foodAndBeverageAmount: booking.foodAndBeverageAmount,
+      note: nextNote,
       updatedAt: nowIso(),
       syncStatus: "pending"
     };
