@@ -208,6 +208,18 @@ const extractGamingTransactionReference = (note: unknown) => {
   return match?.[1]?.trim() ?? "";
 };
 
+const resolveGamingCustomerName = (
+  booking: Pick<GamingBooking, "primaryCustomerName" | "customerGroup">
+) => {
+  const primaryName = cleanOptionalText(booking.primaryCustomerName);
+  if (primaryName) {
+    return primaryName;
+  }
+
+  const customer = (booking.customerGroup ?? []).find((member) => cleanOptionalText(member.name));
+  return customer ? cleanOptionalText(customer.name) : "Walk-in";
+};
+
 const formatDurationFromMinutes = (value: number) => {
   const safeMinutes = Math.max(0, Math.floor(value));
   const hours = Math.floor(safeMinutes / 60);
@@ -2790,6 +2802,7 @@ export class ReportsService {
 
         return {
           bookingNumber: row.bookingNumber,
+          customerName: resolveGamingCustomerName(row),
           month: formatIstMonthLabel(checkInAt),
           inDate: formatIstDateLabel(checkInAt),
           inTime: formatIstTimeLabel(checkInAt),
@@ -2827,6 +2840,7 @@ export class ReportsService {
       ],
       columns: [
         { key: "bookingNumber", label: "Booking" },
+        { key: "customerName", label: "Customer Name" },
         { key: "month", label: "Month" },
         { key: "inDate", label: "In Date" },
         { key: "inTime", label: "In Time (IST)" },
