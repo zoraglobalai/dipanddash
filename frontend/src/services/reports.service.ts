@@ -9,6 +9,7 @@ type GenerateReportParams = {
   dateTo?: string;
   search?: string;
   outletId?: string;
+  customerId?: string;
   page?: number;
   limit?: number;
 };

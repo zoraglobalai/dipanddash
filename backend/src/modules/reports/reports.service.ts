@@ -3,6 +3,7 @@ import { AppDataSource } from "../../database/data-source";
 import { AppError } from "../../errors/app-error";
 import { AttendanceRecord } from "../attendance/attendance.entity";
 import { CashAudit } from "../cash-audit/cash-audit.entity";
+import { Customer } from "../customers/customer.entity";
 import { GamingBooking } from "../gaming/gaming-booking.entity";
 import { DailyAllocation } from "../ingredients/daily-allocation.entity";
 import { Ingredient } from "../ingredients/ingredient.entity";
@@ -41,6 +42,7 @@ type GenerateReportInput = {
   dateTo?: string;
   search?: string;
   outletId?: string;
+  customerId?: string;
   page: number;
   limit: number;
 };
@@ -112,12 +114,14 @@ type OutletContext = {
 
 const SNOOKER_ONLY_REPORT_KEYS = new Set<ReportKey>([
   "gaming_report",
+  "gaming_detailed_report",
   "product_wise_sales_report_snooker",
   "stock_report_snooker"
 ]);
 
 const SNOOKER_SCOPE_REPORT_KEYS = new Set<ReportKey>([
   "gaming_report",
+  "gaming_detailed_report",
   "cash_audit_report",
   "daily_sales_report",
   "customer_report",
@@ -199,6 +203,33 @@ const cleanOptionalText = (value: unknown) => {
   return value.trim();
 };
 
+const normalizeReportPhone = (value: unknown) => cleanOptionalText(value).replace(/[^\d+]/g, "");
+const normalizeLookupKey = (value: unknown) => cleanOptionalText(value).toLowerCase();
+
+const readSnapshotText = (snapshot: unknown, keys: string[]) => {
+  const parsed =
+    typeof snapshot === "string"
+      ? (() => {
+          try {
+            return JSON.parse(snapshot) as unknown;
+          } catch {
+            return null;
+          }
+        })()
+      : snapshot;
+  if (!parsed || typeof parsed !== "object") {
+    return "";
+  }
+  const record = parsed as Record<string, unknown>;
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return "";
+};
+
 const extractGamingTransactionReference = (note: unknown) => {
   const normalized = cleanOptionalText(note);
   if (!normalized) {
@@ -218,6 +249,18 @@ const resolveGamingCustomerName = (
 
   const customer = (booking.customerGroup ?? []).find((member) => cleanOptionalText(member.name));
   return customer ? cleanOptionalText(customer.name) : "Walk-in";
+};
+
+const resolveGamingCustomerPhone = (
+  booking: Pick<GamingBooking, "primaryCustomerPhone" | "customerGroup">
+) => {
+  const primaryPhone = cleanOptionalText(booking.primaryCustomerPhone);
+  if (primaryPhone) {
+    return primaryPhone;
+  }
+
+  const customer = (booking.customerGroup ?? []).find((member) => cleanOptionalText(member.phone));
+  return customer ? cleanOptionalText(customer.phone) : "-";
 };
 
 const formatDurationFromMinutes = (value: number) => {
@@ -317,6 +360,7 @@ export class ReportsService {
   private readonly productRepository = AppDataSource.getRepository(Product);
   private readonly outletRepository = AppDataSource.getRepository(Outlet);
   private readonly gamingRepository = AppDataSource.getRepository(GamingBooking);
+  private readonly customerRepository = AppDataSource.getRepository(Customer);
   private readonly cashAuditRepository = AppDataSource.getRepository(CashAudit);
   private readonly procurementService = new ProcurementService();
 
@@ -484,7 +528,8 @@ export class ReportsService {
     }
     const payload = await this.dispatchGenerateReport(input.reportKey, from, to, {
       outletId: input.outletId,
-      businessScope
+      businessScope,
+      customerId: input.customerId
     });
     const finalized = this.finalizeReportRows(payload.rows, input.search, input.page, input.limit);
 
@@ -647,6 +692,154 @@ export class ReportsService {
     to: Date,
     scope: "dip_and_dash" | "snooker"
   ): Promise<ReportPayload> {
+    if (scope === "snooker") {
+      const lineRows = await this.invoiceLineRepository
+        .createQueryBuilder("line")
+        .innerJoin(Invoice, "invoice", "invoice.id = line.invoiceId")
+        .leftJoin(Customer, "customer", "customer.id = invoice.customerId")
+        .where("invoice.status = 'paid'")
+        .andWhere("invoice.orderType = :snookerOrderType", { snookerOrderType: "snooker" })
+        .andWhere("invoice.createdAt >= :from AND invoice.createdAt <= :to", { from, to })
+        .select("invoice.id", "invoiceId")
+        .addSelect("invoice.invoiceNumber", "invoiceNumber")
+        .addSelect("invoice.createdAt", "createdAt")
+        .addSelect("invoice.paymentMode", "paymentMode")
+        .addSelect("invoice.customerSnapshot", "customerSnapshot")
+        .addSelect("customer.name", "customerName")
+        .addSelect("customer.phone", "customerPhone")
+        .addSelect("line.nameSnapshot", "name")
+        .addSelect("line.quantity", "quantity")
+        .addSelect("line.unitPrice", "unitPrice")
+        .addSelect("line.lineTotal", "lineTotal")
+        .orderBy("invoice.createdAt", "ASC")
+        .addOrderBy("line.createdAt", "ASC")
+        .getRawMany<{
+          invoiceId: string;
+          invoiceNumber: string;
+          createdAt: Date | string;
+          paymentMode: string;
+          customerSnapshot: unknown;
+          customerName: string | null;
+          customerPhone: string | null;
+          name: string;
+          quantity: string;
+          unitPrice: string;
+          lineTotal: string;
+        }>();
+
+      const invoiceIds = Array.from(new Set(lineRows.map((row) => row.invoiceId).filter(Boolean)));
+      const paymentRows = invoiceIds.length
+        ? await this.invoicePaymentRepository
+            .createQueryBuilder("payment")
+            .select("payment.invoiceId", "invoiceId")
+            .addSelect("payment.mode", "mode")
+            .addSelect("payment.amount", "amount")
+            .addSelect("payment.referenceNo", "referenceNo")
+            .where("payment.invoiceId IN (:...invoiceIds)", { invoiceIds })
+            .andWhere("payment.status = :status", { status: "success" })
+            .getRawMany<{
+              invoiceId: string;
+              mode: "cash" | "card" | "upi" | "mixed" | "pending";
+              amount: string;
+              referenceNo: string | null;
+            }>()
+        : [];
+
+      const paymentByInvoiceId = new Map<
+        string,
+        { cashAmount: number; cardAmount: number; upiAmount: number; paidTotal: number; references: Set<string> }
+      >();
+      paymentRows.forEach((row) => {
+        const current = paymentByInvoiceId.get(row.invoiceId) ?? {
+          cashAmount: 0,
+          cardAmount: 0,
+          upiAmount: 0,
+          paidTotal: 0,
+          references: new Set<string>()
+        };
+        const amount = toMoney(row.amount);
+        if (row.mode === "cash") {
+          current.cashAmount = toMoney(current.cashAmount + amount);
+        } else if (row.mode === "card") {
+          current.cardAmount = toMoney(current.cardAmount + amount);
+        } else if (row.mode === "upi") {
+          current.upiAmount = toMoney(current.upiAmount + amount);
+        }
+        current.paidTotal = toMoney(current.cashAmount + current.cardAmount + current.upiAmount);
+        const reference = cleanOptionalText(row.referenceNo);
+        if (reference) {
+          current.references.add(reference);
+        }
+        paymentByInvoiceId.set(row.invoiceId, current);
+      });
+
+      const parsedRows = lineRows.map((row) => {
+        const createdAt = row.createdAt instanceof Date ? row.createdAt : new Date(row.createdAt);
+        const payment = paymentByInvoiceId.get(row.invoiceId);
+        const fallbackTotal = toMoney(row.lineTotal);
+        const hasPaymentSplit = payment && payment.paidTotal > AMOUNT_DIFF_THRESHOLD;
+        const paymentMode = cleanOptionalText(row.paymentMode) || "-";
+        return {
+          invoiceNumber: row.invoiceNumber,
+          date: Number.isNaN(createdAt.getTime()) ? "-" : formatIstDateLabel(createdAt),
+          customerName:
+            cleanOptionalText(row.customerName) ||
+            readSnapshotText(row.customerSnapshot, ["name", "fullName"]) ||
+            "Walk-in",
+          customerPhone:
+            cleanOptionalText(row.customerPhone) ||
+            readSnapshotText(row.customerSnapshot, ["phone", "mobile"]) ||
+            "-",
+          name: row.name || "-",
+          quantity: toQty(row.quantity),
+          unitPrice: toMoney(row.unitPrice),
+          totalSales: fallbackTotal,
+          paymentMode,
+          cashAmount: hasPaymentSplit ? toMoney(payment.cashAmount) : paymentMode === "cash" ? fallbackTotal : 0,
+          cardAmount: hasPaymentSplit ? toMoney(payment.cardAmount) : paymentMode === "card" ? fallbackTotal : 0,
+          gpayAmount: hasPaymentSplit ? toMoney(payment.upiAmount) : paymentMode === "upi" ? fallbackTotal : 0,
+          paidTotal: hasPaymentSplit ? toMoney(payment.paidTotal) : fallbackTotal,
+          referenceId: payment?.references.size ? Array.from(payment.references).join(", ") : "-"
+        };
+      });
+
+      const productTotals = new Map<string, number>();
+      parsedRows.forEach((row) => {
+        productTotals.set(row.name, toMoney((productTotals.get(row.name) ?? 0) + row.totalSales));
+      });
+      const topSellerEntry = Array.from(productTotals.entries()).sort((a, b) => b[1] - a[1])[0];
+
+      return {
+        stats: [
+          { label: "Scope", value: "Snooker" },
+          { label: "Lines", value: parsedRows.length },
+          { label: "Total Product Sales", value: toMoney(parsedRows.reduce((sum, row) => sum + row.totalSales, 0)) },
+          {
+            label: "Top Seller",
+            value: topSellerEntry?.[0] ?? "-",
+            hint: topSellerEntry ? `Sales ${toMoney(topSellerEntry[1])}` : undefined
+          }
+        ],
+        columns: [
+          { key: "invoiceNumber", label: "Invoice" },
+          { key: "date", label: "Date" },
+          { key: "customerName", label: "Customer Name" },
+          { key: "customerPhone", label: "Customer Phone" },
+          { key: "name", label: "Product" },
+          { key: "quantity", label: "Quantity" },
+          { key: "unitPrice", label: "Unit Price" },
+          { key: "totalSales", label: "Total Sales" },
+          { key: "paymentMode", label: "Payment Mode" },
+          { key: "cashAmount", label: "Cash Amount" },
+          { key: "cardAmount", label: "Card Amount" },
+          { key: "gpayAmount", label: "Gpay Amount" },
+          { key: "paidTotal", label: "Paid Total" },
+          { key: "referenceId", label: "Reference ID" }
+        ],
+        rows: parsedRows
+      };
+    }
+
     const query = this.invoiceLineRepository
       .createQueryBuilder("line")
       .leftJoin(Invoice, "invoice", "invoice.id = line.invoiceId")
@@ -658,11 +851,7 @@ export class ReportsService {
       .addSelect("COALESCE(SUM(line.lineTotal),0)", "total")
       .addSelect("COALESCE(AVG(line.unitPrice),0)", "avgPrice");
 
-    if (scope === "snooker") {
-      query.andWhere("invoice.orderType = :snookerOrderType", { snookerOrderType: "snooker" });
-    } else {
-      query.andWhere("invoice.orderType != :snookerOrderType", { snookerOrderType: "snooker" });
-    }
+    query.andWhere("invoice.orderType != :snookerOrderType", { snookerOrderType: "snooker" });
 
     const rows = await query
       .groupBy("DATE(invoice.createdAt AT TIME ZONE 'Asia/Kolkata')")
@@ -689,7 +878,7 @@ export class ReportsService {
       productTotals.set(row.name, toMoney((productTotals.get(row.name) ?? 0) + row.totalSales));
     });
     const topSellerEntry = Array.from(productTotals.entries()).sort((a, b) => b[1] - a[1])[0];
-    const scopeLabel = scope === "snooker" ? "Snooker" : "Dip & Dash";
+    const scopeLabel = "Dip & Dash";
 
     return {
       stats: [
@@ -915,7 +1104,8 @@ export class ReportsService {
   private async generateCustomerReport(
     from: Date,
     to: Date,
-    scope?: ReportBusinessScope
+    scope?: ReportBusinessScope,
+    customerId?: string
   ): Promise<ReportPayload> {
     const query = this.invoiceRepository
       .createQueryBuilder("invoice")
@@ -933,6 +1123,9 @@ export class ReportsService {
       ]);
 
     this.applyInvoiceOrderScope(query, scope);
+    if (customerId) {
+      query.andWhere("customer.id = :customerId", { customerId });
+    }
 
     const invoices = await query.getMany();
 
@@ -1160,7 +1353,7 @@ export class ReportsService {
       expiryAlert: string;
     }> = [];
 
-    for (const targetSection of ["gaming", "both"] as const) {
+    for (const targetSection of ["gaming"] as const) {
       let page = 1;
       let totalPages = 1;
       do {
@@ -2612,13 +2805,41 @@ export class ReportsService {
     return computed.payload;
   }
 
-  private async generateGamingReport(from: Date, to: Date): Promise<ReportPayload> {
-    const rows = await this.gamingRepository
+  private async generateGamingReport(
+    from: Date,
+    to: Date,
+    detailed = false,
+    customerId?: string
+  ): Promise<ReportPayload> {
+    const sourceRows = await this.gamingRepository
       .createQueryBuilder("booking")
       .leftJoinAndSelect("booking.staff", "staff")
       .where("booking.checkInAt >= :from AND booking.checkInAt <= :to", { from, to })
       .orderBy("booking.checkInAt", "ASC")
       .getMany();
+    let rows = sourceRows;
+    if (customerId) {
+      const customer = await this.customerRepository.findOne({ where: { id: customerId } });
+      if (!customer) {
+        throw new AppError(404, "Customer not found.");
+      }
+      const customerPhone = normalizeReportPhone(customer.phone);
+      const customerName = normalizeLookupKey(customer.name);
+      rows = sourceRows.filter((booking) => {
+        const bookingPhones = [
+          booking.primaryCustomerPhone,
+          ...(booking.customerGroup ?? []).map((member) => member.phone)
+        ].map(normalizeReportPhone);
+        if (customerPhone && bookingPhones.includes(customerPhone)) {
+          return true;
+        }
+        const bookingNames = [
+          booking.primaryCustomerName,
+          ...(booking.customerGroup ?? []).map((member) => member.name)
+        ].map((name) => normalizeLookupKey(cleanOptionalText(name)));
+        return Boolean(customerName && bookingNames.includes(customerName));
+      });
+    }
 
     const orderReferenceSet = new Set<string>();
     const invoiceNumberSet = new Set<string>();
@@ -2733,6 +2954,7 @@ export class ReportsService {
       string,
       { cashAmount: number; cardAmount: number; upiAmount: number; references: Set<string> }
     >();
+    const linkedInvoiceIdsByBookingId = new Map<string, string[]>();
     rows.forEach((row) => {
       const bookingOrderReference = cleanOptionalText(row.foodOrderReference);
       const bookingInvoiceNumber = cleanOptionalText(row.foodInvoiceNumber);
@@ -2744,6 +2966,7 @@ export class ReportsService {
       if (bookingInvoiceNumber) {
         (invoiceIdsByInvoiceNumber.get(bookingInvoiceNumber) ?? []).forEach((invoiceId) => linkedIds.add(invoiceId));
       }
+      linkedInvoiceIdsByBookingId.set(row.id, Array.from(linkedIds));
 
       const aggregate = {
         cashAmount: 0,
@@ -2764,7 +2987,39 @@ export class ReportsService {
       paymentInfoByBookingId.set(row.id, aggregate);
     });
 
-    const parsedRows = rows
+    const invoiceLineRows = detailed && invoiceIds.length
+      ? await this.invoiceLineRepository
+          .createQueryBuilder("line")
+          .innerJoin("line.invoice", "invoice")
+          .select("line.invoiceId", "invoiceId")
+          .addSelect("invoice.invoiceNumber", "invoiceNumber")
+          .addSelect("line.referenceId", "productId")
+          .addSelect("line.nameSnapshot", "productName")
+          .addSelect("line.quantity", "quantity")
+          .addSelect("line.unitPrice", "unitPrice")
+          .addSelect("line.lineTotal", "lineTotal")
+          .where("line.invoiceId IN (:...invoiceIds)", { invoiceIds })
+          .andWhere("line.lineType = :lineType", { lineType: "product" })
+          .orderBy("invoice.createdAt", "ASC")
+          .addOrderBy("line.createdAt", "ASC")
+          .getRawMany<{
+            invoiceId: string;
+            invoiceNumber: string;
+            productId: string | null;
+            productName: string;
+            quantity: string;
+            unitPrice: string;
+            lineTotal: string;
+          }>()
+      : [];
+    const invoiceLinesByInvoiceId = new Map<string, typeof invoiceLineRows>();
+    invoiceLineRows.forEach((line) => {
+      const current = invoiceLinesByInvoiceId.get(line.invoiceId) ?? [];
+      current.push(line);
+      invoiceLinesByInvoiceId.set(line.invoiceId, current);
+    });
+
+    const baseRows = rows
       .map((row) => {
         const checkInAt = row.checkInAt;
         const checkOutAt = row.checkOutAt;
@@ -2803,6 +3058,7 @@ export class ReportsService {
         return {
           bookingNumber: row.bookingNumber,
           customerName: resolveGamingCustomerName(row),
+          customerPhone: resolveGamingCustomerPhone(row),
           month: formatIstMonthLabel(checkInAt),
           inDate: formatIstDateLabel(checkInAt),
           inTime: formatIstTimeLabel(checkInAt),
@@ -2826,21 +3082,65 @@ export class ReportsService {
           foodAndBeverageAmount: fnbAmount,
           totalAmount,
           staff: row.staff?.fullName ?? "-",
+          _bookingId: row.id,
           _checkInSortTime: checkInAt.getTime()
         } satisfies ReportRow;
       })
-      .sort((left, right) => toNumber(left._checkInSortTime) - toNumber(right._checkInSortTime))
-      .map(({ _checkInSortTime, ...row }) => row);
+      .sort((left, right) => toNumber(left._checkInSortTime) - toNumber(right._checkInSortTime));
+
+    const parsedRows = detailed
+      ? baseRows
+          .map((row) => {
+            const linkedIds = linkedInvoiceIdsByBookingId.get(String(row._bookingId ?? "")) ?? [];
+            const productLines = linkedIds.flatMap((invoiceId) => invoiceLinesByInvoiceId.get(invoiceId) ?? []);
+            const productInvoiceNumbers = Array.from(
+              new Set(productLines.map((line) => cleanOptionalText(line.invoiceNumber)).filter(Boolean))
+            );
+            const productTotal = toMoney(productLines.reduce((sum, line) => sum + toMoney(line.lineTotal), 0));
+            const fnbAmount = productLines.length ? productTotal : toMoney(row.foodAndBeverageAmount);
+            const totalAmount = toMoney(toMoney(row.finalAmount) + fnbAmount);
+
+            return {
+              ...row,
+              foodAndBeverageAmount: fnbAmount,
+              totalAmount,
+              productInvoiceNumber: productInvoiceNumbers.length ? productInvoiceNumbers.join(", ") : "-",
+              productName: productLines.length
+                ? productLines
+                    .map((line) => `${line.productName || "-"} x${toQty(line.quantity)} @ ${toMoney(line.unitPrice).toFixed(2)}`)
+                    .join("; ")
+                : "-",
+              productQuantity: productLines.length ? productLines.map((line) => toQty(line.quantity)).join("; ") : "-",
+              productUnitPrice: productLines.length
+                ? productLines.map((line) => toMoney(line.unitPrice).toFixed(2)).join("; ")
+                : "-"
+            };
+          })
+          .map(({ _bookingId, _checkInSortTime, ...row }) => row)
+      : baseRows.map(({ _bookingId, _checkInSortTime, ...row }) => row);
+
+    const gamingRevenue = toMoney(baseRows.reduce((sum, row) => sum + toMoney(row.totalAmount), 0));
+    const productRevenue = toMoney(invoiceLineRows.reduce((sum, line) => sum + toMoney(line.lineTotal), 0));
+    const productQuantity = toQty(invoiceLineRows.reduce((sum, line) => sum + toQty(line.quantity), 0));
 
     return {
-      stats: [
-        { label: "Sessions", value: parsedRows.length },
-        { label: "Playing Now", value: parsedRows.filter((row) => row.status === "ongoing").length },
-        { label: "Gaming Revenue", value: toMoney(parsedRows.reduce((sum, row) => sum + row.totalAmount, 0)) }
-      ],
+      stats: detailed
+        ? [
+            { label: "Sessions", value: baseRows.length },
+            { label: "Product Lines", value: invoiceLineRows.length },
+            { label: "Product Qty", value: productQuantity },
+            { label: "Product Revenue", value: productRevenue },
+            { label: "Gaming Revenue", value: gamingRevenue }
+          ]
+        : [
+            { label: "Sessions", value: parsedRows.length },
+            { label: "Playing Now", value: parsedRows.filter((row) => row.status === "ongoing").length },
+            { label: "Gaming Revenue", value: gamingRevenue }
+          ],
       columns: [
         { key: "bookingNumber", label: "Booking" },
         { key: "customerName", label: "Customer Name" },
+        { key: "customerPhone", label: "Customer Phone" },
         { key: "month", label: "Month" },
         { key: "inDate", label: "In Date" },
         { key: "inTime", label: "In Time (IST)" },
@@ -2854,15 +3154,23 @@ export class ReportsService {
         { key: "status", label: "Status" },
         { key: "paymentStatus", label: "Payment Status" },
         { key: "paymentMode", label: "Payment Mode" },
-        { key: "cashAmount", label: "Cash Amount" },
-        { key: "cardAmount", label: "Card Amount" },
-        { key: "upiAmount", label: "UPI Amount" },
-        { key: "paidTotalAmount", label: "Paid Total" },
-        { key: "paymentReferenceId", label: "Reference ID" },
         { key: "hourlyRate", label: "Rate / Hour" },
         { key: "finalAmount", label: "Session Amount" },
+        ...(detailed
+          ? [
+              { key: "productInvoiceNumber", label: "Product Invoice" },
+              { key: "productName", label: "Products" },
+              { key: "productQuantity", label: "Product Qty" },
+              { key: "productUnitPrice", label: "Product Price" }
+            ]
+          : []),
         { key: "foodAndBeverageAmount", label: "F&B Amount" },
-        { key: "totalAmount", label: "Total" },
+        { key: "totalAmount", label: "Total Amount" },
+        { key: "cashAmount", label: "Cash Amount" },
+        { key: "cardAmount", label: "Card Amount" },
+        { key: "upiAmount", label: "Gpay Amount" },
+        { key: "paidTotalAmount", label: "Paid Total" },
+        { key: "paymentReferenceId", label: "Reference ID" },
         { key: "staff", label: "Staff" }
       ],
       rows: parsedRows
@@ -2928,7 +3236,7 @@ export class ReportsService {
     reportKey: ReportKey,
     from: Date,
     to: Date,
-    options: { outletId?: string; businessScope?: ReportBusinessScope }
+    options: { outletId?: string; businessScope?: ReportBusinessScope; customerId?: string }
   ): Promise<ReportPayload> {
     switch (reportKey) {
       case "daily_sales_report":
@@ -2946,7 +3254,7 @@ export class ReportsService {
       case "kot_report":
         return this.generateKotReport(from, to);
       case "customer_report":
-        return this.generateCustomerReport(from, to, options.businessScope);
+        return this.generateCustomerReport(from, to, options.businessScope, options.customerId);
       case "purchase_report":
         return this.generatePurchaseReport(from, to);
       case "supplier_wise_report":
@@ -2983,6 +3291,8 @@ export class ReportsService {
         return this.generateStockConsumptionReport(from, to, options.outletId, options.businessScope);
       case "gaming_report":
         return this.generateGamingReport(from, to);
+      case "gaming_detailed_report":
+        return this.generateGamingReport(from, to, true, options.customerId);
       case "cash_audit_report":
         return this.generateCashAuditReport(from, to);
       default:

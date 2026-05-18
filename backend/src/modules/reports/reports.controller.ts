@@ -45,6 +45,7 @@ export class ReportsController {
         dateTo: typeof req.query.dateTo === "string" ? req.query.dateTo : undefined,
         search: typeof req.query.search === "string" ? req.query.search : undefined,
         outletId: typeof req.query.outletId === "string" ? req.query.outletId : undefined,
+        customerId: typeof req.query.customerId === "string" ? req.query.customerId : undefined,
         page: parsePositiveInt(req.query.page, 1),
         limit: parsePositiveInt(req.query.limit, 50)
       }

@@ -21,7 +21,9 @@ export class DashboardController {
   getSalesStats = async (req: Request, res: Response): Promise<Response> => {
     const data = await this.dashboardService.getSalesStats({
       dateFrom: typeof req.query.dateFrom === "string" ? req.query.dateFrom : undefined,
-      dateTo: typeof req.query.dateTo === "string" ? req.query.dateTo : undefined
+      dateTo: typeof req.query.dateTo === "string" ? req.query.dateTo : undefined,
+      businessScope:
+        typeof req.query.businessScope === "string" ? (req.query.businessScope as never) : undefined
     });
     return sendSuccess(res, StatusCodes.OK, "Sales stats fetched successfully", data);
   };

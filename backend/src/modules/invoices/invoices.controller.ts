@@ -55,6 +55,8 @@ export class InvoicesController {
           typeof req.query.excludeOrderType === "string"
             ? (req.query.excludeOrderType as never)
             : undefined,
+        businessScope:
+          typeof req.query.businessScope === "string" ? (req.query.businessScope as never) : undefined,
         staffId: typeof req.query.staffId === "string" ? req.query.staffId : undefined,
         dateFrom: typeof req.query.dateFrom === "string" ? req.query.dateFrom : undefined,
         dateTo: typeof req.query.dateTo === "string" ? req.query.dateTo : undefined,
@@ -76,6 +78,8 @@ export class InvoicesController {
           typeof req.query.excludeOrderType === "string"
             ? (req.query.excludeOrderType as never)
             : undefined,
+        businessScope:
+          typeof req.query.businessScope === "string" ? (req.query.businessScope as never) : undefined,
         dateFrom: typeof req.query.dateFrom === "string" ? req.query.dateFrom : undefined,
         dateTo: typeof req.query.dateTo === "string" ? req.query.dateTo : undefined
       },

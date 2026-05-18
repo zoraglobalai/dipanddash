@@ -40,7 +40,18 @@ function DataTableComponent<T extends { id?: string }>({ columns, rows, emptySta
         <Thead bg="rgba(218, 164, 56, 0.1)">
           <Tr>
             {columns.map((column) => (
-              <Th key={String(column.key)} color="#634E45" fontWeight={800} textTransform="none" fontSize="sm">
+              <Th
+                key={String(column.key)}
+                color="#634E45"
+                fontWeight={800}
+                textTransform="none"
+                fontSize="sm"
+                position="sticky"
+                top={0}
+                zIndex={1}
+                bg="#FFF8EC"
+                boxShadow="0 1px 0 rgba(133, 78, 48, 0.18)"
+              >
                 {column.header}
               </Th>
             ))}

@@ -105,6 +105,7 @@ export const invoicesService = {
     staffId?: string;
     orderType?: InvoiceOrderType;
     excludeOrderType?: InvoiceOrderType;
+    businessScope?: "dip_and_dash" | "snooker";
     dateFrom?: string;
     dateTo?: string;
   }) => {
@@ -120,6 +121,7 @@ export const invoicesService = {
     paymentMode?: InvoicePaymentMode;
     orderType?: InvoiceOrderType;
     excludeOrderType?: InvoiceOrderType;
+    businessScope?: "dip_and_dash" | "snooker";
     staffId?: string;
     dateFrom?: string;
     dateTo?: string;

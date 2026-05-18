@@ -57,7 +57,7 @@ export const StaffSnookerProductSalesPage = () => {
   const products = useMemo(
     () =>
       (catalog?.products ?? []).filter(
-        (product) => product.isActive && (product.targetSection === "gaming" || product.targetSection === "both")
+        (product) => product.isActive && product.targetSection === "gaming"
       ),
     [catalog?.products]
   );

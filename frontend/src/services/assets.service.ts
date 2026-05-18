@@ -5,6 +5,7 @@ import type { AssetListItem, AssetListResponse, AssetUnit } from "@/types/assets
 export const assetsService = {
   getAssets: async (params?: {
     search?: string;
+    section?: "dip_and_dash" | "gaming";
     includeInactive?: boolean;
     page?: number;
     limit?: number;
@@ -15,6 +16,7 @@ export const assetsService = {
 
   createAsset: async (payload: {
     name: string;
+    section?: "dip_and_dash" | "gaming";
     quantity: number;
     unit: AssetUnit;
     isActive?: boolean;
@@ -27,6 +29,7 @@ export const assetsService = {
     id: string,
     payload: {
       name?: string;
+      section?: "dip_and_dash" | "gaming";
       quantity?: number;
       unit?: AssetUnit;
       isActive?: boolean;

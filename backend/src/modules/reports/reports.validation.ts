@@ -16,6 +16,7 @@ export const generateReportSchema = z.object({
     dateTo: z.string().regex(datePattern, "Date must be in YYYY-MM-DD format").optional(),
     search: z.string().trim().max(120).optional(),
     outletId: z.string().uuid().optional(),
+    customerId: z.string().uuid().optional(),
     page: z.coerce.number().int().min(1).default(1),
     limit: z.coerce.number().int().min(1).max(500).default(50)
   })

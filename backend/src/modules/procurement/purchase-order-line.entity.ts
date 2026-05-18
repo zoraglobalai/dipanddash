@@ -78,11 +78,26 @@ export class PurchaseOrderLine {
   @Column({ type: "numeric", precision: 12, scale: 2 })
   unitPrice!: number;
 
+  @Column({ type: "numeric", precision: 8, scale: 4, nullable: true })
+  gstPercentage!: number | null;
+
+  @Column({ type: "numeric", precision: 12, scale: 2, nullable: true })
+  sourceAmount!: number | null;
+
   @Column({ type: "numeric", precision: 12, scale: 2, default: 0 })
   gstValue!: number;
 
+  @Column({ type: "numeric", precision: 12, scale: 2, nullable: true })
+  sourceGrandTotal!: number | null;
+
   @Column({ type: "numeric", precision: 12, scale: 2 })
   lineTotal!: number;
+
+  @Column({ type: "varchar", length: 80, nullable: true })
+  packSizeSnapshot!: string | null;
+
+  @Column({ type: "integer", nullable: true })
+  sourceRowNumber!: number | null;
 
   @Column({ type: "boolean", default: false })
   unitPriceUpdated!: boolean;

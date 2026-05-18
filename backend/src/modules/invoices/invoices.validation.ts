@@ -11,6 +11,7 @@ import {
 } from "./invoices.constants";
 
 const optionalNumeric = z.coerce.number().optional();
+const businessScopeSchema = z.enum(["dip_and_dash", "snooker"]);
 const nonNegativeOptionalNumber = z.coerce.number().optional().transform((value) => {
   if (value === undefined) {
     return undefined;
@@ -27,6 +28,7 @@ export const invoiceListSchema = z.object({
     paymentMode: z.enum(INVOICE_PAYMENT_MODES).optional(),
     orderType: z.enum(INVOICE_ORDER_TYPES).optional(),
     excludeOrderType: z.enum(INVOICE_ORDER_TYPES).optional(),
+    businessScope: businessScopeSchema.optional(),
     staffId: z.string().uuid().optional(),
     dateFrom: z.string().datetime().optional(),
     dateTo: z.string().datetime().optional(),
@@ -42,6 +44,7 @@ export const invoiceStatsSchema = z.object({
     staffId: z.string().uuid().optional(),
     orderType: z.enum(INVOICE_ORDER_TYPES).optional(),
     excludeOrderType: z.enum(INVOICE_ORDER_TYPES).optional(),
+    businessScope: businessScopeSchema.optional(),
     dateFrom: z.string().datetime().optional(),
     dateTo: z.string().datetime().optional()
   }),

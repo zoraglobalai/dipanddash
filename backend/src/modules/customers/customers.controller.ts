@@ -12,14 +12,19 @@ const parsePositiveInt = (value: unknown, fallback: number) => {
 export class CustomersController {
   private readonly customersService = new CustomersService();
 
-  stats = async (_req: Request, res: Response): Promise<Response> => {
-    const data = await this.customersService.getCustomerStats();
+  stats = async (req: Request, res: Response): Promise<Response> => {
+    const data = await this.customersService.getCustomerStats({
+      scope: typeof req.query.scope === "string" ? (req.query.scope as never) : undefined,
+      topPage: parsePositiveInt(req.query.topPage, 1),
+      topLimit: parsePositiveInt(req.query.topLimit, 10)
+    });
     return sendSuccess(res, StatusCodes.OK, "Customer stats fetched successfully", data);
   };
 
   list = async (req: Request, res: Response): Promise<Response> => {
     const data = await this.customersService.listCustomers({
       search: typeof req.query.search === "string" ? req.query.search : undefined,
+      scope: typeof req.query.scope === "string" ? (req.query.scope as never) : undefined,
       page: parsePositiveInt(req.query.page, 1),
       limit: parsePositiveInt(req.query.limit, 10)
     });
@@ -30,7 +35,7 @@ export class CustomersController {
     const data = await this.customersService.searchCustomersByPhone({
       phone: typeof req.query.phone === "string" ? req.query.phone : undefined,
       search: typeof req.query.search === "string" ? req.query.search : undefined,
-      scope: req.query.scope === "snooker" ? "snooker" : undefined,
+      scope: typeof req.query.scope === "string" ? (req.query.scope as never) : undefined,
       page: parsePositiveInt(req.query.page, 1),
       limit: parsePositiveInt(req.query.limit, 10)
     });

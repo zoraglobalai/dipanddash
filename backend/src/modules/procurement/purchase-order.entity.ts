@@ -47,6 +47,18 @@ export class PurchaseOrder {
   @Column({ type: "text", nullable: true })
   note!: string | null;
 
+  @Column({ type: "varchar", length: 80, nullable: true })
+  vendorInvoiceNumber!: string | null;
+
+  @Column({ type: "varchar", length: 120, nullable: true })
+  projectName!: string | null;
+
+  @Column({ type: "varchar", length: 40, nullable: true })
+  purchaseMonth!: string | null;
+
+  @Column({ type: "date", nullable: true })
+  receivedDate!: string | null;
+
   @Column({ type: "text", nullable: true })
   invoiceImageUrl!: string | null;
 

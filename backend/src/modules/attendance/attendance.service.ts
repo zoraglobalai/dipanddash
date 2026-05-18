@@ -16,6 +16,7 @@ type PunchPayload = {
 type AttendanceListFilters = {
   date?: string;
   name?: string;
+  section?: "dip_and_dash" | "gaming";
   page: number;
   limit: number;
 };
@@ -315,6 +316,12 @@ export class AttendanceService {
       .createQueryBuilder("attendance")
       .leftJoinAndSelect("attendance.user", "user")
       .where("user.role != :adminRole", { adminRole: UserRole.ADMIN });
+
+    if (filters.section === "gaming") {
+      query.andWhere("user.role = :snookerStaffRole", { snookerStaffRole: UserRole.SNOOKER_STAFF });
+    } else if (filters.section === "dip_and_dash") {
+      query.andWhere("user.role != :snookerStaffRole", { snookerStaffRole: UserRole.SNOOKER_STAFF });
+    }
 
     if (filters.name) {
       query.andWhere("(LOWER(user.fullName) LIKE LOWER(:name) OR LOWER(user.username) LIKE LOWER(:name))", {

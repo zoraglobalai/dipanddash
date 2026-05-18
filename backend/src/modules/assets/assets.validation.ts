@@ -1,8 +1,11 @@
 import { z } from "zod";
 
+const assetSectionSchema = z.enum(["dip_and_dash", "gaming"]);
+
 export const assetListSchema = z.object({
   query: z.object({
     search: z.string().trim().max(120).optional(),
+    section: assetSectionSchema.optional(),
     includeInactive: z.coerce.boolean().optional(),
     page: z.coerce.number().int().min(1).default(1),
     limit: z.coerce.number().int().min(1).max(100).default(10)
@@ -14,6 +17,7 @@ export const assetListSchema = z.object({
 export const createAssetSchema = z.object({
   body: z.object({
     name: z.string().trim().min(2, "Asset name must be at least 2 characters").max(120),
+    section: assetSectionSchema.optional(),
     quantity: z.coerce.number().min(0, "Quantity cannot be negative"),
     unit: z.string().trim().min(1, "Unit is required").max(32),
     isActive: z.boolean().optional().default(true)
@@ -29,6 +33,7 @@ export const updateAssetSchema = z.object({
   body: z
     .object({
       name: z.string().trim().min(2).max(120).optional(),
+      section: assetSectionSchema.optional(),
       quantity: z.coerce.number().min(0).optional(),
       unit: z.string().trim().min(1).max(32).optional(),
       isActive: z.boolean().optional()

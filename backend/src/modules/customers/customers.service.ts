@@ -1,7 +1,12 @@
+import { SelectQueryBuilder } from "typeorm";
+
 import { AppDataSource } from "../../database/data-source";
 import { AppError } from "../../errors/app-error";
 import { Invoice } from "../invoices/invoice.entity";
 import { Customer } from "./customer.entity";
+
+type CustomerSection = "dip_and_dash" | "gaming";
+type CustomerScope = "all" | "dip_and_dash" | "snooker";
 
 type PaginationInput = {
   page: number;
@@ -10,11 +15,19 @@ type PaginationInput = {
 
 type CustomerListInput = PaginationInput & {
   search?: string;
+  scope?: CustomerScope;
+};
+
+type CustomerStatsInput = {
+  scope?: CustomerScope;
+  topPage: number;
+  topLimit: number;
 };
 
 type CustomerCreateInput = {
   name: string;
   phone: string;
+  section?: CustomerSection;
   email?: string;
   notes?: string;
   sourceDeviceId?: string;
@@ -24,6 +37,7 @@ type CustomerCreateInput = {
 type CustomerUpdateInput = Partial<{
   name: string;
   phone: string;
+  section: CustomerSection;
   email: string;
   notes: string;
   isActive: boolean;
@@ -49,12 +63,90 @@ const getPaginationMeta = (page: number, limit: number, total: number) => ({
   totalPages: Math.max(1, Math.ceil(total / limit))
 });
 
+const scopeToSection = (scope?: CustomerScope): CustomerSection | undefined => {
+  if (scope === "snooker") {
+    return "gaming";
+  }
+  if (scope === "dip_and_dash") {
+    return "dip_and_dash";
+  }
+  return undefined;
+};
+
+const scopeToInvoiceCondition = (scope?: CustomerScope, alias = "invoice") => {
+  if (scope === "snooker") {
+    return `${alias}."orderType" = 'snooker'`;
+  }
+  if (scope === "dip_and_dash") {
+    return `${alias}."orderType" != 'snooker'`;
+  }
+  return "1 = 1";
+};
+
 export class CustomersService {
   private readonly customerRepository = AppDataSource.getRepository(Customer);
   private readonly invoiceRepository = AppDataSource.getRepository(Invoice);
 
+  private applyCustomerScopeFilter(query: SelectQueryBuilder<Customer>, scope?: CustomerScope) {
+    const section = scopeToSection(scope);
+    if (!section) {
+      return;
+    }
+
+    if (scope === "snooker") {
+      query.andWhere(
+        `(
+          customer.section = :customerSection
+          OR EXISTS (
+            SELECT 1
+            FROM invoices scoped_invoice
+            WHERE scoped_invoice."customerId" = customer.id
+              AND scoped_invoice."orderType" = :snookerOrderType
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM gaming_bookings booking
+            WHERE booking."bookingType" = :snookerBookingType
+              AND (
+                regexp_replace(COALESCE(booking."primaryCustomerPhone", ''), '[^0-9+]', '', 'g') = customer.phone
+                OR EXISTS (
+                  SELECT 1
+                  FROM jsonb_array_elements(COALESCE(booking."customerGroup", '[]'::jsonb)) AS customer_member
+                  WHERE regexp_replace(COALESCE(customer_member->>'phone', ''), '[^0-9+]', '', 'g') = customer.phone
+                )
+              )
+          )
+        )`,
+        {
+          customerSection: section,
+          snookerOrderType: "snooker",
+          snookerBookingType: "snooker"
+        }
+      );
+      return;
+    }
+
+    query.andWhere(
+      `(
+        customer.section = :customerSection
+        OR EXISTS (
+          SELECT 1
+          FROM invoices scoped_invoice
+          WHERE scoped_invoice."customerId" = customer.id
+            AND scoped_invoice."orderType" != :snookerOrderType
+        )
+      )`,
+      {
+        customerSection: section,
+        snookerOrderType: "snooker"
+      }
+    );
+  }
+
   async listCustomers(input: CustomerListInput) {
     const query = this.customerRepository.createQueryBuilder("customer");
+
+    this.applyCustomerScopeFilter(query, input.scope);
 
     if (input.search?.trim()) {
       const search = `%${input.search.trim()}%`;
@@ -65,13 +157,15 @@ export class CustomersService {
     }
 
     const total = await query.getCount();
+    const invoiceScopeCondition = scopeToInvoiceCondition(input.scope, "invoice");
 
     const rows = await query
       .clone()
-      .leftJoin(Invoice, "invoice", "invoice.customerId = customer.id")
+      .leftJoin(Invoice, "invoice", `invoice.customerId = customer.id AND ${invoiceScopeCondition}`)
       .select("customer.id", "id")
       .addSelect("customer.name", "name")
       .addSelect("customer.phone", "phone")
+      .addSelect("customer.section", "section")
       .addSelect("customer.email", "email")
       .addSelect("customer.notes", "notes")
       .addSelect("customer.sourceDeviceId", "sourceDeviceId")
@@ -88,6 +182,7 @@ export class CustomersService {
       .groupBy("customer.id")
       .addGroupBy("customer.name")
       .addGroupBy("customer.phone")
+      .addGroupBy("customer.section")
       .addGroupBy("customer.email")
       .addGroupBy("customer.notes")
       .addGroupBy("customer.sourceDeviceId")
@@ -96,12 +191,13 @@ export class CustomersService {
       .addGroupBy("customer.createdAt")
       .addGroupBy("customer.updatedAt")
       .orderBy("customer.createdAt", "DESC")
-      .skip((input.page - 1) * input.limit)
-      .take(input.limit)
+      .offset((input.page - 1) * input.limit)
+      .limit(input.limit)
       .getRawMany<{
         id: string;
         name: string;
         phone: string;
+        section: CustomerSection;
         email: string | null;
         notes: string | null;
         sourceDeviceId: string | null;
@@ -118,6 +214,7 @@ export class CustomersService {
       id: row.id,
       name: row.name,
       phone: row.phone,
+      section: row.section,
       email: row.email,
       notes: row.notes,
       sourceDeviceId: row.sourceDeviceId,
@@ -141,19 +238,50 @@ export class CustomersService {
     };
   }
 
-  async getCustomerStats() {
+  async getCustomerStats(input: CustomerStatsInput) {
+    const scope = input.scope;
+    const topPage = Math.max(1, input.topPage);
+    const topLimit = Math.max(1, input.topLimit);
     const monthStart = new Date();
     monthStart.setDate(1);
     monthStart.setHours(0, 0, 0, 0);
+    const invoiceScopeCondition = scopeToInvoiceCondition(scope, "invoice");
+    const innerInvoiceScopeCondition = scopeToInvoiceCondition(scope, "inner_invoice");
+    const customerCountQuery = this.customerRepository.createQueryBuilder("customer");
+    const activeCustomerQuery = this.customerRepository
+      .createQueryBuilder("customer")
+      .where("customer.isActive = true");
+    const newCustomersQuery = this.customerRepository
+      .createQueryBuilder("customer")
+      .where("customer.createdAt >= :monthStart", { monthStart });
+    this.applyCustomerScopeFilter(customerCountQuery, scope);
+    this.applyCustomerScopeFilter(activeCustomerQuery, scope);
+    this.applyCustomerScopeFilter(newCustomersQuery, scope);
+
+    const topCustomersQuery = this.customerRepository
+      .createQueryBuilder("customer")
+      .leftJoin(Invoice, "invoice", `invoice.customerId = customer.id AND invoice.status = 'paid' AND ${invoiceScopeCondition}`)
+      .select("customer.id", "id")
+      .addSelect("customer.name", "name")
+      .addSelect("customer.phone", "phone")
+      .addSelect("COUNT(invoice.id)", "invoiceCount")
+      .addSelect("COALESCE(SUM(invoice.totalAmount), 0)", "totalSpent")
+      .addSelect("MAX(invoice.createdAt)", "lastInvoiceAt")
+      .groupBy("customer.id")
+      .addGroupBy("customer.name")
+      .addGroupBy("customer.phone")
+      .having("COUNT(invoice.id) > 0")
+      .orderBy("COALESCE(SUM(invoice.totalAmount), 0)", "DESC")
+      .addOrderBy("COUNT(invoice.id)", "DESC")
+      .offset((topPage - 1) * topLimit)
+      .limit(topLimit);
+    this.applyCustomerScopeFilter(topCustomersQuery, scope);
 
     const [totalCustomers, activeCustomers, newCustomersThisMonth, paidSummary, repeatCustomers, topCustomers] =
       await Promise.all([
-        this.customerRepository.count(),
-        this.customerRepository.count({ where: { isActive: true } }),
-        this.customerRepository
-          .createQueryBuilder("customer")
-          .where("customer.createdAt >= :monthStart", { monthStart })
-          .getCount(),
+        customerCountQuery.getCount(),
+        activeCustomerQuery.getCount(),
+        newCustomersQuery.getCount(),
         this.invoiceRepository
           .createQueryBuilder("invoice")
           .select("COUNT(DISTINCT invoice.customerId)", "customersWithOrders")
@@ -161,6 +289,7 @@ export class CustomersService {
           .addSelect("COALESCE(SUM(invoice.totalAmount), 0)", "revenue")
           .addSelect("COALESCE(AVG(invoice.totalAmount), 0)", "averageOrderValue")
           .where("invoice.status = 'paid'")
+          .andWhere(invoiceScopeCondition)
           .andWhere("invoice.customerId IS NOT NULL")
           .getRawOne<{
             customersWithOrders: string;
@@ -173,32 +302,17 @@ export class CustomersService {
           .select("COUNT(*)", "repeatCustomers")
           .from((subQuery) => {
             return subQuery
-              .select("innerInvoice.customerId", "customerId")
-              .addSelect("COUNT(innerInvoice.id)", "invoiceCount")
-              .from(Invoice, "innerInvoice")
-              .where("innerInvoice.status = 'paid'")
-              .andWhere("innerInvoice.customerId IS NOT NULL")
-              .groupBy("innerInvoice.customerId")
-              .having("COUNT(innerInvoice.id) > 1");
+              .select("inner_invoice.customerId", "customerId")
+              .addSelect("COUNT(inner_invoice.id)", "invoiceCount")
+              .from(Invoice, "inner_invoice")
+              .where("inner_invoice.status = 'paid'")
+              .andWhere(innerInvoiceScopeCondition)
+              .andWhere("inner_invoice.customerId IS NOT NULL")
+              .groupBy("inner_invoice.customerId")
+              .having("COUNT(inner_invoice.id) > 1");
           }, "repeat_data")
           .getRawOne<{ repeatCustomers: string }>(),
-        this.customerRepository
-          .createQueryBuilder("customer")
-          .leftJoin(Invoice, "invoice", "invoice.customerId = customer.id AND invoice.status = 'paid'")
-          .select("customer.id", "id")
-          .addSelect("customer.name", "name")
-          .addSelect("customer.phone", "phone")
-          .addSelect("COUNT(invoice.id)", "invoiceCount")
-          .addSelect("COALESCE(SUM(invoice.totalAmount), 0)", "totalSpent")
-          .addSelect("MAX(invoice.createdAt)", "lastInvoiceAt")
-          .groupBy("customer.id")
-          .addGroupBy("customer.name")
-          .addGroupBy("customer.phone")
-          .having("COUNT(invoice.id) > 0")
-          .orderBy("COALESCE(SUM(invoice.totalAmount), 0)", "DESC")
-          .addOrderBy("COUNT(invoice.id)", "DESC")
-          .take(5)
-          .getRawMany<{
+        topCustomersQuery.getRawMany<{
             id: string;
             name: string;
             phone: string;
@@ -224,14 +338,19 @@ export class CustomersService {
         invoiceCount: Number(row.invoiceCount ?? 0),
         totalSpent: Number(Number(row.totalSpent ?? 0).toFixed(2)),
         lastInvoiceAt: row.lastInvoiceAt
-      }))
+      })),
+      topCustomersPagination: getPaginationMeta(
+        topPage,
+        topLimit,
+        Number(paidSummary?.customersWithOrders ?? 0)
+      )
     };
   }
 
   async searchCustomersByPhone(input: {
     phone?: string;
     search?: string;
-    scope?: "all" | "snooker";
+    scope?: CustomerScope;
     page: number;
     limit: number;
   }) {
@@ -253,31 +372,8 @@ export class CustomersService {
         { search }
       );
     }
-    if (input.scope === "snooker") {
-      query.andWhere(
-        `(
-          EXISTS (
-            SELECT 1
-            FROM invoices invoice
-            WHERE invoice."customerId" = customer.id
-              AND invoice."orderType" = :snookerOrderType
-          )
-          OR EXISTS (
-            SELECT 1
-            FROM gaming_bookings booking
-            WHERE booking."bookingType" = :snookerBookingType
-              AND (
-                booking."primaryCustomerPhone" = customer.phone
-                OR EXISTS (
-                  SELECT 1
-                  FROM jsonb_array_elements(COALESCE(booking."customerGroup", '[]'::jsonb)) AS customer_member
-                  WHERE regexp_replace(COALESCE(customer_member->>'phone', ''), '[^0-9+]', '', 'g') = customer.phone
-                )
-              )
-          )
-        )`,
-        { snookerOrderType: "snooker", snookerBookingType: "snooker" }
-      );
+    if (input.scope) {
+      this.applyCustomerScopeFilter(query, input.scope);
     }
 
     const [customers, total] = await query.getManyAndCount();
@@ -297,12 +393,13 @@ export class CustomersService {
 
   async createCustomer(input: CustomerCreateInput) {
     const normalizedPhone = normalizePhone(input.phone);
+    const section = input.section ?? "dip_and_dash";
     if (!normalizedPhone) {
       throw new AppError(422, "Please provide a valid phone number");
     }
 
     const existing = await this.customerRepository.findOne({
-      where: { phone: normalizedPhone }
+      where: { phone: normalizedPhone, section }
     });
     if (existing) {
       throw new AppError(409, "Customer with this phone number already exists");
@@ -311,6 +408,7 @@ export class CustomersService {
     const customer = this.customerRepository.create({
       name: input.name.trim(),
       phone: normalizedPhone,
+      section,
       email: cleanOptionalText(input.email) ?? null,
       notes: cleanOptionalText(input.notes) ?? null,
       sourceDeviceId: cleanOptionalText(input.sourceDeviceId) ?? null,
@@ -323,18 +421,20 @@ export class CustomersService {
 
   async upsertCustomerFromPos(input: CustomerCreateInput) {
     const normalizedPhone = normalizePhone(input.phone);
+    const section = input.section ?? "dip_and_dash";
     if (!normalizedPhone) {
       throw new AppError(422, "Please provide a valid phone number");
     }
 
     const existing = await this.customerRepository.findOne({
-      where: { phone: normalizedPhone }
+      where: { phone: normalizedPhone, section }
     });
 
     if (!existing) {
       const created = this.customerRepository.create({
         name: input.name.trim(),
         phone: normalizedPhone,
+        section,
         email: cleanOptionalText(input.email) ?? null,
         notes: cleanOptionalText(input.notes) ?? null,
         sourceDeviceId: cleanOptionalText(input.sourceDeviceId) ?? null,
@@ -360,6 +460,7 @@ export class CustomersService {
 
   async updateCustomer(id: string, input: CustomerUpdateInput) {
     const customer = await this.getCustomer(id);
+    const nextSection = input.section ?? customer.section;
 
     if (input.phone !== undefined) {
       const normalizedPhone = normalizePhone(input.phone);
@@ -368,12 +469,22 @@ export class CustomersService {
       }
 
       const duplicate = await this.customerRepository.findOne({
-        where: { phone: normalizedPhone }
+        where: { phone: normalizedPhone, section: nextSection }
       });
       if (duplicate && duplicate.id !== id) {
         throw new AppError(409, "Customer with this phone number already exists");
       }
       customer.phone = normalizedPhone;
+    }
+
+    if (input.section !== undefined) {
+      const duplicate = await this.customerRepository.findOne({
+        where: { phone: customer.phone, section: input.section }
+      });
+      if (duplicate && duplicate.id !== id) {
+        throw new AppError(409, "Customer with this phone number already exists in this business");
+      }
+      customer.section = input.section;
     }
 
     if (input.name !== undefined) {

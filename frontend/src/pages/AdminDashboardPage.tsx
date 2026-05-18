@@ -6,7 +6,7 @@ import {
   VStack
 } from "@chakra-ui/react";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import {
   Bar,
   BarChart,
@@ -39,6 +39,11 @@ import type { GamingStats } from "@/types/gaming";
 import type { IngredientAllocationStats } from "@/types/ingredient";
 import type { SalesStatsResponse } from "@/types/sales-stats";
 import { extractErrorMessage } from "@/utils/api-error";
+import {
+  businessScopeToPurchaseSection,
+  getBusinessScopeFromSearch,
+  getBusinessTitle
+} from "@/utils/business-scope";
 
 const formatCurrency = (value: number) =>
   new Intl.NumberFormat("en-IN", {
@@ -111,6 +116,11 @@ const InsightCard = ({
 
 export const AdminDashboardPage = () => {
   const navigate = useNavigate();
+  const location = useLocation();
+  const businessScope = getBusinessScopeFromSearch(location.search);
+  const businessTitle = getBusinessTitle(businessScope);
+  const businessSection = businessScopeToPurchaseSection(businessScope);
+  const isSnookerBusiness = businessScope === "snooker";
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [loading, setLoading] = useState(true);
@@ -142,12 +152,12 @@ export const AdminDashboardPage = () => {
       };
       const [salesResponse, cashResponse, dumpResponse, ingredientResponse, gamingResponse, attendanceResponse] =
         await Promise.all([
-          dashboardService.getSalesStats(rangeParams),
-          cashAuditService.getAdminStats({ ...rangeParams, section: "dip_and_dash" }),
-          dumpService.getAdminStats(rangeParams),
-          ingredientsService.getAllocationStats({}),
-          gamingService.getStats(rangeParams),
-          attendanceService.getAdminRecords({ date: getToday(), page: 1, limit: 10 })
+          dashboardService.getSalesStats({ ...rangeParams, businessScope }),
+          cashAuditService.getAdminStats({ ...rangeParams, section: businessSection }),
+          isSnookerBusiness ? Promise.resolve({ data: null }) : dumpService.getAdminStats(rangeParams),
+          isSnookerBusiness ? Promise.resolve({ data: null }) : ingredientsService.getAllocationStats({}),
+          isSnookerBusiness ? gamingService.getStats(rangeParams) : Promise.resolve({ data: null }),
+          attendanceService.getAdminRecords({ date: getToday(), section: businessSection, page: 1, limit: 10 })
         ]);
 
       setSalesStats(salesResponse.data);
@@ -162,12 +172,16 @@ export const AdminDashboardPage = () => {
     } finally {
       setLoading(false);
     }
-  }, [dateFrom, dateTo]);
+  }, [businessScope, businessSection, dateFrom, dateTo, isSnookerBusiness]);
 
   useEffect(() => {
     void fetchDashboard();
   }, [fetchDashboard]);
   const hasActiveDateFilter = Boolean(dateFrom || dateTo);
+  const scopedNavigate = useCallback(
+    (path: string) => navigate(`${path}?business=${businessScope}`),
+    [businessScope, navigate]
+  );
 
   const topCashierColumns = useMemo(
     () =>
@@ -213,8 +227,8 @@ export const AdminDashboardPage = () => {
   return (
     <VStack spacing={6} align="stretch">
       <PageHeader
-        title="Admin Dashboard"
-        subtitle="Command center for sales, cash control, stock health and loss signals."
+        title={`${businessTitle} Dashboard`}
+        subtitle={`Command center for ${businessTitle} sales, cash control, stock health and loss signals.`}
       />
 
       <AppCard
@@ -292,33 +306,32 @@ export const AdminDashboardPage = () => {
         </SimpleGrid>
       </AppCard>
 
-      {loading || !salesStats || !cashAuditStats || !dumpStats || !ingredientStats || !gamingStats ? (
+      {loading ||
+      !salesStats ||
+      !cashAuditStats ||
+      (!isSnookerBusiness && (!dumpStats || !ingredientStats)) ||
+      (isSnookerBusiness && !gamingStats) ? (
         <SkeletonTable />
       ) : (
         <>
           <SimpleGrid columns={{ base: 1, sm: 2, xl: 4 }} spacing={4}>
             <InsightCard
-              label="Dip & Dash Net Revenue"
+              label={`${businessTitle} Net Revenue`}
               value={formatCurrency(salesStats.cards.netRevenue)}
               helper={
                 salesStats.cards.netRevenueGrowthPercentage === null
-                  ? `Sales ${formatCurrency(salesStats.cards.dipAndDashSales)} - Purchase ${formatCurrency(salesStats.cards.dipAndDashPurchaseAmount)}`
-                  : `${salesStats.cards.netRevenueGrowthPercentage >= 0 ? "+" : ""}${salesStats.cards.netRevenueGrowthPercentage}% vs previous | Sales ${formatCurrency(salesStats.cards.dipAndDashSales)} - Purchase ${formatCurrency(salesStats.cards.dipAndDashPurchaseAmount)}`
+                  ? `Sales ${formatCurrency(salesStats.cards.totalSales)} - Purchase ${formatCurrency(salesStats.cards.totalPurchaseAmount)}`
+                  : `${salesStats.cards.netRevenueGrowthPercentage >= 0 ? "+" : ""}${salesStats.cards.netRevenueGrowthPercentage}% vs previous | Sales ${formatCurrency(salesStats.cards.totalSales)} - Purchase ${formatCurrency(salesStats.cards.totalPurchaseAmount)}`
               }
             />
             <InsightCard
-              label="Dip & Dash Purchase"
-              value={formatCurrency(salesStats.cards.dipAndDashPurchaseAmount)}
-              helper={`Total purchase pool ${formatCurrency(salesStats.cards.totalPurchaseAmount)}`}
+              label={`${businessTitle} Purchase`}
+              value={formatCurrency(salesStats.cards.totalPurchaseAmount)}
+              helper={isSnookerBusiness ? "Snooker product purchase records" : "Dip & Dash purchase records"}
             />
             <InsightCard
-              label="Snooker Purchase"
-              value={formatCurrency(salesStats.cards.snookerPurchaseAmount)}
-              helper="Purchase records tagged for snooker/gaming"
-            />
-            <InsightCard
-              label="Dip & Dash Sales"
-              value={formatCurrency(salesStats.cards.dipAndDashSales)}
+              label={`${businessTitle} Sales`}
+              value={formatCurrency(salesStats.cards.totalSales)}
               helper={`Orders ${salesStats.cards.totalOrders} | AOV ${formatCurrency(salesStats.cards.averageOrderValue)}`}
             />
             <InsightCard
@@ -331,36 +344,43 @@ export const AdminDashboardPage = () => {
               value={formatCurrency(cashAuditStats.totalDifferenceAmount)}
               helper={`Expected ${formatCurrency(cashAuditStats.totalExpectedAmount)} | Entered ${formatCurrency(cashAuditStats.totalEnteredAmount)}`}
             />
-            <InsightCard
-              label="Wastage Loss"
-              value={formatCurrency(dumpStats.totalLossAmount)}
-              helper={`${dumpStats.totalEntries} dump entries`}
-            />
-            <InsightCard
-              label="Snooker Gaming Profit"
-              value={formatCurrency(salesStats.cards.snookerGamingProfit)}
-              helper={`Revenue ${formatCurrency(salesStats.cards.snookerGamingRevenue)} - Purchase ${formatCurrency(salesStats.cards.snookerPurchaseAmount)}`}
-            />
+            {!isSnookerBusiness ? (
+              <InsightCard
+                label="Wastage Loss"
+                value={formatCurrency(dumpStats!.totalLossAmount)}
+                helper={`${dumpStats!.totalEntries} dump entries`}
+              />
+            ) : (
+              <InsightCard
+                label="Snooker Gaming Profit"
+                value={formatCurrency(salesStats.cards.snookerGamingProfit)}
+                helper={`Revenue ${formatCurrency(salesStats.cards.snookerGamingRevenue)} - Purchase ${formatCurrency(salesStats.cards.snookerPurchaseAmount)}`}
+              />
+            )}
             <InsightCard
               label="Product Sales Profit"
               value={formatCurrency(salesStats.cards.productSalesProfit)}
               helper="Estimated from sold product lines - purchase cost"
             />
-            <InsightCard
-              label="Inventory Risk"
-              value={String(ingredientStats.totals.lowStockIngredients)}
-              helper={`${formatCurrency(ingredientStats.quantities.totalValuation)} stock valuation`}
-            />
+            {!isSnookerBusiness ? (
+              <InsightCard
+                label="Inventory Risk"
+                value={String(ingredientStats!.totals.lowStockIngredients)}
+                helper={`${formatCurrency(ingredientStats!.quantities.totalValuation)} stock valuation`}
+              />
+            ) : null}
             <InsightCard
               label="Attendance Pulse"
               value={`${attendanceSummary.presentStaff} present`}
               helper={`${attendanceSummary.currentlyPunchedIn} punched in right now`}
             />
-            <InsightCard
-              label="Gaming Revenue"
-              value={formatCurrency(salesStats.cards.snookerGamingRevenue)}
-              helper={`${gamingStats.totals.pendingPayments} pending payments`}
-            />
+            {isSnookerBusiness ? (
+              <InsightCard
+                label="Gaming Revenue"
+                value={formatCurrency(salesStats.cards.snookerGamingRevenue)}
+                helper={`${gamingStats!.totals.pendingPayments} pending payments`}
+              />
+            ) : null}
           </SimpleGrid>
 
           <SimpleGrid columns={{ base: 1, xl: 2 }} spacing={4}>
@@ -377,20 +397,18 @@ export const AdminDashboardPage = () => {
               </Box>
             </AppCard>
 
-            <AppCard title="Purchase & Profit Snapshot" subtitle="Section-wise spend and profit visibility">
+            <AppCard title="Purchase & Profit Snapshot" subtitle={`${businessTitle} spend and profit visibility`}>
               <SimpleGrid columns={{ base: 1, md: 2 }} spacing={3}>
                 <InsightCard
-                  label="Dip & Dash Purchase"
-                  value={formatCurrency(salesStats.cards.dipAndDashPurchaseAmount)}
+                  label={`${businessTitle} Purchase`}
+                  value={formatCurrency(salesStats.cards.totalPurchaseAmount)}
                 />
-                <InsightCard
-                  label="Snooker Purchase"
-                  value={formatCurrency(salesStats.cards.snookerPurchaseAmount)}
-                />
-                <InsightCard
-                  label="Snooker Gaming Profit"
-                  value={formatCurrency(salesStats.cards.snookerGamingProfit)}
-                />
+                {isSnookerBusiness ? (
+                  <InsightCard
+                    label="Snooker Gaming Profit"
+                    value={formatCurrency(salesStats.cards.snookerGamingProfit)}
+                  />
+                ) : null}
                 <InsightCard
                   label="Product Sales Profit"
                   value={formatCurrency(salesStats.cards.productSalesProfit)}
@@ -419,22 +437,30 @@ export const AdminDashboardPage = () => {
           <SimpleGrid columns={{ base: 1, xl: 3 }} spacing={4}>
             <AppCard title="Fast Actions" subtitle="Jump directly to modules for quick decisions">
               <SimpleGrid columns={{ base: 1, sm: 2 }} spacing={3}>
-                <AppButton variant="outline" onClick={() => navigate("/sales-statics")}>
+                <AppButton variant="outline" onClick={() => scopedNavigate("/sales-statics")}>
                   Sales Statics
                 </AppButton>
-                <AppButton variant="outline" onClick={() => navigate("/cash-audit")}>
+                <AppButton variant="outline" onClick={() => scopedNavigate("/cash-audit")}>
                   Cash Audit
                 </AppButton>
-                <AppButton variant="outline" onClick={() => navigate("/dump-wastage")}>
-                  Dump Wastage
-                </AppButton>
-                <AppButton variant="outline" onClick={() => navigate("/ingredient-entry")}>
-                  Ingredient Entry
-                </AppButton>
-                <AppButton variant="outline" onClick={() => navigate("/assets-entry")}>
+                {!isSnookerBusiness ? (
+                  <>
+                    <AppButton variant="outline" onClick={() => scopedNavigate("/dump-wastage")}>
+                      Dump Wastage
+                    </AppButton>
+                    <AppButton variant="outline" onClick={() => scopedNavigate("/ingredient-entry")}>
+                      Ingredient Entry
+                    </AppButton>
+                  </>
+                ) : (
+                  <AppButton variant="outline" onClick={() => scopedNavigate("/gaming")}>
+                    Gaming
+                  </AppButton>
+                )}
+                <AppButton variant="outline" onClick={() => scopedNavigate("/assets-entry")}>
                   Assets Entry
                 </AppButton>
-                <AppButton variant="outline" onClick={() => navigate("/reports")}>
+                <AppButton variant="outline" onClick={() => scopedNavigate("/reports")}>
                   Reports
                 </AppButton>
               </SimpleGrid>
@@ -457,86 +483,93 @@ export const AdminDashboardPage = () => {
               </VStack>
             </AppCard>
 
-            <AppCard title="Stock Usage Signal" subtitle="Top 5 ingredients by usage for quick replenishment decisions">
-              <VStack align="stretch" spacing={3}>
-                <Text fontWeight={700} color="#7A6359">
-                  Low Stock Alerts: {ingredientStats.totals.lowStockIngredients}
-                </Text>
-                {ingredientStats.charts.topUsedIngredients.length ? (
-                  ingredientStats.charts.topUsedIngredients.slice(0, 5).map((entry, index) => (
-                    <Box
-                      key={entry.ingredientId}
-                      p={3}
-                      borderRadius="12px"
-                      border="1px solid"
-                      borderColor="rgba(133, 78, 48, 0.18)"
-                      bg="rgba(255,255,255,0.8)"
-                    >
-                      <HStack justify="space-between" align="start">
-                        <Text fontWeight={700} color="#2A1A14">
-                          {index + 1}. {entry.ingredientName}
-                        </Text>
-                        <Text fontWeight={900} color="#8D1C13">
-                          {entry.usedQuantity.toFixed(2)} {entry.unit}
-                        </Text>
-                      </HStack>
-                    </Box>
-                  ))
-                ) : (
-                  <EmptyState title="No usage data" description="Ingredient usage not available yet." />
-                )}
-              </VStack>
-            </AppCard>
+            {!isSnookerBusiness ? (
+              <AppCard title="Stock Usage Signal" subtitle="Top 5 ingredients by usage for quick replenishment decisions">
+                <VStack align="stretch" spacing={3}>
+                  <Text fontWeight={700} color="#7A6359">
+                    Low Stock Alerts: {ingredientStats!.totals.lowStockIngredients}
+                  </Text>
+                  {ingredientStats!.charts.topUsedIngredients.length ? (
+                    ingredientStats!.charts.topUsedIngredients.slice(0, 5).map((entry, index) => (
+                      <Box
+                        key={entry.ingredientId}
+                        p={3}
+                        borderRadius="12px"
+                        border="1px solid"
+                        borderColor="rgba(133, 78, 48, 0.18)"
+                        bg="rgba(255,255,255,0.8)"
+                      >
+                        <HStack justify="space-between" align="start">
+                          <Text fontWeight={700} color="#2A1A14">
+                            {index + 1}. {entry.ingredientName}
+                          </Text>
+                          <Text fontWeight={900} color="#8D1C13">
+                            {entry.usedQuantity.toFixed(2)} {entry.unit}
+                          </Text>
+                        </HStack>
+                      </Box>
+                    ))
+                  ) : (
+                    <EmptyState title="No usage data" description="Ingredient usage not available yet." />
+                  )}
+                </VStack>
+              </AppCard>
+            ) : null}
           </SimpleGrid>
 
-          <SimpleGrid columns={{ base: 1, xl: 2 }} spacing={4}>
-            <AppCard title="Gaming Resource Revenue" subtitle="Top earning gaming resources">
-              <Box h="280px">
-                {gamingStats.resourceUsage.length ? (
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={gamingStats.resourceUsage.slice(0, 8)}>
-                      <XAxis dataKey="resourceLabel" tick={{ fontSize: 10 }} />
-                      <YAxis tick={{ fontSize: 11 }} />
-                      <Tooltip />
-                      <Bar dataKey="revenue" fill="#D97706" radius={[8, 8, 0, 0]} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                ) : (
-                  <EmptyState title="No gaming data" description="No bookings in selected date range." />
-                )}
-              </Box>
-            </AppCard>
-            <AppCard title="Wastage Hotspots" subtitle="Highest-loss dump sources">
-              <VStack align="stretch" spacing={3}>
-                {dumpStats.topLossSources.length ? (
-                  dumpStats.topLossSources.slice(0, 6).map((entry) => (
-                    <Box
-                      key={entry.sourceName}
-                      p={3}
-                      borderRadius="12px"
-                      border="1px solid"
-                      borderColor="rgba(133, 78, 48, 0.18)"
-                      bg="rgba(255, 255, 255, 0.8)"
-                    >
-                      <HStack justify="space-between">
-                        <Text fontWeight={700} color="#2A1A14">
-                          {entry.sourceName}
+          {isSnookerBusiness ? (
+            <SimpleGrid columns={{ base: 1, xl: 2 }} spacing={4}>
+              <AppCard title="Gaming Resource Revenue" subtitle="Top earning gaming resources">
+                <Box h="280px">
+                  {gamingStats!.resourceUsage.length ? (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={gamingStats!.resourceUsage.slice(0, 8)}>
+                        <XAxis dataKey="resourceLabel" tick={{ fontSize: 10 }} />
+                        <YAxis tick={{ fontSize: 11 }} />
+                        <Tooltip />
+                        <Bar dataKey="revenue" fill="#D97706" radius={[8, 8, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  ) : (
+                    <EmptyState title="No gaming data" description="No bookings in selected date range." />
+                  )}
+                </Box>
+              </AppCard>
+            </SimpleGrid>
+          ) : (
+            <SimpleGrid columns={{ base: 1, xl: 2 }} spacing={4}>
+              <AppCard title="Wastage Hotspots" subtitle="Highest-loss dump sources">
+                <VStack align="stretch" spacing={3}>
+                  {dumpStats!.topLossSources.length ? (
+                    dumpStats!.topLossSources.slice(0, 6).map((entry) => (
+                      <Box
+                        key={entry.sourceName}
+                        p={3}
+                        borderRadius="12px"
+                        border="1px solid"
+                        borderColor="rgba(133, 78, 48, 0.18)"
+                        bg="rgba(255, 255, 255, 0.8)"
+                      >
+                        <HStack justify="space-between">
+                          <Text fontWeight={700} color="#2A1A14">
+                            {entry.sourceName}
+                          </Text>
+                          <Text fontWeight={900} color="#8D1C13">
+                            {formatCurrency(entry.lossAmount)}
+                          </Text>
+                        </HStack>
+                        <Text mt={1} fontSize="xs" color="#7A6359">
+                          {entry.entryCount} entries
                         </Text>
-                        <Text fontWeight={900} color="#8D1C13">
-                          {formatCurrency(entry.lossAmount)}
-                        </Text>
-                      </HStack>
-                      <Text mt={1} fontSize="xs" color="#7A6359">
-                        {entry.entryCount} entries
-                      </Text>
-                    </Box>
-                  ))
-                ) : (
-                  <EmptyState title="No wastage hotspot" description="No dump entries in selected range." />
-                )}
-              </VStack>
-            </AppCard>
-          </SimpleGrid>
+                      </Box>
+                    ))
+                  ) : (
+                    <EmptyState title="No wastage hotspot" description="No dump entries in selected range." />
+                  )}
+                </VStack>
+              </AppCard>
+            </SimpleGrid>
+          )}
         </>
       )}
     </VStack>

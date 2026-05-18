@@ -33,6 +33,7 @@ export type SupplierListItem = {
   name: string;
   storeName: string | null;
   phone: string;
+  section: PurchaseSection;
   address: string | null;
   isActive: boolean;
   purchaseOrdersCount: number;
@@ -190,6 +191,10 @@ export type PurchaseOrderSummary = {
   productLineCount: number;
   totalAmount: number;
   note: string | null;
+  vendorInvoiceNumber: string | null;
+  projectName: string | null;
+  purchaseMonth: string | null;
+  receivedDate: string | null;
   invoiceImageUrl: string | null;
   createdByUserId: string | null;
   createdByUserName: string | null;
@@ -213,8 +218,13 @@ export type PurchaseOrderLine = {
   dipAndDashStockAdded: number | null;
   gamingStockAdded: number | null;
   unitPrice: number;
+  gstPercentage: number | null;
+  sourceAmount: number | null;
   gstValue: number;
+  sourceGrandTotal: number | null;
   lineTotal: number;
+  packSizeSnapshot: string | null;
+  sourceRowNumber: number | null;
   unitPriceUpdated: boolean;
   expiryDate: string | null;
   createdAt: string;
@@ -327,6 +337,10 @@ export type PurchaseOrderDetail = {
   supplierName: string;
   supplierPhone: string;
   note: string | null;
+  vendorInvoiceNumber: string | null;
+  projectName: string | null;
+  purchaseMonth: string | null;
+  receivedDate: string | null;
   invoiceImageUrl: string | null;
   totalAmount: number;
   createdByUserId: string | null;
@@ -373,14 +387,72 @@ export type ProcurementUnitsResponse = {
 };
 
 export type PurchaseBulkImportResult = {
-  purchaseOrderId: string;
-  purchaseNumber: string;
-  purchaseDate: string;
-  supplierName: string;
-  lineCount: number;
-  ingredientLineCount: number;
-  productLineCount: number;
-  totalAmount: number;
+  importId?: string;
+  fileName?: string;
+  importedAt?: string;
+  totalRows: number;
+  parsedRows: number;
+  insertedRows: number;
+  skippedDuplicateRows: number;
+  failedRows: number;
+  createdProducts: number;
+  matchedProducts: number;
+  createdOrders: Array<{
+    id: string;
+    purchaseNumber: string;
+    purchaseDate: string;
+    supplierName: string;
+    lineCount: number;
+    totalAmount: number;
+  }>;
+  invalidRowDetails: Array<{
+    rowNumber: number;
+    reason: string;
+  }>;
+  rowDetails: Array<{
+    id?: string;
+    rowNumber: number;
+    status: "inserted" | "skipped_duplicate" | "failed";
+    supplierName?: string;
+    itemName?: string;
+    packSize?: string | null;
+    purchaseDate?: string;
+    vendorInvoiceNumber?: string | null;
+    quantity?: number | null;
+    quantityUnit?: string | null;
+    unitPrice?: number | null;
+    amount?: number | null;
+    gstAmount?: number | null;
+    grandTotal?: number | null;
+    purchaseNumber?: string;
+    reason?: string;
+  }>;
+};
+
+export type PurchaseBulkImportHistoryItem = PurchaseBulkImportResult & {
+  id: string;
+  fileName: string;
+  purchaseSection: PurchaseSection;
+  createdByUserId: string | null;
+  createdAt: string;
+};
+
+export type PurchaseBulkImportHistoryResponse = {
+  imports: PurchaseBulkImportHistoryItem[];
+  pagination: PaginationData;
+};
+
+export type PurchaseBulkImportDeleteResponse = {
+  id: string;
+  fileName: string;
+  deletedOrders: Array<{
+    id: string;
+    purchaseNumber: string;
+    purchaseDate: string;
+  }>;
+  deletedOrderCount: number;
+  missingOrderCount: number;
+  stockRolledBack: boolean;
 };
 
 export type ProductBulkImportResult = {
@@ -400,19 +472,33 @@ export type CreatePurchaseLineInput = {
   lineType: PurchaseLineType;
   ingredientId?: string;
   productId?: string;
+  productName?: string;
+  productPackSize?: string;
+  productCategory?: string;
+  productUnit?: ProductUnit;
   quantity: number;
   quantityUnit?: string;
   unitPrice: number;
+  gstPercentage?: number;
   gstValue?: number;
+  sourceAmount?: number;
+  sourceGrandTotal?: number;
+  sourceRowNumber?: number;
   expiryDate?: string;
   note?: string;
 };
 
 export type CreatePurchaseOrderInput = {
-  supplierId: string;
+  supplierId?: string;
+  supplierName?: string;
+  supplierPhone?: string;
   purchaseDate?: string;
   purchaseSection: PurchaseSection;
   note?: string;
+  vendorInvoiceNumber?: string;
+  projectName?: string;
+  purchaseMonth?: string;
+  receivedDate?: string;
   invoiceImageUrl?: string;
   lines: CreatePurchaseLineInput[];
 };

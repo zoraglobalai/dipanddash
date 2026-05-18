@@ -405,8 +405,8 @@ export const AdminOrdersPage = () => {
         .filter((product) => product.isActive)
         .filter((product) =>
           form.orderType === "snooker"
-            ? product.targetSection === "gaming" || product.targetSection === "both"
-            : product.targetSection === "dip_and_dash" || product.targetSection === "both"
+            ? product.targetSection === "gaming"
+            : product.targetSection === "dip_and_dash"
         )
         .map((product) => ({
           value: product.id,

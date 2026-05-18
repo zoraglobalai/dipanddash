@@ -3,6 +3,7 @@ import {
   CreateDateColumn,
   DeleteDateColumn,
   Entity,
+  Index,
   JoinColumn,
   ManyToOne,
   PrimaryGeneratedColumn,
@@ -13,12 +14,13 @@ import { ItemCategory } from "../items/item-category.entity";
 import { Item } from "../items/item.entity";
 import { COUPON_DISCOUNT_TYPES, type CouponDiscountType } from "./offers.constants";
 
+@Index("IDX_coupons_code_section_unique", ["couponCode", "section"], { unique: true })
 @Entity({ name: "coupons" })
 export class Coupon {
   @PrimaryGeneratedColumn("uuid")
   id!: string;
 
-  @Column({ type: "varchar", length: 60, unique: true })
+  @Column({ type: "varchar", length: 60 })
   couponCode!: string;
 
   @Column({ type: "varchar", length: 140, nullable: true })
@@ -50,6 +52,9 @@ export class Coupon {
 
   @Column({ type: "boolean", default: true })
   isActive!: boolean;
+
+  @Column({ type: "varchar", length: 20, default: "dip_and_dash" })
+  section!: "dip_and_dash" | "gaming";
 
   @Column({ type: "timestamptz" })
   validFrom!: Date;

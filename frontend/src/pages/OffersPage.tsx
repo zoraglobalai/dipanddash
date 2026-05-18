@@ -17,6 +17,7 @@ import {
 } from "@chakra-ui/react";
 import { Copy, CopyPlus, Edit2, Eye, Plus, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useLocation } from "react-router-dom";
 
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import { EmptyState } from "@/components/common/EmptyState";
@@ -47,6 +48,7 @@ import type {
 } from "@/types/offer";
 import { UserRole } from "@/types/role";
 import { extractErrorMessage } from "@/utils/api-error";
+import { businessScopeToPurchaseSection, getBusinessScopeFromSearch, getBusinessTitle } from "@/utils/business-scope";
 
 const defaultPagination: OfferPagination = {
   page: 1,
@@ -105,7 +107,11 @@ const StatusBadge = ({ status }: { status: CouponDerivedStatus }) => (
 
 export const OffersPage = () => {
   const { user } = useAuth();
+  const location = useLocation();
   const toast = useAppToast();
+  const businessScope = getBusinessScopeFromSearch(location.search);
+  const businessTitle = getBusinessTitle(businessScope);
+  const offerSection = businessScopeToPurchaseSection(businessScope);
 
   const [stats, setStats] = useState<OfferStats>(defaultStats);
   const [statsLoading, setStatsLoading] = useState(true);
@@ -170,20 +176,21 @@ export const OffersPage = () => {
   const fetchStats = useCallback(async () => {
     setStatsLoading(true);
     try {
-      const response = await offersService.getStats();
+      const response = await offersService.getStats({ section: offerSection });
       setStats(response.data.stats);
     } catch (error) {
       toast.error(extractErrorMessage(error, "Unable to fetch offer stats right now."));
     } finally {
       setStatsLoading(false);
     }
-  }, [toast]);
+  }, [offerSection, toast]);
 
   const fetchCoupons = useCallback(async () => {
     setTableLoading(true);
     try {
       const response = await offersService.getCoupons({
         search: debouncedSearch || undefined,
+        section: offerSection,
         discountType: (discountTypeFilter || undefined) as CouponDiscountType | undefined,
         status: (statusFilter || undefined) as CouponDerivedStatus | undefined,
         firstTimeUserOnly:
@@ -198,7 +205,7 @@ export const OffersPage = () => {
     } finally {
       setTableLoading(false);
     }
-  }, [debouncedSearch, discountTypeFilter, firstTimeUserFilter, limit, page, statusFilter, toast]);
+  }, [debouncedSearch, discountTypeFilter, firstTimeUserFilter, limit, offerSection, page, statusFilter, toast]);
 
   const fetchItemCategories = useCallback(async () => {
     try {
@@ -223,7 +230,7 @@ export const OffersPage = () => {
 
   useEffect(() => {
     setPage(1);
-  }, [debouncedSearch, discountTypeFilter, firstTimeUserFilter, limit, statusFilter]);
+  }, [debouncedSearch, discountTypeFilter, firstTimeUserFilter, limit, offerSection, statusFilter]);
 
   const refreshAll = useCallback(async () => {
     await Promise.all([fetchStats(), fetchCoupons()]);
@@ -253,6 +260,7 @@ export const OffersPage = () => {
   const handleSaveCoupon = useCallback(
     async (payload: {
       couponCode: string;
+      section: "dip_and_dash" | "gaming";
       title?: string;
       description?: string;
       discountType: CouponDiscountType;
@@ -342,6 +350,7 @@ export const OffersPage = () => {
           const duplicateCode = `${row.couponCode}_COPY_${Date.now().toString().slice(-4)}`;
           const response = await offersService.createCoupon({
             couponCode: duplicateCode,
+            section: offerSection,
             title: row.title ?? undefined,
             description: row.description ?? undefined,
             discountType: row.discountType,
@@ -366,7 +375,7 @@ export const OffersPage = () => {
         }
       });
     },
-    [refreshAll, runRowAction, toast]
+    [offerSection, refreshAll, runRowAction, toast]
   );
 
   const fetchCouponUsages = useCallback(
@@ -563,8 +572,8 @@ export const OffersPage = () => {
   return (
     <VStack spacing={6} align="stretch">
       <PageHeader
-        title="Offers"
-        subtitle="Manage coupons, discount campaigns and usage analytics from one place."
+        title={`${businessTitle} Offers`}
+        subtitle={`Manage ${businessTitle} coupons, discount campaigns and usage analytics from one place.`}
       />
 
       <SimpleGrid columns={{ base: 1, md: 3, xl: 7 }} spacing={4}>
@@ -703,6 +712,7 @@ export const OffersPage = () => {
         initialData={selectedCoupon}
         itemCategories={itemCategories}
         getItemsByCategory={loadItemsByCategory}
+        section={offerSection}
         onSubmit={handleSaveCoupon}
       />
 

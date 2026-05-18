@@ -1,3 +1,4 @@
+import { inflateRawSync } from "zlib";
 import { EntityManager, In } from "typeorm";
 
 import { AppDataSource } from "../../database/data-source";
@@ -11,6 +12,7 @@ import { IngredientStock } from "../ingredients/ingredient-stock.entity";
 import { InvoiceLine } from "../invoices/invoice-line.entity";
 import { Product } from "./product.entity";
 import { ProductDayLedgerAdjustment } from "./product-day-ledger-adjustment.entity";
+import { PurchaseBulkImport } from "./purchase-bulk-import.entity";
 import {
   PRODUCT_TARGET_SECTIONS,
   PRODUCT_UNITS,
@@ -40,6 +42,7 @@ type PaginationFilters = {
 
 type SupplierListFilters = PaginationFilters & {
   search?: string;
+  section?: PurchaseSection;
   includeInactive?: boolean;
 };
 
@@ -86,8 +89,13 @@ type PurchaseOrderListFilters = PaginationFilters & {
   search?: string;
   supplierId?: string;
   purchaseType?: PurchaseOrderType;
+  purchaseSection?: PurchaseSection;
   dateFrom?: string;
   dateTo?: string;
+};
+
+type PurchaseBulkImportHistoryFilters = PaginationFilters & {
+  purchaseSection?: PurchaseSection;
 };
 
 type ProcurementMetaFilters = {
@@ -95,11 +103,13 @@ type ProcurementMetaFilters = {
   ingredientCategoryId?: string;
   ingredientSearch?: string;
   productSearch?: string;
+  purchaseSection?: PurchaseSection;
 };
 
 type ProcurementStatsFilters = {
   dateFrom?: string;
   dateTo?: string;
+  purchaseSection?: PurchaseSection;
 };
 
 type CreateSupplierPayload = {
@@ -107,6 +117,7 @@ type CreateSupplierPayload = {
   storeName?: string;
   phone: string;
   address?: string;
+  section?: PurchaseSection;
   isActive?: boolean;
 };
 
@@ -133,18 +144,32 @@ type PurchaseOrderLinePayload = {
   lineType: PurchaseLineType;
   ingredientId?: string;
   productId?: string;
+  productName?: string;
+  productCategory?: string;
+  productPackSize?: string;
+  productUnit?: ProductUnit;
   quantity: number;
   quantityUnit?: string;
   unitPrice: number;
+  gstPercentage?: number;
   gstValue?: number;
+  sourceAmount?: number;
+  sourceGrandTotal?: number;
+  sourceRowNumber?: number;
   expiryDate?: string;
   note?: string;
 };
 
 type CreatePurchaseOrderPayload = {
-  supplierId: string;
+  supplierId?: string;
+  supplierName?: string;
+  supplierPhone?: string;
   purchaseDate?: string;
   purchaseSection?: PurchaseSection;
+  vendorInvoiceNumber?: string;
+  projectName?: string;
+  purchaseMonth?: string;
+  receivedDate?: string;
   note?: string;
   invoiceImageUrl?: string;
   lines: PurchaseOrderLinePayload[];
@@ -155,26 +180,59 @@ type PurchaseBulkCsvRow = {
   supplierName: string;
   purchaseDate: string;
   purchaseNote: string;
+  phone?: string;
+  vendorInvoiceNumber?: string;
+  projectName?: string;
+  month?: string;
   lineType: PurchaseLineType;
   itemName: string;
+  packSize?: string;
   quantity: number;
   quantityUnit?: string;
   unitPrice: number;
+  amount?: number;
+  gstPercentage?: number;
+  gstAmount?: number;
+  grandTotal?: number;
+  receivedDate?: string;
   expiryDate?: string;
   lineNote?: string;
 };
 
+type PurchaseBulkRowDetail = {
+  rowNumber: number;
+  status: "inserted" | "skipped_duplicate" | "failed";
+  supplierName?: string;
+  itemName?: string;
+  packSize?: string | null;
+  purchaseDate?: string;
+  vendorInvoiceNumber?: string | null;
+  quantity?: number | null;
+  quantityUnit?: string | null;
+  unitPrice?: number | null;
+  amount?: number | null;
+  gstAmount?: number | null;
+  grandTotal?: number | null;
+  purchaseNumber?: string;
+  reason?: string;
+};
+
 const PURCHASE_BULK_TEMPLATE_HEADERS = [
-  "supplier_name",
+  "vendor_name",
+  "phone_number",
+  "vendor_invoice_no",
   "purchase_date",
-  "purchase_note",
-  "line_type",
-  "item_name",
-  "quantity",
-  "quantity_unit",
+  "project_name",
+  "month",
+  "description",
+  "alt_type",
+  "purchase_qty",
   "unit_price",
-  "expiry_date",
-  "line_note"
+  "amount",
+  "gst_percentage",
+  "gst_amount",
+  "grand_total",
+  "received_date"
 ] as const;
 
 const MAX_PURCHASE_BULK_INVALID_DETAILS = 30;
@@ -211,6 +269,7 @@ const VALID_PRODUCT_TARGET_SECTION_SET = new Set<string>(PRODUCT_TARGET_SECTIONS
 const MAX_PRODUCT_BULK_INVALID_DETAILS = 40;
 const LEDGER_MOVE_SUPPRESS_PREFIX = "__ledger_move_suppress__:";
 const LEDGER_ROW_DELETE_SUPPRESS_PREFIX = "__ledger_row_delete_suppress__:";
+const PRODUCT_CONSUMPTION_SOURCE = "snooker_product_consumption";
 
 const toNumber = (value: string | number | null | undefined) => {
   if (value === null || value === undefined) {
@@ -321,7 +380,7 @@ const normalizeProductSectionStocks = (input: {
   };
 };
 
-const applyProductPurchaseSplit = (product: Product, stockAdded: number) => {
+const applyProductPurchaseSplit = (product: Product, stockAdded: number, purchaseSection?: PurchaseSection) => {
   const added = toFixedQuantity(Math.max(0, toNumber(stockAdded)));
   const existing = normalizeProductSectionStocks({
     targetSection: product.targetSection,
@@ -336,6 +395,10 @@ const applyProductPurchaseSplit = (product: Product, stockAdded: number) => {
   if (product.targetSection === "dip_and_dash") {
     dipAndDashAdded = added;
   } else if (product.targetSection === "gaming") {
+    gamingAdded = added;
+  } else if (purchaseSection === "dip_and_dash") {
+    dipAndDashAdded = added;
+  } else if (purchaseSection === "gaming") {
     gamingAdded = added;
   } else {
     const baseTotal = toFixedQuantity(existing.dipAndDashStock + existing.gamingStock);
@@ -463,10 +526,144 @@ const getStockStatus = (currentStock: number, minStock: number) =>
 const normalizeText = (value: string) => value.trim();
 const normalizeLookupKey = (value: string) => normalizeText(value).toLowerCase();
 const normalizeHeaderKey = (value: string) => value.trim().replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
+const normalizeProductMatchKey = (value: string) =>
+  normalizeText(value)
+    .toLowerCase()
+    .replace(/&/g, "and")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(
+      /\b(drink|beverage|juice|ice|cream|milkshake|chocolate|bar|flavour|flavor|pcs|qty|ml|g|gm|tin|box|veg)\b/g,
+      ""
+    )
+    .replace(/\s+/g, " ")
+    .trim();
+
+const resolveProductMatchKey = (name: string, packSize?: string | null) => {
+  const base = normalizeProductMatchKey(name);
+  const pack = normalizeProductMatchKey(packSize ?? "");
+  return pack ? `${base} ${pack}`.trim() : base;
+};
+
+const normalizePhoneText = (value: string) => value.trim().replace(/\s+/g, " ");
 
 const escapeCsvValue = (value: string | number | null | undefined) => {
   const text = value === null || value === undefined ? "" : String(value);
   return `"${text.replace(/"/g, "\"\"")}"`;
+};
+
+const decodeXmlText = (value: string) =>
+  value
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, "\"")
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&");
+
+const stripXmlTags = (value: string) => decodeXmlText(value.replace(/<[^>]*>/g, ""));
+
+const columnLettersToIndex = (letters: string) => {
+  let index = 0;
+  for (const char of letters.toUpperCase()) {
+    index = index * 26 + char.charCodeAt(0) - 64;
+  }
+  return index - 1;
+};
+
+const readZipEntries = (buffer: Buffer) => {
+  const entries = new Map<string, Buffer>();
+  let eocdOffset = -1;
+  const minOffset = Math.max(0, buffer.length - 66000);
+  for (let index = buffer.length - 22; index >= minOffset; index -= 1) {
+    if (buffer.readUInt32LE(index) === 0x06054b50) {
+      eocdOffset = index;
+      break;
+    }
+  }
+  if (eocdOffset < 0) {
+    throw new AppError(422, "Uploaded XLSX file is invalid.");
+  }
+
+  const totalEntries = buffer.readUInt16LE(eocdOffset + 10);
+  let centralOffset = buffer.readUInt32LE(eocdOffset + 16);
+
+  for (let entryIndex = 0; entryIndex < totalEntries; entryIndex += 1) {
+    if (buffer.readUInt32LE(centralOffset) !== 0x02014b50) {
+      throw new AppError(422, "Uploaded XLSX file has an invalid directory.");
+    }
+    const compressionMethod = buffer.readUInt16LE(centralOffset + 10);
+    const compressedSize = buffer.readUInt32LE(centralOffset + 20);
+    const fileNameLength = buffer.readUInt16LE(centralOffset + 28);
+    const extraLength = buffer.readUInt16LE(centralOffset + 30);
+    const commentLength = buffer.readUInt16LE(centralOffset + 32);
+    const localHeaderOffset = buffer.readUInt32LE(centralOffset + 42);
+    const fileName = buffer
+      .subarray(centralOffset + 46, centralOffset + 46 + fileNameLength)
+      .toString("utf-8");
+
+    if (buffer.readUInt32LE(localHeaderOffset) !== 0x04034b50) {
+      throw new AppError(422, "Uploaded XLSX file has an invalid entry.");
+    }
+    const localFileNameLength = buffer.readUInt16LE(localHeaderOffset + 26);
+    const localExtraLength = buffer.readUInt16LE(localHeaderOffset + 28);
+    const dataStart = localHeaderOffset + 30 + localFileNameLength + localExtraLength;
+    const compressed = buffer.subarray(dataStart, dataStart + compressedSize);
+    if (compressionMethod === 0) {
+      entries.set(fileName, compressed);
+    } else if (compressionMethod === 8) {
+      entries.set(fileName, inflateRawSync(compressed));
+    }
+
+    centralOffset += 46 + fileNameLength + extraLength + commentLength;
+  }
+
+  return entries;
+};
+
+const parseXlsxRows = (buffer: Buffer) => {
+  const entries = readZipEntries(buffer);
+  const sharedStringsXml = entries.get("xl/sharedStrings.xml")?.toString("utf-8") ?? "";
+  const sharedStrings = Array.from(sharedStringsXml.matchAll(/<si\b[^>]*>([\s\S]*?)<\/si>/g)).map((match) =>
+    normalizeText(stripXmlTags(match[1]).replace(/\s+/g, " "))
+  );
+  const sheetXml = entries.get("xl/worksheets/sheet1.xml")?.toString("utf-8");
+  if (!sheetXml) {
+    throw new AppError(422, "Uploaded XLSX file does not contain a first worksheet.");
+  }
+
+  return Array.from(sheetXml.matchAll(/<row\b[^>]*\br="(\d+)"[^>]*>([\s\S]*?)<\/row>/g)).map((rowMatch) => {
+    const cells: string[] = [];
+    for (const cellMatch of rowMatch[2].matchAll(/<c\b([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
+      const attributes = cellMatch[1];
+      const body = cellMatch[2] ?? "";
+      const ref = /r="([A-Z]+)\d+"/.exec(attributes)?.[1] ?? "";
+      const columnIndex = ref ? columnLettersToIndex(ref) : cells.length;
+      const type = /t="([^"]+)"/.exec(attributes)?.[1] ?? "";
+      const rawValue = /<v[^>]*>([\s\S]*?)<\/v>/.exec(body)?.[1] ?? "";
+      let value = "";
+      if (type === "s") {
+        value = sharedStrings[Number(rawValue)] ?? "";
+      } else if (type === "inlineStr") {
+        value = normalizeText(stripXmlTags(body).replace(/\s+/g, " "));
+      } else {
+        value = decodeXmlText(rawValue);
+      }
+      cells[columnIndex] = value;
+    }
+    return cells.map((cell) => cell ?? "");
+  });
+};
+
+const parseTabularUploadRows = (buffer: Buffer, originalName?: string) => {
+  const extension = (originalName ?? "").toLowerCase().split(".").pop();
+  if (extension === "xlsx") {
+    return parseXlsxRows(buffer);
+  }
+
+  const content = buffer.toString("utf-8").replace(/^\uFEFF/, "").trim();
+  if (!content) {
+    throw new AppError(422, "Uploaded file is empty.");
+  }
+  return parseCsvRows(content);
 };
 
 const parseCsvRows = (content: string) => {
@@ -521,6 +718,15 @@ const parseDateLikeToYmd = (value: string, rowNumber: number, fieldLabel: string
   const trimmed = value.trim();
   if (!trimmed) {
     return "";
+  }
+
+  const excelSerial = Number(trimmed);
+  if (/^\d{4,6}(?:\.\d+)?$/.test(trimmed) && Number.isFinite(excelSerial) && excelSerial > 20000 && excelSerial < 70000) {
+    const parsed = new Date(Date.UTC(1899, 11, 30 + Math.floor(excelSerial)));
+    const year = parsed.getUTCFullYear();
+    const month = String(parsed.getUTCMonth() + 1).padStart(2, "0");
+    const day = String(parsed.getUTCDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
   }
 
   const ymdMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed);
@@ -618,6 +824,7 @@ export class ProcurementService {
   private readonly allocationRepository = AppDataSource.getRepository(DailyAllocation);
   private readonly purchaseOrderRepository = AppDataSource.getRepository(PurchaseOrder);
   private readonly purchaseOrderLineRepository = AppDataSource.getRepository(PurchaseOrderLine);
+  private readonly purchaseBulkImportRepository = AppDataSource.getRepository(PurchaseBulkImport);
   private readonly productDayLedgerAdjustmentRepository = AppDataSource.getRepository(ProductDayLedgerAdjustment);
   private readonly invoiceLineRepository = AppDataSource.getRepository(InvoiceLine);
 
@@ -637,14 +844,19 @@ export class ProcurementService {
     return product;
   }
 
-  private async ensureSupplierExists(supplierId: string | null | undefined) {
+  private async ensureSupplierExists(supplierId: string | null | undefined, section?: PurchaseSection) {
     if (!supplierId) {
       return null;
     }
 
-    const supplier = await this.supplierRepository.findOne({
-      where: { id: supplierId, isActive: true }
-    });
+    const query = this.supplierRepository
+      .createQueryBuilder("supplier")
+      .where("supplier.id = :supplierId", { supplierId })
+      .andWhere("supplier.isActive = true");
+    if (section) {
+      query.andWhere("supplier.section = :section", { section });
+    }
+    const supplier = await query.getOne();
     if (!supplier) {
       throw new AppError(404, "Default supplier not found or inactive");
     }
@@ -652,10 +864,11 @@ export class ProcurementService {
     return supplier;
   }
 
-  private async ensureSupplierNameUnique(name: string, ignoreId?: string) {
+  private async ensureSupplierNameUnique(name: string, section: PurchaseSection, ignoreId?: string) {
     const query = this.supplierRepository
       .createQueryBuilder("supplier")
-      .where("LOWER(supplier.name) = LOWER(:name)", { name });
+      .where("LOWER(supplier.name) = LOWER(:name)", { name })
+      .andWhere("supplier.section = :section", { section });
 
     if (ignoreId) {
       query.andWhere("supplier.id != :ignoreId", { ignoreId });
@@ -663,14 +876,15 @@ export class ProcurementService {
 
     const existing = await query.getOne();
     if (existing) {
-      throw new AppError(409, "Supplier with this name already exists");
+      throw new AppError(409, "Supplier with this name already exists in this business.");
     }
   }
 
-  private async ensureProductNameUnique(name: string, ignoreId?: string) {
+  private async ensureProductNameUnique(name: string, targetSection: ProductTargetSection, ignoreId?: string) {
     const query = this.productRepository
       .createQueryBuilder("product")
-      .where("LOWER(product.name) = LOWER(:name)", { name });
+      .where("LOWER(product.name) = LOWER(:name)", { name })
+      .andWhere("product.targetSection = :targetSection", { targetSection });
 
     if (ignoreId) {
       query.andWhere("product.id != :ignoreId", { ignoreId });
@@ -678,7 +892,7 @@ export class ProcurementService {
 
     const existing = await query.getOne();
     if (existing) {
-      throw new AppError(409, "Product with this name already exists");
+      throw new AppError(409, "Product with this name already exists in this business.");
     }
   }
 
@@ -692,6 +906,7 @@ export class ProcurementService {
       storeName: supplier.storeName,
       phone: supplier.phone,
       address: supplier.address,
+      section: supplier.section,
       isActive: supplier.isActive,
       purchaseOrdersCount: metrics?.purchaseOrdersCount ?? 0,
       totalPurchasedAmount: toFixedPrice(metrics?.totalPurchasedAmount ?? 0),
@@ -814,68 +1029,100 @@ export class ProcurementService {
 
   getPurchaseBulkImportTemplate() {
     const rows = [
-      [...PURCHASE_BULK_TEMPLATE_HEADERS],
-      ["Vamshi", "2026-04-10", "Morning purchase from market", "ingredient", "Tomato", "25", "kg", "28.5", "", ""],
       [
-        "Vamshi",
-        "2026-04-10",
-        "Morning purchase from market",
-        "ingredient",
-        "Burger Box",
-        "100",
-        "pcs",
-        "0",
-        "",
-        "Additional item / packaging stock"
+        "S/N",
+        "Vendor Name",
+        "Phone Number",
+        "Vendor Invoice No#",
+        "Purchase Date",
+        "Project Name",
+        "Month",
+        "Description",
+        "Alt Type",
+        "Purchase Qty",
+        "Unit price",
+        "Amount",
+        "GST%",
+        "Gst Amount",
+        "Grand Total",
+        "Received Date"
       ],
       [
-        "Vamshi",
-        "2026-04-10",
-        "Morning purchase from market",
-        "product",
-        "7up",
-        "12",
-        "bottle",
-        "40",
-        "2026-07-31",
-        "Promo rate"
+        "1",
+        "D Mart-Velachery",
+        "044-22430134",
+        "600504012-006959",
+        "2026-04-28",
+        "147-Snooker's",
+        "April",
+        "Coca-Cola Zero Sugar",
+        "TIN-300 ml",
+        "9",
+        "35",
+        "315",
+        "0",
+        "0",
+        "315",
+        ""
       ]
     ];
 
     const csv = rows.map((row) => row.map((cell) => escapeCsvValue(cell)).join(",")).join("\n");
     return {
-      fileName: "purchase_bulk_template.csv",
+      fileName: "snooker_purchase_bulk_template.csv",
       content: `\uFEFF${csv}`
     };
   }
 
-  private parseBulkPurchaseRows(csvBuffer: Buffer) {
-    const content = csvBuffer.toString("utf-8").replace(/^\uFEFF/, "").trim();
-    if (!content) {
-      throw new AppError(422, "Uploaded CSV file is empty.");
-    }
-
-    const parsedRows = parseCsvRows(content);
+  private parseBulkPurchaseRows(fileBuffer: Buffer, originalName?: string) {
+    const parsedRows = parseTabularUploadRows(fileBuffer, originalName);
     if (!parsedRows.length) {
-      throw new AppError(422, "Uploaded CSV file is empty.");
+      throw new AppError(422, "Uploaded file is empty.");
     }
 
-    const headerRow = parsedRows[0].map((cell) => cell.trim());
+    const headerRowIndex = parsedRows.findIndex((row) =>
+      row.some((cell) => ["vendorname", "suppliername", "description", "itemname"].includes(normalizeHeaderKey(cell)))
+    );
+    if (headerRowIndex < 0) {
+      throw new AppError(422, "Could not find a valid purchase header row.");
+    }
+
     const headerAliases = new Map<string, string>([
-      ["suppliername", "supplier_name"],
-      ["supplier", "supplier_name"],
+      ["vendorname", "vendor_name"],
+      ["suppliername", "vendor_name"],
+      ["supplier", "vendor_name"],
+      ["phonenumber", "phone_number"],
+      ["phone", "phone_number"],
+      ["vendorinvoiceno", "vendor_invoice_no"],
+      ["invoiceno", "vendor_invoice_no"],
+      ["invoicenumber", "vendor_invoice_no"],
       ["purchasedate", "purchase_date"],
       ["date", "purchase_date"],
-      ["purchasenote", "purchase_note"],
-      ["linetype", "line_type"],
-      ["type", "line_type"],
-      ["itemname", "item_name"],
-      ["item", "item_name"],
-      ["quantity", "quantity"],
+      ["projectname", "project_name"],
+      ["project", "project_name"],
+      ["month", "month"],
+      ["description", "description"],
+      ["productname", "description"],
+      ["itemname", "description"],
+      ["item", "description"],
+      ["alttype", "alt_type"],
+      ["packsize", "alt_type"],
+      ["purchaseqty", "purchase_qty"],
+      ["qty", "purchase_qty"],
+      ["quantity", "purchase_qty"],
       ["quantityunit", "quantity_unit"],
       ["unit", "quantity_unit"],
       ["unitprice", "unit_price"],
       ["price", "unit_price"],
+      ["amount", "amount"],
+      ["gst", "gst_percentage"],
+      ["gstpercentage", "gst_percentage"],
+      ["gstamount", "gst_amount"],
+      ["grandtotal", "grand_total"],
+      ["receiveddate", "received_date"],
+      ["purchasenote", "purchase_note"],
+      ["linetype", "line_type"],
+      ["type", "line_type"],
       ["expirydate", "expiry_date"],
       ["expdate", "expiry_date"],
       ["expiry", "expiry_date"],
@@ -884,20 +1131,14 @@ export class ProcurementService {
     ]);
 
     const headerIndexMap = new Map<string, number>();
-    headerRow.forEach((header, index) => {
+    parsedRows[headerRowIndex].forEach((header, index) => {
       const alias = headerAliases.get(normalizeHeaderKey(header));
       if (alias) {
         headerIndexMap.set(alias, index);
       }
     });
 
-    const requiredHeaders: Array<(typeof PURCHASE_BULK_TEMPLATE_HEADERS)[number]> = [
-      "supplier_name",
-      "line_type",
-      "item_name",
-      "quantity",
-      "unit_price"
-    ];
+    const requiredHeaders = ["vendor_name", "purchase_date", "description", "purchase_qty", "unit_price"];
     const missingHeaders = requiredHeaders.filter((header) => !headerIndexMap.has(header));
     if (missingHeaders.length) {
       throw new AppError(
@@ -906,262 +1147,582 @@ export class ProcurementService {
       );
     }
 
-    const readValue = (row: string[], header: (typeof PURCHASE_BULK_TEMPLATE_HEADERS)[number]) => {
+    const readValue = (row: string[], header: string) => {
       const columnIndex = headerIndexMap.get(header);
-      if (columnIndex === undefined) {
-        return "";
-      }
-      return String(row[columnIndex] ?? "");
+      return columnIndex === undefined ? "" : String(row[columnIndex] ?? "");
     };
 
     const nonEmptyRows = parsedRows
-      .slice(1)
-      .map((row, index) => ({ row, rowNumber: index + 2 }))
+      .slice(headerRowIndex + 1)
+      .map((row, index) => ({ row, rowNumber: headerRowIndex + index + 2 }))
       .filter(({ row }) => row.some((cell) => cell.trim().length > 0));
 
-    if (!nonEmptyRows.length) {
-      throw new AppError(422, "Uploaded CSV does not contain any purchase rows.");
-    }
-
     const rows: PurchaseBulkCsvRow[] = [];
-    const invalidRows: Array<{ rowNumber: number; reason: string }> = [];
+    const invalidRowDetails: PurchaseBulkRowDetail[] = [];
+    let invalidRows = 0;
 
     nonEmptyRows.forEach(({ row, rowNumber }) => {
+      const rowDetail: PurchaseBulkRowDetail = { rowNumber, status: "failed" };
       try {
-        const supplierName = normalizeText(readValue(row, "supplier_name"));
+        const supplierName = normalizeText(readValue(row, "vendor_name"));
+        const phone = normalizePhoneText(readValue(row, "phone_number"));
+        const vendorInvoiceNumber = normalizeText(readValue(row, "vendor_invoice_no"));
         const purchaseDateRaw = readValue(row, "purchase_date");
-        const purchaseNote = normalizeText(readValue(row, "purchase_note"));
-        const lineTypeRaw = normalizeText(readValue(row, "line_type")).toLowerCase();
-        const itemName = normalizeText(readValue(row, "item_name"));
-        const quantityRaw = normalizeText(readValue(row, "quantity"));
+        const projectName = normalizeText(readValue(row, "project_name"));
+        const month = normalizeText(readValue(row, "month"));
+        const itemName = normalizeText(readValue(row, "description").replace(/\s+/g, " "));
+        const packSize = normalizeText(readValue(row, "alt_type").replace(/\s+/g, " "));
+        const quantityRaw = normalizeText(readValue(row, "purchase_qty"));
         const quantityUnit = normalizeText(readValue(row, "quantity_unit")).toLowerCase();
         const unitPriceRaw = normalizeText(readValue(row, "unit_price"));
+        const amountRaw = normalizeText(readValue(row, "amount"));
+        const gstPercentageRaw = normalizeText(readValue(row, "gst_percentage"));
+        const gstAmountRaw = normalizeText(readValue(row, "gst_amount"));
+        const grandTotalRaw = normalizeText(readValue(row, "grand_total"));
+        const receivedDateRaw = readValue(row, "received_date");
+        const purchaseNote = normalizeText(readValue(row, "purchase_note"));
+        const lineTypeRaw = normalizeText(readValue(row, "line_type")).toLowerCase();
         const expiryDateRaw = normalizeText(readValue(row, "expiry_date"));
         const lineNote = normalizeText(readValue(row, "line_note"));
 
-        if (!supplierName) {
-          throw new AppError(422, `Row ${rowNumber}: Supplier name is required.`);
+        rowDetail.supplierName = supplierName || undefined;
+        rowDetail.itemName = itemName || undefined;
+        rowDetail.packSize = packSize || null;
+        rowDetail.purchaseDate = normalizeText(purchaseDateRaw) || undefined;
+        rowDetail.vendorInvoiceNumber = vendorInvoiceNumber || null;
+        rowDetail.quantity = quantityRaw ? Number(quantityRaw) : null;
+        rowDetail.quantityUnit = quantityUnit || "pcs";
+        rowDetail.unitPrice = unitPriceRaw ? Number(unitPriceRaw) : null;
+        rowDetail.amount = amountRaw ? Number(amountRaw) : null;
+        rowDetail.gstAmount = gstAmountRaw ? Number(gstAmountRaw) : null;
+        rowDetail.grandTotal = grandTotalRaw ? Number(grandTotalRaw) : null;
+
+        if (!itemName && /^total\b/i.test(normalizeText(row[0] ?? ""))) {
+          return;
         }
-        if (!PURCHASE_LINE_TYPES.includes(lineTypeRaw as PurchaseLineType)) {
-          throw new AppError(422, `Row ${rowNumber}: Line type must be ingredient or product.`);
+        if (!supplierName) {
+          throw new AppError(422, `Row ${rowNumber}: Vendor name is required.`);
         }
         if (!itemName) {
-          throw new AppError(422, `Row ${rowNumber}: Item name is required.`);
+          throw new AppError(422, `Row ${rowNumber}: Description is required.`);
         }
         if (!quantityRaw) {
-          throw new AppError(422, `Row ${rowNumber}: Quantity is required.`);
+          throw new AppError(422, `Row ${rowNumber}: Purchase qty is required.`);
         }
         if (!unitPriceRaw) {
           throw new AppError(422, `Row ${rowNumber}: Unit price is required.`);
         }
 
+        const lineType = lineTypeRaw
+          ? PURCHASE_LINE_TYPES.includes(lineTypeRaw as PurchaseLineType)
+            ? (lineTypeRaw as PurchaseLineType)
+            : null
+          : "product";
+        if (!lineType) {
+          throw new AppError(422, `Row ${rowNumber}: Line type must be ingredient or product.`);
+        }
+
         const purchaseDate = parseDateLikeToYmd(purchaseDateRaw, rowNumber, "Purchase date") || getTodayDate();
-        const quantity = toFixedQuantity(parsePositiveNumber(quantityRaw, rowNumber, "Quantity"));
+        const quantity = toFixedQuantity(parsePositiveNumber(quantityRaw, rowNumber, "Purchase qty"));
         const unitPrice = toFixedPrice(parseNonNegativeNumber(unitPriceRaw, rowNumber, "Unit price"));
+        const computedAmount = toFixedPrice(quantity * unitPrice);
+        const amount = amountRaw ? toFixedPrice(parseNonNegativeNumber(amountRaw, rowNumber, "Amount")) : computedAmount;
+        const gstPercentage = gstPercentageRaw
+          ? Number(parseNonNegativeNumber(gstPercentageRaw, rowNumber, "GST%").toFixed(4))
+          : undefined;
+        const gstAmount = gstAmountRaw ? toFixedPrice(parseNonNegativeNumber(gstAmountRaw, rowNumber, "GST amount")) : 0;
+        const computedGrandTotal = toFixedPrice(computedAmount + gstAmount);
+        const grandTotal = grandTotalRaw
+          ? toFixedPrice(parseNonNegativeNumber(grandTotalRaw, rowNumber, "Grand total"))
+          : computedGrandTotal;
+        const receivedDate = parseDateLikeToYmd(receivedDateRaw, rowNumber, "Received date") || undefined;
         const expiryDate = parseDateLikeToYmd(expiryDateRaw, rowNumber, "Expiry date") || undefined;
-        if (lineTypeRaw === "ingredient" && expiryDate) {
+
+        rowDetail.purchaseDate = purchaseDate;
+        rowDetail.quantity = quantity;
+        rowDetail.unitPrice = unitPrice;
+        rowDetail.amount = amount;
+        rowDetail.gstAmount = gstAmount;
+        rowDetail.grandTotal = grandTotal;
+
+        if (lineType === "ingredient" && expiryDate) {
           throw new AppError(422, `Row ${rowNumber}: expiry_date is allowed only for product lines.`);
+        }
+        if (Math.abs(amount - computedAmount) > 0.05) {
+          throw new AppError(422, `Row ${rowNumber}: Amount does not match Purchase Qty x Unit price.`);
+        }
+        if (Math.abs(grandTotal - computedGrandTotal) > 0.05) {
+          throw new AppError(422, `Row ${rowNumber}: Grand Total does not match Amount + Gst Amount.`);
         }
 
         rows.push({
           rowNumber,
           supplierName,
+          phone,
+          vendorInvoiceNumber,
           purchaseDate,
+          projectName,
+          month,
           purchaseNote,
-          lineType: lineTypeRaw as PurchaseLineType,
+          lineType,
           itemName,
+          packSize: packSize || undefined,
           quantity,
-          quantityUnit: quantityUnit || undefined,
+          quantityUnit: quantityUnit || "pcs",
           unitPrice,
-          expiryDate: lineTypeRaw === "product" ? expiryDate : undefined,
+          amount,
+          gstPercentage,
+          gstAmount,
+          grandTotal,
+          receivedDate,
+          expiryDate: lineType === "product" ? expiryDate : undefined,
           lineNote: lineNote || undefined
         });
       } catch (error) {
+        invalidRows += 1;
         const reason =
           error instanceof AppError ? error.message.replace(/^Row \d+:\s*/i, "") : "Row validation failed.";
-        if (invalidRows.length < MAX_PURCHASE_BULK_INVALID_DETAILS) {
-          invalidRows.push({ rowNumber, reason });
+        if (invalidRowDetails.length < MAX_PURCHASE_BULK_INVALID_DETAILS) {
+          invalidRowDetails.push({ ...rowDetail, reason });
         }
-      }
-    });
-
-    if (invalidRows.length) {
-      const preview = invalidRows
-        .slice(0, 3)
-        .map((entry) => `Row ${entry.rowNumber}: ${entry.reason}`)
-        .join(" | ");
-      throw new AppError(
-        422,
-        `CSV validation failed for ${invalidRows.length} row(s). ${preview}`,
-        invalidRows
-      );
-    }
-
-    const firstRow = rows[0];
-    const canonicalSupplier = normalizeLookupKey(firstRow.supplierName);
-    const canonicalDate = firstRow.purchaseDate;
-    const canonicalNote = firstRow.purchaseNote;
-
-    rows.forEach((row) => {
-      if (normalizeLookupKey(row.supplierName) !== canonicalSupplier) {
-        throw new AppError(
-          422,
-          `Row ${row.rowNumber}: All rows in one upload must use the same supplier_name.`
-        );
-      }
-      if (row.purchaseDate !== canonicalDate) {
-        throw new AppError(
-          422,
-          `Row ${row.rowNumber}: All rows in one upload must use the same purchase_date.`
-        );
-      }
-      if (row.purchaseNote !== canonicalNote) {
-        throw new AppError(
-          422,
-          `Row ${row.rowNumber}: All rows in one upload must use the same purchase_note.`
-        );
       }
     });
 
     return {
       rows,
-      supplierName: firstRow.supplierName,
-      purchaseDate: firstRow.purchaseDate,
-      purchaseNote: firstRow.purchaseNote
+      supplierName: rows[0]?.supplierName ?? "",
+      purchaseDate: rows[0]?.purchaseDate ?? getTodayDate(),
+      purchaseNote: rows[0]?.purchaseNote ?? "",
+      invalidRows,
+      invalidRowDetails,
+      totalRows: nonEmptyRows.length
     };
   }
 
-  async bulkImportPurchaseOrderFromCsv(csvBuffer: Buffer, createdByUserId: string) {
-    const parsed = this.parseBulkPurchaseRows(csvBuffer);
+  private buildPurchaseOrderNote(row: PurchaseBulkCsvRow) {
+    const parts = [row.purchaseNote || "Imported purchase"];
+    if (row.vendorInvoiceNumber) {
+      parts.push(`Invoice: ${row.vendorInvoiceNumber}`);
+    }
+    if (row.projectName) {
+      parts.push(`Project: ${row.projectName}`);
+    }
+    if (row.month) {
+      parts.push(`Month: ${row.month}`);
+    }
+    if (row.receivedDate) {
+      parts.push(`Received: ${row.receivedDate}`);
+    }
+    return parts.join(" | ");
+  }
 
-    const supplier = await this.supplierRepository
+  private buildPurchaseDuplicateKey(input: {
+    supplierName: string;
+    purchaseDate: string;
+    vendorInvoiceNumber?: string | null;
+    productName: string;
+    packSize?: string | null;
+    quantity: number;
+    unitPrice: number;
+    gstAmount: number;
+    grandTotal: number;
+  }) {
+    return [
+      normalizeLookupKey(input.supplierName),
+      input.purchaseDate,
+      normalizeLookupKey(input.vendorInvoiceNumber ?? ""),
+      resolveProductMatchKey(input.productName, input.packSize),
+      toFixedQuantity(input.quantity).toFixed(3),
+      toFixedPrice(input.unitPrice).toFixed(2),
+      toFixedPrice(input.gstAmount).toFixed(2),
+      toFixedPrice(input.grandTotal).toFixed(2)
+    ].join("|");
+  }
+
+  private async ensureSupplierForPurchaseImport(
+    manager: EntityManager,
+    row: Pick<PurchaseBulkCsvRow, "supplierName" | "phone">,
+    section: PurchaseSection = "gaming"
+  ) {
+    const supplierName = normalizeText(row.supplierName);
+    const supplier = await manager
+      .getRepository(Supplier)
       .createQueryBuilder("supplier")
-      .where("LOWER(supplier.name) = LOWER(:name)", { name: parsed.supplierName })
-      .andWhere("supplier.isActive = true")
+      .where("LOWER(supplier.name) = LOWER(:name)", { name: supplierName })
+      .andWhere("supplier.section = :section", { section })
       .getOne();
 
-    if (!supplier) {
-      throw new AppError(404, `Active supplier not found: ${parsed.supplierName}`);
+    if (supplier) {
+      let changed = false;
+      if (!supplier.isActive) {
+        supplier.isActive = true;
+        changed = true;
+      }
+      if (!supplier.phone?.trim() && row.phone) {
+        supplier.phone = row.phone;
+        changed = true;
+      }
+      return changed ? manager.save(Supplier, supplier) : supplier;
     }
 
-    const ingredientNameKeys = Array.from(
-      new Set(
-        parsed.rows
-          .filter((row) => row.lineType === "ingredient")
-          .map((row) => normalizeLookupKey(row.itemName))
-      )
+    return manager.save(
+      Supplier,
+      manager.create(Supplier, {
+        name: supplierName,
+        storeName: supplierName,
+        phone: row.phone || "-",
+        address: "Auto-created from purchase import",
+        section,
+        isActive: true
+      })
     );
-    const productNameKeys = Array.from(
-      new Set(
-        parsed.rows
-          .filter((row) => row.lineType === "product")
-          .map((row) => normalizeLookupKey(row.itemName))
-      )
-    );
+  }
 
-    const [ingredients, products] = await Promise.all([
-      ingredientNameKeys.length
-        ? this.ingredientRepository
-            .createQueryBuilder("ingredient")
-            .where("LOWER(ingredient.name) IN (:...nameKeys)", { nameKeys: ingredientNameKeys })
-            .andWhere("ingredient.isActive = true")
-            .getMany()
-        : Promise.resolve([]),
-      productNameKeys.length
-        ? this.productRepository
-            .createQueryBuilder("product")
-            .where("LOWER(product.name) IN (:...nameKeys)", { nameKeys: productNameKeys })
-            .andWhere("product.isActive = true")
-            .getMany()
-        : Promise.resolve([])
-    ]);
+  async bulkImportPurchaseOrderFromCsv(csvBuffer: Buffer, createdByUserId: string, originalName?: string) {
+    const parsed = this.parseBulkPurchaseRows(csvBuffer, originalName);
 
-    const ingredientMap = new Map(ingredients.map((ingredient) => [normalizeLookupKey(ingredient.name), ingredient]));
-    const productMap = new Map(products.map((product) => [normalizeLookupKey(product.name), product]));
-    const missingRows: Array<{ rowNumber: number; reason: string }> = [];
+    const result = await AppDataSource.transaction(async (manager) => {
+      const productRows = parsed.rows.filter((row) => row.lineType === "product");
+      const rowsBySupplierDateInvoice = new Map<string, PurchaseBulkCsvRow[]>();
+      for (const row of parsed.rows) {
+        const key = [normalizeLookupKey(row.supplierName), row.purchaseDate, normalizeLookupKey(row.vendorInvoiceNumber ?? "")].join("|");
+        const current = rowsBySupplierDateInvoice.get(key) ?? [];
+        current.push(row);
+        rowsBySupplierDateInvoice.set(key, current);
+      }
 
-    const lines: PurchaseOrderLinePayload[] = parsed.rows.map((row) => {
-      if (row.lineType === "ingredient") {
-        const ingredient = ingredientMap.get(normalizeLookupKey(row.itemName));
-        if (!ingredient) {
-          missingRows.push({
-            rowNumber: row.rowNumber,
-            reason: `Ingredient not found or inactive: ${row.itemName}`
-          });
-          return {
-            lineType: "ingredient",
-            quantity: row.quantity,
-            quantityUnit: row.quantityUnit,
-            unitPrice: row.unitPrice,
-            expiryDate: undefined,
-            note: row.lineNote
-          };
+      const suppliersByKey = new Map<string, Supplier>();
+      for (const row of parsed.rows) {
+        const key = normalizeLookupKey(row.supplierName);
+        if (!suppliersByKey.has(key)) {
+          suppliersByKey.set(key, await this.ensureSupplierForPurchaseImport(manager, row));
         }
-        return {
-          lineType: "ingredient",
-          ingredientId: ingredient.id,
-          quantity: row.quantity,
-          quantityUnit: row.quantityUnit,
-          unitPrice: row.unitPrice,
-          expiryDate: undefined,
-          note: row.lineNote
-        };
       }
 
-      const product = productMap.get(normalizeLookupKey(row.itemName));
-      if (!product) {
-        missingRows.push({
-          rowNumber: row.rowNumber,
-          reason: `Product not found or inactive: ${row.itemName}`
-        });
-        return {
-          lineType: "product",
-          quantity: row.quantity,
-          quantityUnit: row.quantityUnit,
-          unitPrice: row.unitPrice,
-          expiryDate: row.expiryDate,
-          note: row.lineNote
-        };
+      const products = await manager.find(Product, { where: { isActive: true, targetSection: "gaming" } });
+      const productByExactName = new Map(products.map((product) => [normalizeLookupKey(product.name), product]));
+      const productByFuzzyName = new Map<string, Product>();
+      products.forEach((product) => {
+        productByFuzzyName.set(resolveProductMatchKey(product.name, product.packSize), product);
+        productByFuzzyName.set(resolveProductMatchKey(product.name), product);
+      });
+
+      const existingOrders = await manager.find(PurchaseOrder, {
+        where: { purchaseSection: "gaming" },
+        relations: { supplier: true, lines: true }
+      });
+      const existingLineKeys = new Set<string>();
+      for (const order of existingOrders) {
+        for (const line of order.lines ?? []) {
+          if (line.lineType !== "product") {
+            continue;
+          }
+          existingLineKeys.add(
+            this.buildPurchaseDuplicateKey({
+              supplierName: order.supplier?.name ?? "",
+              purchaseDate: order.purchaseDate,
+              vendorInvoiceNumber: order.vendorInvoiceNumber,
+              productName: line.itemNameSnapshot,
+              packSize: line.packSizeSnapshot,
+              quantity: toNumber(line.enteredQuantity ?? line.stockAdded),
+              unitPrice: toNumber(line.unitPrice),
+              gstAmount: toNumber(line.gstValue),
+              grandTotal: toNumber(line.sourceGrandTotal ?? line.lineTotal)
+            })
+          );
+        }
       }
+
+      const duplicateInUpload = new Set<string>();
+      const validRowsByGroup = new Map<string, PurchaseBulkCsvRow[]>();
+      const details: PurchaseBulkRowDetail[] = [...parsed.invalidRowDetails];
+      let skippedDuplicateRows = 0;
+      let createdProducts = 0;
+      let matchedProducts = 0;
+
+      for (const row of productRows) {
+        const matchedProduct =
+          productByExactName.get(normalizeLookupKey(row.itemName)) ??
+          productByFuzzyName.get(resolveProductMatchKey(row.itemName, row.packSize)) ??
+          productByFuzzyName.get(resolveProductMatchKey(row.itemName));
+
+        if (matchedProduct) {
+          row.itemName = matchedProduct.name;
+          matchedProducts += 1;
+        }
+
+        const rowDuplicateKey = this.buildPurchaseDuplicateKey({
+          supplierName: row.supplierName,
+          purchaseDate: row.purchaseDate,
+          vendorInvoiceNumber: row.vendorInvoiceNumber,
+          productName: row.itemName,
+          packSize: row.packSize,
+          quantity: row.quantity,
+          unitPrice: row.unitPrice,
+          gstAmount: row.gstAmount ?? 0,
+          grandTotal: row.grandTotal ?? row.quantity * row.unitPrice
+        });
+        if (existingLineKeys.has(rowDuplicateKey) || duplicateInUpload.has(rowDuplicateKey)) {
+          skippedDuplicateRows += 1;
+          details.push({
+            rowNumber: row.rowNumber,
+            status: "skipped_duplicate",
+            supplierName: row.supplierName,
+            itemName: row.itemName,
+            packSize: row.packSize ?? null,
+            purchaseDate: row.purchaseDate,
+            vendorInvoiceNumber: row.vendorInvoiceNumber || null,
+            quantity: row.quantity,
+            quantityUnit: row.quantityUnit ?? "pcs",
+            unitPrice: row.unitPrice,
+            amount: row.amount ?? null,
+            gstAmount: row.gstAmount ?? 0,
+            grandTotal: row.grandTotal ?? row.quantity * row.unitPrice,
+            reason: "Already imported with the same vendor, date, invoice, item, quantity and amount."
+          });
+          continue;
+        }
+        duplicateInUpload.add(rowDuplicateKey);
+
+        let product = matchedProduct;
+        if (!product) {
+          const created = manager.create(Product, {
+            name: row.itemName,
+            category: "Snooker Beverages",
+            sku: null,
+            packSize: row.packSize ?? null,
+            unit: "pcs",
+            currentStock: 0,
+            dipAndDashStock: 0,
+            gamingStock: 0,
+            minStock: 0,
+            purchaseUnitPrice: row.unitPrice,
+            sellingPrice: 0,
+            targetSection: "gaming",
+            defaultSupplierId: suppliersByKey.get(normalizeLookupKey(row.supplierName))?.id ?? null,
+            isActive: true
+          });
+          product = await manager.save(Product, created);
+          productByExactName.set(normalizeLookupKey(product.name), product);
+          productByFuzzyName.set(resolveProductMatchKey(product.name, product.packSize), product);
+          productByFuzzyName.set(resolveProductMatchKey(product.name), product);
+          createdProducts += 1;
+        } else {
+          let changed = false;
+          if (!product.packSize && row.packSize) {
+            product.packSize = row.packSize;
+            changed = true;
+          }
+          if (!product.defaultSupplierId) {
+            product.defaultSupplierId = suppliersByKey.get(normalizeLookupKey(row.supplierName))?.id ?? null;
+            changed = true;
+          }
+          if (changed) {
+            product = await manager.save(Product, product);
+          }
+        }
+
+        const groupKey = [normalizeLookupKey(row.supplierName), row.purchaseDate, normalizeLookupKey(row.vendorInvoiceNumber ?? "")].join("|");
+        const groupRows = validRowsByGroup.get(groupKey) ?? [];
+        groupRows.push({ ...row, itemName: product.name });
+        validRowsByGroup.set(groupKey, groupRows);
+      }
+
+      const createdOrders: Array<{ id: string; purchaseNumber: string; purchaseDate: string; supplierName: string; lineCount: number; totalAmount: number }> = [];
+      for (const groupRows of validRowsByGroup.values()) {
+        const firstRow = groupRows[0];
+        const supplier = suppliersByKey.get(normalizeLookupKey(firstRow.supplierName));
+        if (!supplier) {
+          continue;
+        }
+        const lines: PurchaseOrderLinePayload[] = groupRows.map((row) => {
+          const product = productByExactName.get(normalizeLookupKey(row.itemName));
+          return {
+            lineType: "product",
+            productId: product?.id,
+            productName: row.itemName,
+            productCategory: "Snooker Beverages",
+            productPackSize: row.packSize,
+            productUnit: "pcs",
+            quantity: row.quantity,
+            quantityUnit: row.quantityUnit ?? "pcs",
+            unitPrice: row.unitPrice,
+            gstPercentage: row.gstPercentage,
+            gstValue: row.gstAmount ?? 0,
+            sourceAmount: row.amount,
+            sourceGrandTotal: row.grandTotal,
+            sourceRowNumber: row.rowNumber,
+            expiryDate: row.expiryDate,
+            note: row.lineNote || `Imported row ${row.rowNumber}${row.packSize ? `, pack ${row.packSize}` : ""}`
+          };
+        });
+        const createdOrder = await this.createPurchaseOrder(
+          {
+            supplierId: supplier.id,
+            purchaseDate: firstRow.purchaseDate,
+            purchaseSection: "gaming",
+            vendorInvoiceNumber: firstRow.vendorInvoiceNumber || undefined,
+            projectName: firstRow.projectName || undefined,
+            purchaseMonth: firstRow.month || undefined,
+            receivedDate: firstRow.receivedDate || undefined,
+            note: this.buildPurchaseOrderNote(firstRow),
+            lines
+          },
+          createdByUserId,
+          manager
+        );
+        createdOrders.push({
+          id: createdOrder.id,
+          purchaseNumber: createdOrder.purchaseNumber,
+          purchaseDate: createdOrder.purchaseDate,
+          supplierName: createdOrder.supplierName,
+          lineCount: createdOrder.lines.length,
+          totalAmount: createdOrder.totalAmount
+        });
+        groupRows.forEach((row) =>
+          details.push({
+            rowNumber: row.rowNumber,
+            status: "inserted",
+            supplierName: row.supplierName,
+            itemName: row.itemName,
+            packSize: row.packSize ?? null,
+            purchaseDate: row.purchaseDate,
+            vendorInvoiceNumber: row.vendorInvoiceNumber || null,
+            quantity: row.quantity,
+            quantityUnit: row.quantityUnit ?? "pcs",
+            unitPrice: row.unitPrice,
+            amount: row.amount ?? null,
+            gstAmount: row.gstAmount ?? 0,
+            grandTotal: row.grandTotal ?? row.quantity * row.unitPrice,
+            purchaseNumber: createdOrder.purchaseNumber,
+            reason: `Inserted in ${createdOrder.purchaseNumber}.`
+          })
+        );
+      }
+
+      const importSummary = {
+        totalRows: parsed.totalRows,
+        parsedRows: parsed.rows.length,
+        insertedRows: details.filter((entry) => entry.status === "inserted").length,
+        skippedDuplicateRows,
+        failedRows: parsed.invalidRows,
+        createdProducts,
+        matchedProducts,
+        createdOrders,
+        invalidRowDetails: parsed.invalidRowDetails,
+        rowDetails: details.sort((left, right) => left.rowNumber - right.rowNumber)
+      };
+
+      const savedHistory = await manager.save(
+        PurchaseBulkImport,
+        manager.create(PurchaseBulkImport, {
+          fileName: originalName?.trim() || "purchase-upload",
+          purchaseSection: "gaming",
+          createdByUserId,
+          summary: importSummary
+        })
+      );
+
       return {
-        lineType: "product",
-        productId: product.id,
-        quantity: row.quantity,
-        quantityUnit: row.quantityUnit,
-        unitPrice: row.unitPrice,
-        expiryDate: row.expiryDate,
-        note: row.lineNote
+        ...importSummary,
+        importId: savedHistory.id,
+        fileName: savedHistory.fileName,
+        importedAt: savedHistory.createdAt.toISOString()
       };
     });
 
-    if (missingRows.length) {
-      const preview = missingRows
-        .slice(0, 3)
-        .map((entry) => `Row ${entry.rowNumber}: ${entry.reason}`)
-        .join(" | ");
-      throw new AppError(422, `CSV has unknown items. ${preview}`, missingRows.slice(0, MAX_PURCHASE_BULK_INVALID_DETAILS));
+    const firstOrder = result.createdOrders[0];
+    return {
+      ...result,
+      purchaseOrderId: firstOrder?.id ?? "",
+      purchaseNumber: firstOrder?.purchaseNumber ?? "",
+      purchaseDate: firstOrder?.purchaseDate ?? parsed.purchaseDate,
+      supplierName: firstOrder?.supplierName ?? parsed.supplierName,
+      lineCount: result.insertedRows,
+      ingredientLineCount: 0,
+      productLineCount: result.insertedRows,
+      totalAmount: toFixedPrice(result.createdOrders.reduce((sum, order) => sum + order.totalAmount, 0))
+    };
+  }
+
+  async listPurchaseBulkImportHistory(filters: PurchaseBulkImportHistoryFilters) {
+    const page = Math.max(1, filters.page);
+    const limit = Math.min(Math.max(1, filters.limit), 100);
+    const query = this.purchaseBulkImportRepository
+      .createQueryBuilder("bulkImport")
+      .orderBy("bulkImport.createdAt", "DESC")
+      .skip((page - 1) * limit)
+      .take(limit);
+
+    if (filters.purchaseSection) {
+      query.andWhere("bulkImport.purchaseSection = :purchaseSection", {
+        purchaseSection: filters.purchaseSection
+      });
     }
 
-    const purchaseOrder = await this.createPurchaseOrder(
-      {
-        supplierId: supplier.id,
-        purchaseDate: parsed.purchaseDate,
-        note: parsed.purchaseNote || undefined,
-        lines
-      },
-      createdByUserId
-    );
-
+    const [imports, total] = await query.getManyAndCount();
     return {
-      purchaseOrderId: purchaseOrder.id,
-      purchaseNumber: purchaseOrder.purchaseNumber,
-      purchaseDate: purchaseOrder.purchaseDate,
-      supplierName: purchaseOrder.supplierName,
-      lineCount: purchaseOrder.lines.length,
-      ingredientLineCount: purchaseOrder.lines.filter((line) => line.lineType === "ingredient").length,
-      productLineCount: purchaseOrder.lines.filter((line) => line.lineType === "product").length,
-      totalAmount: purchaseOrder.totalAmount
+      imports: imports.map((entry) => ({
+        id: entry.id,
+        fileName: entry.fileName,
+        purchaseSection: entry.purchaseSection,
+        createdByUserId: entry.createdByUserId,
+        createdAt: entry.createdAt.toISOString(),
+        ...(entry.summary as Record<string, unknown>)
+      })),
+      pagination: getPaginationMeta(page, limit, total)
     };
+  }
+
+  private getPurchaseBulkCreatedOrderIds(summary: Record<string, unknown>) {
+    const orderIds = new Set<string>();
+    const createdOrders = Array.isArray(summary.createdOrders) ? summary.createdOrders : [];
+
+    for (const order of createdOrders) {
+      if (order && typeof order === "object" && "id" in order && typeof order.id === "string") {
+        orderIds.add(order.id);
+      }
+    }
+
+    if (typeof summary.purchaseOrderId === "string" && summary.purchaseOrderId.trim()) {
+      orderIds.add(summary.purchaseOrderId);
+    }
+
+    return Array.from(orderIds);
+  }
+
+  async deletePurchaseBulkImport(id: string) {
+    return AppDataSource.transaction(async (manager) => {
+      const bulkImport = await manager.findOne(PurchaseBulkImport, { where: { id } });
+      if (!bulkImport) {
+        throw new AppError(404, "Purchase bulk upload history not found");
+      }
+
+      const summary = bulkImport.summary as Record<string, unknown>;
+      const orderIds = this.getPurchaseBulkCreatedOrderIds(summary);
+      const deletedOrders: Array<{ id: string; purchaseNumber: string; purchaseDate: string }> = [];
+      let missingOrders = 0;
+
+      for (const orderId of orderIds) {
+        const deletedOrder = await this.deletePurchaseOrderWithManager(manager, orderId, { allowMissing: true });
+        if (!deletedOrder) {
+          missingOrders += 1;
+          continue;
+        }
+        deletedOrders.push(deletedOrder);
+      }
+
+      await manager.delete(PurchaseBulkImport, { id: bulkImport.id });
+
+      return {
+        id: bulkImport.id,
+        fileName: bulkImport.fileName,
+        deletedOrders,
+        deletedOrderCount: deletedOrders.length,
+        missingOrderCount: missingOrders,
+        stockRolledBack: true
+      };
+    });
   }
 
   getProductBulkImportTemplate() {
@@ -1485,6 +2046,10 @@ export class ProcurementService {
 
     const query = this.supplierRepository.createQueryBuilder("supplier").orderBy("supplier.createdAt", "DESC");
 
+    if (filters.section) {
+      query.andWhere("supplier.section = :section", { section: filters.section });
+    }
+
     if (!filters.includeInactive) {
       query.andWhere("supplier.isActive = true");
     }
@@ -1507,6 +2072,9 @@ export class ProcurementService {
           .addSelect("COALESCE(SUM(purchaseOrder.totalAmount), 0)", "totalAmount")
           .addSelect("MAX(purchaseOrder.purchaseDate)", "lastPurchaseDate")
           .where("purchaseOrder.supplierId IN (:...supplierIds)", { supplierIds })
+          .andWhere(filters.section ? "purchaseOrder.purchaseSection = :section" : "1=1", {
+            section: filters.section
+          })
           .groupBy("purchaseOrder.supplierId")
           .getRawMany<{
             supplierId: string;
@@ -1532,11 +2100,15 @@ export class ProcurementService {
         .createQueryBuilder("purchaseOrder")
         .select("COUNT(*)", "count")
         .addSelect("COALESCE(SUM(purchaseOrder.totalAmount), 0)", "amount")
+        .where(filters.section ? "purchaseOrder.purchaseSection = :section" : "1=1", {
+          section: filters.section
+        })
         .getRawOne<{ count: string; amount: string }>(),
       this.supplierRepository
         .createQueryBuilder("supplier")
         .select("supplier.isActive", "isActive")
         .addSelect("COUNT(*)", "count")
+        .where(filters.section ? "supplier.section = :section" : "1=1", { section: filters.section })
         .groupBy("supplier.isActive")
         .getRawMany<{ isActive: boolean; count: string }>()
     ]);
@@ -1559,13 +2131,15 @@ export class ProcurementService {
 
   async createSupplier(payload: CreateSupplierPayload) {
     const name = normalizeText(payload.name);
-    await this.ensureSupplierNameUnique(name);
+    const section = this.resolvePurchaseSection(payload.section);
+    await this.ensureSupplierNameUnique(name, section);
 
     const supplier = this.supplierRepository.create({
       name,
       storeName: payload.storeName ? normalizeText(payload.storeName) : null,
       phone: normalizeText(payload.phone),
       address: payload.address ? normalizeText(payload.address) : null,
+      section,
       isActive: payload.isActive ?? true
     });
 
@@ -1575,11 +2149,14 @@ export class ProcurementService {
 
   async updateSupplier(id: string, payload: UpdateSupplierPayload) {
     const supplier = await this.getSupplierOrFail(id);
+    const nextSection =
+      payload.section !== undefined ? this.resolvePurchaseSection(payload.section) : supplier.section;
+    const nextName = payload.name ? normalizeText(payload.name) : supplier.name;
 
-    if (payload.name) {
-      const name = normalizeText(payload.name);
-      await this.ensureSupplierNameUnique(name, id);
-      supplier.name = name;
+    if (payload.name !== undefined || payload.section !== undefined) {
+      await this.ensureSupplierNameUnique(nextName, nextSection, id);
+      supplier.name = nextName;
+      supplier.section = nextSection;
     }
 
     if (payload.phone !== undefined) {
@@ -1669,6 +2246,14 @@ export class ProcurementService {
             .addSelect("MAX(purchaseOrder.purchaseDate)", "recentPurchaseDate")
             .where("line.lineType = :lineType", { lineType: "product" })
             .andWhere("line.productId IN (:...productIds)", { productIds })
+            .andWhere(
+              filters.targetSection && filters.targetSection !== "both"
+                ? "purchaseOrder.purchaseSection = :purchaseSection"
+                : "1=1",
+              {
+                purchaseSection: filters.targetSection === "gaming" ? "gaming" : "dip_and_dash"
+              }
+            )
             .groupBy("line.productId")
             .getRawMany<{
               productId: string;
@@ -1699,7 +2284,18 @@ export class ProcurementService {
             .addSelect("COALESCE(SUM(line.lineTotal), 0)", "soldAmount")
             .where("line.lineType = :lineType", { lineType: "product" })
             .andWhere("CAST(line.\"referenceId\" AS text) IN (:...productIds)", { productIds })
-            .andWhere("invoice.status = :status", { status: "paid" })
+            .andWhere("(invoice.status = :status OR line.meta ->> 'source' = :productConsumptionSource)", {
+              status: "paid",
+              productConsumptionSource: PRODUCT_CONSUMPTION_SOURCE
+            })
+            .andWhere(
+              filters.targetSection === "gaming"
+                ? "invoice.orderType = :snookerOrderType"
+                : filters.targetSection === "dip_and_dash"
+                  ? "invoice.orderType != :snookerOrderType"
+                  : "1=1",
+              { snookerOrderType: "snooker" }
+            )
             .groupBy("line.\"referenceId\"")
             .getRawMany<{
               productId: string;
@@ -1780,12 +2376,18 @@ export class ProcurementService {
         .createQueryBuilder("product")
         .select("product.isActive", "isActive")
         .addSelect("COUNT(*)", "count")
+        .where(filters.targetSection ? "product.targetSection = :targetSection" : "1=1", {
+          targetSection: filters.targetSection
+        })
         .groupBy("product.isActive")
         .getRawMany<{ isActive: boolean; count: string }>(),
       this.productRepository
         .createQueryBuilder("product")
         .select("COALESCE(SUM(product.currentStock * product.purchaseUnitPrice), 0)", "valuation")
         .addSelect("COUNT(*) FILTER (WHERE product.currentStock <= product.minStock)", "lowStock")
+        .where(filters.targetSection ? "product.targetSection = :targetSection" : "1=1", {
+          targetSection: filters.targetSection
+        })
         .getRawOne<{ valuation: string; lowStock: string }>(),
       this.purchaseOrderLineRepository
         .createQueryBuilder("line")
@@ -1795,6 +2397,9 @@ export class ProcurementService {
         .addSelect("product.unit", "unit")
         .addSelect("COALESCE(SUM(line.stockAdded), 0)", "qty")
         .where("line.lineType = :lineType", { lineType: "product" })
+        .andWhere(filters.targetSection ? "product.targetSection = :targetSection" : "1=1", {
+          targetSection: filters.targetSection
+        })
         .groupBy("line.productId")
         .addGroupBy("product.name")
         .addGroupBy("product.unit")
@@ -1810,7 +2415,21 @@ export class ProcurementService {
         .addSelect("COALESCE(product.unit, 'unit')", "unit")
         .addSelect("COALESCE(SUM(line.quantity), 0)", "qty")
         .where("line.lineType = :lineType", { lineType: "product" })
-        .andWhere("invoice.status = :status", { status: "paid" })
+        .andWhere("(invoice.status = :status OR line.meta ->> 'source' = :productConsumptionSource)", {
+          status: "paid",
+          productConsumptionSource: PRODUCT_CONSUMPTION_SOURCE
+        })
+        .andWhere(filters.targetSection ? "product.targetSection = :targetSection" : "1=1", {
+          targetSection: filters.targetSection
+        })
+        .andWhere(
+          filters.targetSection === "gaming"
+            ? "invoice.orderType = :snookerOrderType"
+            : filters.targetSection === "dip_and_dash"
+              ? "invoice.orderType != :snookerOrderType"
+              : "1=1",
+          { snookerOrderType: "snooker" }
+        )
         .groupBy("line.\"referenceId\"")
         .addGroupBy("product.name")
         .addGroupBy("product.unit")
@@ -1905,7 +2524,10 @@ export class ProcurementService {
         .addSelect("COALESCE(SUM(line.lineTotal), 0)", "soldAmount")
         .where("line.lineType = :lineType", { lineType: "product" })
         .andWhere("CAST(line.\"referenceId\" AS text) = :productId", { productId: id })
-        .andWhere("invoice.status = :status", { status: "paid" })
+        .andWhere("(invoice.status = :status OR line.meta ->> 'source' = :productConsumptionSource)", {
+          status: "paid",
+          productConsumptionSource: PRODUCT_CONSUMPTION_SOURCE
+        })
         .getRawOne<{ soldQty: string; soldAmount: string }>()
     ]);
 
@@ -1957,7 +2579,10 @@ export class ProcurementService {
       .leftJoin("invoice.customer", "customer")
       .where("line.lineType = :lineType", { lineType: "product" })
       .andWhere("CAST(line.\"referenceId\" AS text) = :productId", { productId })
-      .andWhere("invoice.status = :status", { status: "paid" })
+      .andWhere("(invoice.status = :status OR line.meta ->> 'source' = :productConsumptionSource)", {
+        status: "paid",
+        productConsumptionSource: PRODUCT_CONSUMPTION_SOURCE
+      })
       .andWhere(dateFrom ? "CAST(timezone('Asia/Kolkata', invoice.\"createdAt\") AS date) >= :dateFrom" : "1=1", { dateFrom })
       .andWhere(dateTo ? "CAST(timezone('Asia/Kolkata', invoice.\"createdAt\") AS date) <= :dateTo" : "1=1", { dateTo });
 
@@ -2133,7 +2758,10 @@ export class ProcurementService {
         .select("COALESCE(SUM(line.quantity), 0)", "quantity")
         .where("line.lineType = :lineType", { lineType: "product" })
         .andWhere("CAST(line.\"referenceId\" AS text) = :productId", { productId })
-        .andWhere("invoice.status = :status", { status: "paid" })
+        .andWhere("(invoice.status = :status OR line.meta ->> 'source' = :productConsumptionSource)", {
+          status: "paid",
+          productConsumptionSource: PRODUCT_CONSUMPTION_SOURCE
+        })
         .andWhere("CAST(timezone('Asia/Kolkata', invoice.\"createdAt\") AS date) < :date", { date })
         .getRawOne<{ quantity: string }>(),
       this.productDayLedgerAdjustmentRepository
@@ -2526,7 +3154,10 @@ export class ProcurementService {
         )
         .where("line.lineType = :lineType", { lineType: "product" })
         .andWhere("CAST(line.\"referenceId\" AS text) IN (:...productIds)", { productIds })
-        .andWhere("invoice.status = :status", { status: "paid" })
+        .andWhere("(invoice.status = :status OR line.meta ->> 'source' = :productConsumptionSource)", {
+          status: "paid",
+          productConsumptionSource: PRODUCT_CONSUMPTION_SOURCE
+        })
         .andWhere(dateFrom ? "CAST(timezone('Asia/Kolkata', invoice.\"createdAt\") AS date) >= :dateFrom" : "1=1", { dateFrom })
         .andWhere(dateTo ? "CAST(timezone('Asia/Kolkata', invoice.\"createdAt\") AS date) <= :dateTo" : "1=1", { dateTo })
         .setParameter("snookerOrderType", "snooker")
@@ -2559,7 +3190,10 @@ export class ProcurementService {
             .addSelect("COALESCE(SUM(line.quantity), 0)", "quantity")
             .where("line.lineType = :lineType", { lineType: "product" })
             .andWhere("CAST(line.\"referenceId\" AS text) IN (:...productIds)", { productIds })
-            .andWhere("invoice.status = :status", { status: "paid" })
+            .andWhere("(invoice.status = :status OR line.meta ->> 'source' = :productConsumptionSource)", {
+              status: "paid",
+              productConsumptionSource: PRODUCT_CONSUMPTION_SOURCE
+            })
             .andWhere("CAST(timezone('Asia/Kolkata', invoice.\"createdAt\") AS date) < :dateFrom", { dateFrom })
             .groupBy("line.\"referenceId\"")
             .getRawMany<{ productId: string; quantity: string }>()
@@ -2810,11 +3444,15 @@ export class ProcurementService {
 
   async createProduct(payload: CreateProductPayload) {
     const name = normalizeText(payload.name);
-    await this.ensureProductNameUnique(name);
-    await this.ensureSupplierExists(payload.defaultSupplierId);
+    const targetSection = payload.targetSection ?? "dip_and_dash";
+    await this.ensureProductNameUnique(name, targetSection);
+    await this.ensureSupplierExists(
+      payload.defaultSupplierId,
+      targetSection === "both" ? undefined : targetSection
+    );
 
     const initialSectionStocks = normalizeProductSectionStocks({
-      targetSection: payload.targetSection ?? "dip_and_dash",
+      targetSection,
       currentStock: 0,
       dipAndDashStock: payload.dipAndDashAssignedStock ?? 0,
       gamingStock: payload.gamingAssignedStock ?? 0
@@ -2832,7 +3470,7 @@ export class ProcurementService {
       minStock: toFixedQuantity(payload.minStock ?? 0),
       purchaseUnitPrice: 0,
       sellingPrice: toFixedPrice(payload.sellingPrice ?? 0),
-      targetSection: payload.targetSection ?? "dip_and_dash",
+      targetSection,
       defaultSupplierId: payload.defaultSupplierId ?? null,
       isActive: payload.isActive ?? true
     });
@@ -2847,12 +3485,14 @@ export class ProcurementService {
 
   async updateProduct(id: string, payload: UpdateProductPayload) {
     const product = await this.getProductOrFail(id);
-    let nextTargetSection = product.targetSection;
+    let nextTargetSection = payload.targetSection ?? product.targetSection;
 
     if (payload.name) {
       const name = normalizeText(payload.name);
-      await this.ensureProductNameUnique(name, id);
+      await this.ensureProductNameUnique(name, nextTargetSection, id);
       product.name = name;
+    } else if (payload.targetSection !== undefined) {
+      await this.ensureProductNameUnique(product.name, nextTargetSection, id);
     }
 
     if (payload.category !== undefined) {
@@ -2880,12 +3520,14 @@ export class ProcurementService {
     }
 
     if (payload.targetSection !== undefined) {
-      nextTargetSection = payload.targetSection;
       product.targetSection = payload.targetSection;
     }
 
     if (payload.defaultSupplierId !== undefined) {
-      await this.ensureSupplierExists(payload.defaultSupplierId);
+      await this.ensureSupplierExists(
+        payload.defaultSupplierId,
+        nextTargetSection === "both" ? undefined : nextTargetSection
+      );
       product.defaultSupplierId = payload.defaultSupplierId ?? null;
     }
 
@@ -2983,11 +3625,69 @@ export class ProcurementService {
     manager: EntityManager,
     lines: PurchaseOrderLinePayload[],
     purchaseNumber: string,
-    supplierName: string
+    supplierName: string,
+    purchaseSection: PurchaseSection,
+    supplierId: string
   ) {
     const lineEntities: PurchaseOrderLine[] = [];
     const stockLogs: IngredientStockLog[] = [];
     let totalAmount = 0;
+
+    const missingProductNameLines = lines.filter(
+      (line) => line.lineType === "product" && !line.productId && line.productName?.trim()
+    );
+    if (missingProductNameLines.length) {
+      const activeProducts = await manager.find(Product, {
+        where: { isActive: true, targetSection: purchaseSection === "gaming" ? "gaming" : "dip_and_dash" }
+      });
+      const productByExactName = new Map(activeProducts.map((product) => [normalizeLookupKey(product.name), product]));
+      const productByFuzzyName = new Map<string, Product>();
+      activeProducts.forEach((product) => {
+        productByFuzzyName.set(resolveProductMatchKey(product.name, product.packSize), product);
+        productByFuzzyName.set(resolveProductMatchKey(product.name), product);
+      });
+
+      for (const line of missingProductNameLines) {
+        const productName = normalizeText(line.productName ?? "");
+        const packSize = line.productPackSize ? normalizeText(line.productPackSize) : null;
+        const matchedProduct =
+          productByExactName.get(normalizeLookupKey(productName)) ??
+          productByFuzzyName.get(resolveProductMatchKey(productName, packSize)) ??
+          productByFuzzyName.get(resolveProductMatchKey(productName));
+
+        if (matchedProduct) {
+          line.productId = matchedProduct.id;
+          line.productPackSize = line.productPackSize ?? matchedProduct.packSize ?? undefined;
+          continue;
+        }
+
+        const targetSection: ProductTargetSection = purchaseSection === "gaming" ? "gaming" : "dip_and_dash";
+        const productUnit = (line.productUnit ?? line.quantityUnit ?? "pcs") as ProductUnit;
+        const createdProduct = await manager.save(
+          Product,
+          manager.create(Product, {
+            name: productName,
+            category: line.productCategory || (purchaseSection === "gaming" ? "Snooker Beverages" : "General"),
+            sku: null,
+            packSize,
+            unit: PRODUCT_UNITS.includes(productUnit) ? productUnit : "pcs",
+            currentStock: 0,
+            dipAndDashStock: 0,
+            gamingStock: 0,
+            minStock: 0,
+            purchaseUnitPrice: toFixedPrice(line.unitPrice),
+            sellingPrice: 0,
+            targetSection,
+            defaultSupplierId: supplierId,
+            isActive: true
+          })
+        );
+        productByExactName.set(normalizeLookupKey(createdProduct.name), createdProduct);
+        productByFuzzyName.set(resolveProductMatchKey(createdProduct.name, createdProduct.packSize), createdProduct);
+        productByFuzzyName.set(resolveProductMatchKey(createdProduct.name), createdProduct);
+        line.productId = createdProduct.id;
+      }
+    }
 
     const ingredientIds = Array.from(
       new Set(
@@ -3036,6 +3736,9 @@ export class ProcurementService {
       const lineTotal = toFixedPrice(enteredQuantity * unitPrice + gstValue);
 
       if (line.lineType === "ingredient") {
+        if (purchaseSection === "gaming") {
+          throw new AppError(422, "Ingredients are Dip & Dash only. Use product lines for snooker purchases.");
+        }
         if (line.expiryDate) {
           throw new AppError(422, "Expiry date is only allowed for product purchase lines.");
         }
@@ -3100,8 +3803,13 @@ export class ProcurementService {
           enteredUnit,
           stockAfter,
           unitPrice,
+          gstPercentage: line.gstPercentage ?? null,
+          sourceAmount: line.sourceAmount ?? null,
           gstValue,
+          sourceGrandTotal: line.sourceGrandTotal ?? null,
           lineTotal,
+          packSizeSnapshot: null,
+          sourceRowNumber: line.sourceRowNumber ?? null,
           unitPriceUpdated: false,
           expiryDate: null
         });
@@ -3119,6 +3827,11 @@ export class ProcurementService {
       if (!product) {
         throw new AppError(404, "Product not found or inactive");
       }
+      const expectedTargetSection: ProductTargetSection =
+        purchaseSection === "gaming" ? "gaming" : "dip_and_dash";
+      if (product.targetSection !== expectedTargetSection) {
+        throw new AppError(422, "Selected product does not belong to this purchase section.");
+      }
 
       const enteredUnit = (line.quantityUnit || product.unit).trim().toLowerCase();
       const convertedAdded = convertPurchaseQuantityToBase("product", enteredQuantity, enteredUnit, product.unit);
@@ -3128,7 +3841,7 @@ export class ProcurementService {
       const stockAdded = toFixedQuantity(convertedAdded);
 
       const stockBefore = toFixedQuantity(toNumber(product.currentStock));
-      const sectionSplit = applyProductPurchaseSplit(product, stockAdded);
+      const sectionSplit = applyProductPurchaseSplit(product, stockAdded, purchaseSection);
       const stockAfter = toFixedQuantity(toNumber(product.currentStock));
       product.purchaseUnitPrice = unitPrice;
       touchedProducts.add(product);
@@ -3148,8 +3861,13 @@ export class ProcurementService {
         enteredUnit,
         stockAfter,
         unitPrice,
+        gstPercentage: line.gstPercentage ?? null,
+        sourceAmount: line.sourceAmount ?? null,
         gstValue,
+        sourceGrandTotal: line.sourceGrandTotal ?? null,
         lineTotal,
+        packSizeSnapshot: line.productPackSize ?? product.packSize ?? null,
+        sourceRowNumber: line.sourceRowNumber ?? null,
         unitPriceUpdated: false,
         expiryDate: line.expiryDate || null
       });
@@ -3179,6 +3897,8 @@ export class ProcurementService {
     purchaseNumber: string,
     action: "edit" | "delete"
   ) {
+    const allowNegativeStock = action === "delete";
+
     for (const line of lines) {
       const rollbackQuantity = toFixedQuantity(toNumber(line.stockAdded));
 
@@ -3194,7 +3914,7 @@ export class ProcurementService {
         const stockBefore = toFixedQuantity(toNumber(stock.totalStock));
         const stockAfter = toFixedQuantity(stockBefore - rollbackQuantity);
 
-        if (stockAfter < 0) {
+        if (!allowNegativeStock && stockAfter < 0) {
           throw new AppError(
             409,
             `Cannot ${action} purchase order ${purchaseNumber} because stock for ${line.itemNameSnapshot} is already consumed.`
@@ -3232,93 +3952,126 @@ export class ProcurementService {
           rollbackBySectionTotal > 0 ? rollbackBySectionTotal : rollbackQuantity;
 
         const stockAfter = toFixedQuantity(stockBefore - effectiveRollbackQuantity);
-        if (stockAfter < 0) {
+        if (!allowNegativeStock && stockAfter < 0) {
           throw new AppError(
             409,
             `Cannot ${action} purchase order ${purchaseNumber} because stock for ${line.itemNameSnapshot} is already consumed.`
           );
         }
 
-        const normalized = normalizeProductSectionStocks({
-          targetSection: product.targetSection,
-          currentStock: toNumber(product.currentStock),
-          dipAndDashStock: toNumber(product.dipAndDashStock),
-          gamingStock: toNumber(product.gamingStock)
-        });
+        const sectionStocks = allowNegativeStock
+          ? {
+              dipAndDashStock: toFixedQuantity(toNumber(product.dipAndDashStock)),
+              gamingStock: toFixedQuantity(toNumber(product.gamingStock))
+            }
+          : normalizeProductSectionStocks({
+              targetSection: product.targetSection,
+              currentStock: toNumber(product.currentStock),
+              dipAndDashStock: toNumber(product.dipAndDashStock),
+              gamingStock: toNumber(product.gamingStock)
+            });
 
         const nextDip = toFixedQuantity(
-          normalized.dipAndDashStock - (rollbackBySectionTotal > 0 ? rollbackDip : effectiveRollbackQuantity)
+          sectionStocks.dipAndDashStock - (rollbackBySectionTotal > 0 ? rollbackDip : effectiveRollbackQuantity)
         );
         const nextGaming = toFixedQuantity(
-          normalized.gamingStock - (rollbackBySectionTotal > 0 ? rollbackGaming : 0)
+          sectionStocks.gamingStock - (rollbackBySectionTotal > 0 ? rollbackGaming : 0)
         );
 
-        if (nextDip < -0.001 || nextGaming < -0.001) {
+        if (!allowNegativeStock && (nextDip < -0.001 || nextGaming < -0.001)) {
           throw new AppError(
             409,
             `Cannot ${action} purchase order ${purchaseNumber} because section stock for ${line.itemNameSnapshot} is already consumed.`
           );
         }
 
-        product.dipAndDashStock = toFixedQuantity(Math.max(nextDip, 0));
-        product.gamingStock = toFixedQuantity(Math.max(nextGaming, 0));
+        product.dipAndDashStock = allowNegativeStock ? nextDip : toFixedQuantity(Math.max(nextDip, 0));
+        product.gamingStock = allowNegativeStock ? nextGaming : toFixedQuantity(Math.max(nextGaming, 0));
         product.currentStock = toFixedQuantity(product.dipAndDashStock + product.gamingStock);
         await manager.save(Product, product);
       }
     }
   }
 
-  async createPurchaseOrder(payload: CreatePurchaseOrderPayload, createdByUserId: string | null) {
+  private async createPurchaseOrderWithManager(
+    manager: EntityManager,
+    payload: CreatePurchaseOrderPayload,
+    createdByUserId: string | null
+  ) {
     const purchaseDate = payload.purchaseDate || getTodayDate();
     const purchaseType = this.resolvePurchaseType(payload.lines);
     const purchaseSection = this.resolvePurchaseSection(payload.purchaseSection);
 
-    const queryRunner = AppDataSource.createQueryRunner();
-    await queryRunner.connect();
-    await queryRunner.startTransaction();
-
-    try {
-      const supplier = await queryRunner.manager.findOne(Supplier, {
-        where: { id: payload.supplierId, isActive: true }
-      });
-      if (!supplier) {
-        throw new AppError(404, "Supplier not found or inactive");
-      }
-
-      const purchaseNumber = await this.generatePurchaseNumber(queryRunner.manager, purchaseDate);
-      const { lineEntities, totalAmount } = await this.applyPurchaseLines(
-        queryRunner.manager,
-        payload.lines,
-        purchaseNumber,
-        supplier.name
-      );
-
-      const order = queryRunner.manager.create(PurchaseOrder, {
-        purchaseNumber,
-        supplierId: payload.supplierId,
-        purchaseDate,
-        purchaseType,
-        purchaseSection,
-        totalAmount,
-        note: payload.note?.trim() || null,
-        invoiceImageUrl: payload.invoiceImageUrl?.trim() || null,
-        createdByUserId
-      });
-      const savedOrder = await queryRunner.manager.save(PurchaseOrder, order);
-
-      lineEntities.forEach((lineEntity) => {
-        lineEntity.purchaseOrderId = savedOrder.id;
-      });
-      await queryRunner.manager.save(PurchaseOrderLine, lineEntities);
-
-      await queryRunner.commitTransaction();
-      return this.getPurchaseOrderById(savedOrder.id);
-    } catch (error) {
-      await queryRunner.rollbackTransaction();
-      throw error;
-    } finally {
-      await queryRunner.release();
+    const supplier = payload.supplierId
+      ? await manager.findOne(Supplier, {
+          where: { id: payload.supplierId, isActive: true, section: purchaseSection }
+        })
+      : payload.supplierName
+        ? await this.ensureSupplierForPurchaseImport(
+            manager,
+            {
+              supplierName: payload.supplierName,
+              phone: payload.supplierPhone ?? ""
+            },
+            purchaseSection
+          )
+        : null;
+    if (!supplier) {
+      throw new AppError(404, "Supplier not found or inactive");
     }
+
+    const purchaseNumber = await this.generatePurchaseNumber(manager, purchaseDate);
+    const { lineEntities, totalAmount } = await this.applyPurchaseLines(
+      manager,
+      payload.lines,
+      purchaseNumber,
+      supplier.name,
+      purchaseSection,
+      supplier.id
+    );
+
+    const order = manager.create(PurchaseOrder, {
+      purchaseNumber,
+      supplierId: supplier.id,
+      purchaseDate,
+      purchaseType,
+      purchaseSection,
+      totalAmount,
+      note: payload.note?.trim() || null,
+      vendorInvoiceNumber: payload.vendorInvoiceNumber?.trim() || null,
+      projectName: payload.projectName?.trim() || null,
+      purchaseMonth: payload.purchaseMonth?.trim() || null,
+      receivedDate: payload.receivedDate || null,
+      invoiceImageUrl: payload.invoiceImageUrl?.trim() || null,
+      createdByUserId
+    });
+    const savedOrder = await manager.save(PurchaseOrder, order);
+
+    lineEntities.forEach((lineEntity) => {
+      lineEntity.purchaseOrderId = savedOrder.id;
+    });
+    await manager.save(PurchaseOrderLine, lineEntities);
+    return savedOrder;
+  }
+
+  async createPurchaseOrder(
+    payload: CreatePurchaseOrderPayload,
+    createdByUserId: string | null,
+    existingManager?: EntityManager
+  ) {
+    if (existingManager) {
+      const savedOrder = await this.createPurchaseOrderWithManager(existingManager, payload, createdByUserId);
+      const hydrated = await existingManager.findOne(PurchaseOrder, {
+        where: { id: savedOrder.id },
+        relations: { supplier: true, createdByUser: true, lines: true }
+      });
+      return this.mapPurchaseOrderDetail(hydrated ?? savedOrder);
+    }
+
+    const savedOrder = await AppDataSource.transaction((manager) =>
+      this.createPurchaseOrderWithManager(manager, payload, createdByUserId)
+    );
+    return this.getPurchaseOrderById(savedOrder.id);
   }
 
   async updatePurchaseOrder(id: string, payload: CreatePurchaseOrderPayload) {
@@ -3339,8 +4092,12 @@ export class ProcurementService {
         throw new AppError(404, "Purchase order not found");
       }
 
+      if (!payload.supplierId) {
+        throw new AppError(422, "Supplier is required for purchase order update.");
+      }
+
       const supplier = await queryRunner.manager.findOne(Supplier, {
-        where: { id: payload.supplierId, isActive: true }
+        where: { id: payload.supplierId, isActive: true, section: purchaseSection }
       });
       if (!supplier) {
         throw new AppError(404, "Supplier not found or inactive");
@@ -3354,7 +4111,9 @@ export class ProcurementService {
         queryRunner.manager,
         payload.lines,
         existingOrder.purchaseNumber,
-        supplier.name
+        supplier.name,
+        purchaseSection,
+        supplier.id
       );
 
       existingOrder.supplierId = payload.supplierId;
@@ -3363,6 +4122,10 @@ export class ProcurementService {
       existingOrder.purchaseSection = purchaseSection;
       existingOrder.totalAmount = totalAmount;
       existingOrder.note = payload.note?.trim() || null;
+      existingOrder.vendorInvoiceNumber = payload.vendorInvoiceNumber?.trim() || null;
+      existingOrder.projectName = payload.projectName?.trim() || null;
+      existingOrder.purchaseMonth = payload.purchaseMonth?.trim() || null;
+      existingOrder.receivedDate = payload.receivedDate || null;
       existingOrder.invoiceImageUrl = payload.invoiceImageUrl?.trim() || null;
 
       const savedOrder = await queryRunner.manager.save(PurchaseOrder, existingOrder);
@@ -3382,30 +4145,44 @@ export class ProcurementService {
     }
   }
 
+  private async deletePurchaseOrderWithManager(
+    manager: EntityManager,
+    id: string,
+    options?: { allowMissing?: boolean }
+  ) {
+    const existingOrder = await manager.findOne(PurchaseOrder, {
+      where: { id },
+      relations: { lines: true }
+    });
+
+    if (!existingOrder) {
+      if (options?.allowMissing) {
+        return null;
+      }
+      throw new AppError(404, "Purchase order not found");
+    }
+
+    await this.rollbackPurchaseOrderLines(manager, existingOrder.lines, existingOrder.purchaseNumber, "delete");
+    await manager.delete(PurchaseOrderLine, { purchaseOrderId: existingOrder.id });
+    await manager.delete(PurchaseOrder, { id: existingOrder.id });
+
+    return {
+      id: existingOrder.id,
+      purchaseNumber: existingOrder.purchaseNumber,
+      purchaseDate: existingOrder.purchaseDate
+    };
+  }
+
   async deletePurchaseOrder(id: string) {
     const queryRunner = AppDataSource.createQueryRunner();
     await queryRunner.connect();
     await queryRunner.startTransaction();
 
     try {
-      const existingOrder = await queryRunner.manager.findOne(PurchaseOrder, {
-        where: { id },
-        relations: { lines: true }
-      });
-
-      if (!existingOrder) {
-        throw new AppError(404, "Purchase order not found");
-      }
-
-      await this.rollbackPurchaseOrderLines(queryRunner.manager, existingOrder.lines, existingOrder.purchaseNumber, "delete");
-      await queryRunner.manager.delete(PurchaseOrderLine, { purchaseOrderId: existingOrder.id });
-      await queryRunner.manager.delete(PurchaseOrder, { id: existingOrder.id });
+      const deletedOrder = await this.deletePurchaseOrderWithManager(queryRunner.manager, id);
 
       await queryRunner.commitTransaction();
-      return {
-        id: existingOrder.id,
-        purchaseNumber: existingOrder.purchaseNumber
-      };
+      return deletedOrder;
     } catch (error) {
       await queryRunner.rollbackTransaction();
       throw error;
@@ -3438,6 +4215,12 @@ export class ProcurementService {
 
     if (filters.purchaseType) {
       query.andWhere("purchaseOrder.purchaseType = :purchaseType", { purchaseType: filters.purchaseType });
+    }
+
+    if (filters.purchaseSection) {
+      query.andWhere("purchaseOrder.purchaseSection = :purchaseSection", {
+        purchaseSection: filters.purchaseSection
+      });
     }
 
     if (filters.dateFrom) {
@@ -3495,6 +4278,12 @@ export class ProcurementService {
       totalsQuery.andWhere("purchaseOrder.purchaseType = :purchaseType", { purchaseType: filters.purchaseType });
     }
 
+    if (filters.purchaseSection) {
+      totalsQuery.andWhere("purchaseOrder.purchaseSection = :purchaseSection", {
+        purchaseSection: filters.purchaseSection
+      });
+    }
+
     if (filters.dateFrom) {
       totalsQuery.andWhere("purchaseOrder.purchaseDate >= :dateFrom", { dateFrom: filters.dateFrom });
     }
@@ -3524,6 +4313,10 @@ export class ProcurementService {
           productLineCount: lineCounts.product,
           totalAmount: toFixedPrice(toNumber(order.totalAmount)),
           note: order.note,
+          vendorInvoiceNumber: order.vendorInvoiceNumber,
+          projectName: order.projectName,
+          purchaseMonth: order.purchaseMonth,
+          receivedDate: order.receivedDate,
           invoiceImageUrl: order.invoiceImageUrl,
           createdByUserId: order.createdByUserId,
           createdByUserName: order.createdByUser?.fullName ?? null,
@@ -3536,6 +4329,75 @@ export class ProcurementService {
         totalOrders: Number(totalsRow?.count ?? 0),
         totalAmount: toFixedPrice(toNumber(totalsRow?.totalAmount ?? 0))
       }
+    };
+  }
+
+  private mapPurchaseOrderDetail(order: PurchaseOrder) {
+    return {
+      id: order.id,
+      purchaseNumber: order.purchaseNumber,
+      purchaseDate: order.purchaseDate,
+      purchaseType: order.purchaseType,
+      purchaseSection: order.purchaseSection,
+      supplierId: order.supplierId,
+      supplierName: order.supplier?.name ?? "-",
+      supplierPhone: order.supplier?.phone ?? "-",
+      note: order.note,
+      vendorInvoiceNumber: order.vendorInvoiceNumber,
+      projectName: order.projectName,
+      purchaseMonth: order.purchaseMonth,
+      receivedDate: order.receivedDate,
+      invoiceImageUrl: order.invoiceImageUrl,
+      totalAmount: toFixedPrice(toNumber(order.totalAmount)),
+      createdByUserId: order.createdByUserId,
+      createdByUserName: order.createdByUser?.fullName ?? null,
+      createdAt: order.createdAt,
+      updatedAt: order.updatedAt,
+      lines: (order.lines ?? []).map((line) => ({
+        id: line.id,
+        lineType: line.lineType,
+        ingredientId: line.ingredientId,
+        productId: line.productId,
+        itemNameSnapshot: line.itemNameSnapshot,
+        categoryNameSnapshot: line.categoryNameSnapshot,
+        unit: line.unit,
+        stockBefore: toFixedQuantity(toNumber(line.stockBefore)),
+        stockAdded: toFixedQuantity(toNumber(line.stockAdded)),
+        dipAndDashStockAdded:
+          line.dipAndDashStockAdded === null || line.dipAndDashStockAdded === undefined
+            ? null
+            : toFixedQuantity(toNumber(line.dipAndDashStockAdded)),
+        gamingStockAdded:
+          line.gamingStockAdded === null || line.gamingStockAdded === undefined
+            ? null
+            : toFixedQuantity(toNumber(line.gamingStockAdded)),
+        enteredQuantity:
+          line.enteredQuantity === null || line.enteredQuantity === undefined
+            ? null
+            : toFixedQuantity(toNumber(line.enteredQuantity)),
+        enteredUnit: line.enteredUnit,
+        stockAfter: toFixedQuantity(toNumber(line.stockAfter)),
+        unitPrice: toFixedPrice(toNumber(line.unitPrice)),
+        gstPercentage:
+          line.gstPercentage === null || line.gstPercentage === undefined
+            ? null
+            : Number(toNumber(line.gstPercentage).toFixed(4)),
+        sourceAmount:
+          line.sourceAmount === null || line.sourceAmount === undefined
+            ? null
+            : toFixedPrice(toNumber(line.sourceAmount)),
+        gstValue: toFixedPrice(toNumber(line.gstValue)),
+        sourceGrandTotal:
+          line.sourceGrandTotal === null || line.sourceGrandTotal === undefined
+            ? null
+            : toFixedPrice(toNumber(line.sourceGrandTotal)),
+        lineTotal: toFixedPrice(toNumber(line.lineTotal)),
+        packSizeSnapshot: line.packSizeSnapshot,
+        sourceRowNumber: line.sourceRowNumber,
+        unitPriceUpdated: line.unitPriceUpdated,
+        expiryDate: line.expiryDate,
+        createdAt: line.createdAt
+      }))
     };
   }
 
@@ -3561,64 +4423,27 @@ export class ProcurementService {
       throw new AppError(404, "Purchase order not found");
     }
 
-    return {
-      id: order.id,
-      purchaseNumber: order.purchaseNumber,
-      purchaseDate: order.purchaseDate,
-      purchaseType: order.purchaseType,
-      purchaseSection: order.purchaseSection,
-      supplierId: order.supplierId,
-      supplierName: order.supplier?.name ?? "-",
-      supplierPhone: order.supplier?.phone ?? "-",
-      note: order.note,
-      invoiceImageUrl: order.invoiceImageUrl,
-      totalAmount: toFixedPrice(toNumber(order.totalAmount)),
-      createdByUserId: order.createdByUserId,
-      createdByUserName: order.createdByUser?.fullName ?? null,
-      createdAt: order.createdAt,
-      updatedAt: order.updatedAt,
-      lines: order.lines.map((line) => ({
-        id: line.id,
-        lineType: line.lineType,
-        ingredientId: line.ingredientId,
-        productId: line.productId,
-        itemNameSnapshot: line.itemNameSnapshot,
-        categoryNameSnapshot: line.categoryNameSnapshot,
-        unit: line.unit,
-        stockBefore: toFixedQuantity(toNumber(line.stockBefore)),
-        stockAdded: toFixedQuantity(toNumber(line.stockAdded)),
-        dipAndDashStockAdded:
-          line.dipAndDashStockAdded === null || line.dipAndDashStockAdded === undefined
-            ? null
-            : toFixedQuantity(toNumber(line.dipAndDashStockAdded)),
-        gamingStockAdded:
-          line.gamingStockAdded === null || line.gamingStockAdded === undefined
-            ? null
-            : toFixedQuantity(toNumber(line.gamingStockAdded)),
-        enteredQuantity:
-          line.enteredQuantity === null || line.enteredQuantity === undefined
-            ? null
-            : toFixedQuantity(toNumber(line.enteredQuantity)),
-        enteredUnit: line.enteredUnit,
-        stockAfter: toFixedQuantity(toNumber(line.stockAfter)),
-        unitPrice: toFixedPrice(toNumber(line.unitPrice)),
-        gstValue: toFixedPrice(toNumber(line.gstValue)),
-        lineTotal: toFixedPrice(toNumber(line.lineTotal)),
-        unitPriceUpdated: line.unitPriceUpdated,
-        expiryDate: line.expiryDate,
-        createdAt: line.createdAt
-      }))
-    };
+    return this.mapPurchaseOrderDetail(order);
   }
 
   async getMeta(filters: ProcurementMetaFilters) {
     const date = filters.date || getTodayDate();
+    const targetSection =
+      filters.purchaseSection === "gaming"
+        ? "gaming"
+        : filters.purchaseSection === "dip_and_dash"
+          ? "dip_and_dash"
+          : undefined;
 
     const ingredientQuery = this.ingredientRepository
       .createQueryBuilder("ingredient")
       .leftJoinAndSelect("ingredient.category", "category")
       .where("ingredient.isActive = true")
       .orderBy("ingredient.name", "ASC");
+
+    if (filters.purchaseSection === "gaming") {
+      ingredientQuery.andWhere("1 = 0");
+    }
 
     if (filters.ingredientCategoryId) {
       ingredientQuery.andWhere("ingredient.categoryId = :categoryId", { categoryId: filters.ingredientCategoryId });
@@ -3637,6 +4462,10 @@ export class ProcurementService {
       .where("product.isActive = true")
       .orderBy("product.name", "ASC");
 
+    if (targetSection) {
+      productQuery.andWhere("product.targetSection = :targetSection", { targetSection });
+    }
+
     if (filters.productSearch) {
       productQuery.andWhere(
         "(LOWER(product.name) LIKE LOWER(:search) OR LOWER(product.category) LIKE LOWER(:search) OR LOWER(COALESCE(product.sku, '')) LIKE LOWER(:search))",
@@ -3644,17 +4473,25 @@ export class ProcurementService {
       );
     }
 
+    const supplierQuery = this.supplierRepository
+      .createQueryBuilder("supplier")
+      .where("supplier.isActive = true")
+      .orderBy("supplier.name", "ASC");
+    if (filters.purchaseSection) {
+      supplierQuery.andWhere("supplier.section = :section", { section: filters.purchaseSection });
+    }
+
+    const categoryQuery = this.ingredientCategoryRepository
+      .createQueryBuilder("category")
+      .where("category.isActive = true")
+      .orderBy("category.name", "ASC");
+    if (filters.purchaseSection === "gaming") {
+      categoryQuery.andWhere("1 = 0");
+    }
+
     const [suppliers, categories, ingredients, products] = await Promise.all([
-      this.supplierRepository
-        .createQueryBuilder("supplier")
-        .where("supplier.isActive = true")
-        .orderBy("supplier.name", "ASC")
-        .getMany(),
-      this.ingredientCategoryRepository
-        .createQueryBuilder("category")
-        .where("category.isActive = true")
-        .orderBy("category.name", "ASC")
-        .getMany(),
+      supplierQuery.getMany(),
+      categoryQuery.getMany(),
       ingredientQuery.getMany(),
       productQuery.getMany()
     ]);
@@ -3764,10 +4601,21 @@ export class ProcurementService {
     if (filters.dateTo) {
       purchaseQuery.andWhere("purchaseOrder.purchaseDate <= :dateTo", { dateTo: filters.dateTo });
     }
+    if (filters.purchaseSection) {
+      purchaseQuery.andWhere("purchaseOrder.purchaseSection = :purchaseSection", {
+        purchaseSection: filters.purchaseSection
+      });
+    }
 
     const [supplierCount, productCount, purchaseSummary, productPurchaseSummary, recentPurchases] = await Promise.all([
-      this.supplierRepository.count(),
-      this.productRepository.count(),
+      this.supplierRepository.count(
+        filters.purchaseSection ? { where: { section: filters.purchaseSection } } : undefined
+      ),
+      this.productRepository.count(
+        filters.purchaseSection
+          ? { where: { targetSection: filters.purchaseSection === "gaming" ? "gaming" : "dip_and_dash" } }
+          : undefined
+      ),
       purchaseQuery
         .clone()
         .select("COUNT(*)", "count")
@@ -3781,8 +4629,12 @@ export class ProcurementService {
         .where("line.lineType = :lineType", { lineType: "product" })
         .andWhere(filters.dateFrom ? "purchaseOrder.purchaseDate >= :dateFrom" : "1=1", { dateFrom: filters.dateFrom })
         .andWhere(filters.dateTo ? "purchaseOrder.purchaseDate <= :dateTo" : "1=1", { dateTo: filters.dateTo })
+        .andWhere(filters.purchaseSection ? "purchaseOrder.purchaseSection = :purchaseSection" : "1=1", {
+          purchaseSection: filters.purchaseSection
+        })
         .getRawOne<{ qty: string; amount: string }>(),
       this.purchaseOrderRepository.find({
+        where: filters.purchaseSection ? { purchaseSection: filters.purchaseSection } : undefined,
         relations: { supplier: true, createdByUser: true },
         order: { createdAt: "DESC" },
         take: 6

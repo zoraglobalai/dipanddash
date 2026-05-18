@@ -272,7 +272,7 @@ export const snookerOrderService = {
     }
     const allowedProductIds = new Set(
       input.snapshot.products
-        .filter((product) => product.targetSection === "gaming" || product.targetSection === "both")
+        .filter((product) => product.targetSection === "gaming")
         .map((product) => product.id)
     );
     const invalidProductLines = input.lines.filter(
@@ -388,7 +388,7 @@ export const snookerOrderService = {
 
     const productMap = new Map(
       input.snapshot.products
-        .filter((product) => product.targetSection === "gaming" || product.targetSection === "both")
+        .filter((product) => product.targetSection === "gaming")
         .map((product) => [product.id, product])
     );
     const normalizedLines: CartLine[] = [];

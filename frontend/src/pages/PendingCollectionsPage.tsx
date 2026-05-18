@@ -18,6 +18,7 @@ import {
   VStack
 } from "@chakra-ui/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useLocation } from "react-router-dom";
 
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import { EmptyState } from "@/components/common/EmptyState";
@@ -41,6 +42,7 @@ import type {
   PendingScope
 } from "@/types/pending";
 import { extractErrorMessage } from "@/utils/api-error";
+import { businessScopeToCustomerScope, getBusinessScopeFromSearch } from "@/utils/business-scope";
 import { createDraftId } from "@/utils/invoice-billing";
 
 const formatCurrency = (value: number) =>
@@ -138,13 +140,19 @@ const StatsCard = ({ label, value, helper }: { label: string; value: string; hel
 );
 
 export const PendingCollectionsPage = () => {
+  const location = useLocation();
   const toast = useAppToast();
+  const scopedBusiness = new URLSearchParams(location.search).has("business");
+  const initialScope = businessScopeToCustomerScope(getBusinessScopeFromSearch(location.search)) as Exclude<
+    PendingScope,
+    "all"
+  >;
 
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebouncedValue(search, 350);
   const [page, setPage] = useState(1);
   const [limit, setLimit] = useState(10);
-  const [scope, setScope] = useState<Exclude<PendingScope, "all">>("dip_and_dash");
+  const [scope, setScope] = useState<Exclude<PendingScope, "all">>(initialScope);
 
   const [loading, setLoading] = useState(true);
   const [rows, setRows] = useState<PendingCustomerSummary[]>([]);
@@ -259,6 +267,12 @@ export const PendingCollectionsPage = () => {
     setSelectedCustomer(null);
     setDetails(emptyDetails);
   }, [debouncedSearch, limit, scope]);
+
+  useEffect(() => {
+    if (scope !== initialScope) {
+      setScope(initialScope);
+    }
+  }, [initialScope, scope]);
 
   const openCollectModal = useCallback((row: PendingDocument) => {
     setCollectState({
@@ -880,26 +894,28 @@ export const PendingCollectionsPage = () => {
 
       <AppCard>
         <VStack align="stretch" spacing={4}>
-          <FormControl>
-            <FormLabel>Business Section</FormLabel>
-            <HStack spacing={3} flexWrap="wrap">
-              {scopeOptions.map((option) => (
-                <AppButton
-                  key={option.value}
-                  size="sm"
-                  variant={scope === option.value ? "solid" : "outline"}
-                  onClick={() => {
-                    setScope(option.value);
-                  }}
-                >
-                  {option.label}
-                </AppButton>
-              ))}
-            </HStack>
-            <Text mt={2} fontSize="xs" color="#705B52">
-              {scopeOptions.find((option) => option.value === scope)?.subtitle ?? ""}
-            </Text>
-          </FormControl>
+          {!scopedBusiness ? (
+            <FormControl>
+              <FormLabel>Business Section</FormLabel>
+              <HStack spacing={3} flexWrap="wrap">
+                {scopeOptions.map((option) => (
+                  <AppButton
+                    key={option.value}
+                    size="sm"
+                    variant={scope === option.value ? "solid" : "outline"}
+                    onClick={() => {
+                      setScope(option.value);
+                    }}
+                  >
+                    {option.label}
+                  </AppButton>
+                ))}
+              </HStack>
+              <Text mt={2} fontSize="xs" color="#705B52">
+                {scopeOptions.find((option) => option.value === scope)?.subtitle ?? ""}
+              </Text>
+            </FormControl>
+          ) : null}
 
           <SimpleGrid columns={{ base: 1, md: 3 }} spacing={4}>
             <FormControl>

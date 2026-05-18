@@ -9,6 +9,7 @@ export type CustomerListRow = {
   id: string;
   name: string;
   phone: string;
+  section: "dip_and_dash" | "gaming";
   email: string | null;
   notes: string | null;
   sourceDeviceId: string | null;
@@ -38,4 +39,5 @@ export type CustomerStats = {
     totalSpent: number;
     lastInvoiceAt: string | null;
   }>;
+  topCustomersPagination: CustomerPagination;
 };

@@ -5,6 +5,8 @@ import { sendSuccess } from "../../common/api-response";
 import { type CouponDerivedStatus, type CouponDiscountType } from "./offers.constants";
 import { OffersService } from "./offers.service";
 
+type CouponSection = "dip_and_dash" | "gaming";
+
 const parsePositiveInt = (value: unknown, fallback: number) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
@@ -58,6 +60,7 @@ export class OffersController {
     const data = await this.offersService.listCoupons({
       search: typeof req.query.search === "string" ? req.query.search : undefined,
       discountType: parseDiscountType(req.query.discountType),
+      section: typeof req.query.section === "string" ? (req.query.section as CouponSection) : undefined,
       status: parseStatus(req.query.status),
       firstTimeUserOnly: parseOptionalBoolean(req.query.firstTimeUserOnly),
       page: parsePositiveInt(req.query.page, 1),
@@ -99,8 +102,10 @@ export class OffersController {
     return sendSuccess(res, StatusCodes.OK, "Coupon usages fetched successfully", data);
   };
 
-  getStats = async (_req: Request, res: Response): Promise<Response> => {
-    const stats = await this.offersService.getStats();
+  getStats = async (req: Request, res: Response): Promise<Response> => {
+    const stats = await this.offersService.getStats(
+      typeof req.query.section === "string" ? (req.query.section as CouponSection) : undefined
+    );
     return sendSuccess(res, StatusCodes.OK, "Offer stats fetched successfully", { stats });
   };
 

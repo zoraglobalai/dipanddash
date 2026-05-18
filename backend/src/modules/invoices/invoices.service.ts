@@ -1,4 +1,4 @@
-import { EntityManager, In, MoreThan, QueryFailedError } from "typeorm";
+import { EntityManager, In, MoreThan, QueryFailedError, SelectQueryBuilder } from "typeorm";
 
 import { UserRole } from "../../constants/roles";
 import { AppDataSource } from "../../database/data-source";
@@ -25,6 +25,8 @@ import { InvoicePayment } from "./invoice-payment.entity";
 import { InvoiceUsageEvent } from "./invoice-usage-event.entity";
 import { Invoice } from "./invoice.entity";
 
+type BusinessScope = "dip_and_dash" | "snooker";
+
 type InvoiceListFilters = {
   search?: string;
   status?: InvoiceStatus;
@@ -33,6 +35,7 @@ type InvoiceListFilters = {
   paymentMode?: InvoicePaymentMode;
   orderType?: InvoiceOrderType;
   excludeOrderType?: InvoiceOrderType;
+  businessScope?: BusinessScope;
   staffId?: string;
   dateFrom?: string;
   dateTo?: string;
@@ -44,6 +47,7 @@ type InvoiceStatsFilters = {
   staffId?: string;
   orderType?: InvoiceOrderType;
   excludeOrderType?: InvoiceOrderType;
+  businessScope?: BusinessScope;
   dateFrom?: string;
   dateTo?: string;
 };
@@ -148,6 +152,8 @@ const getPaginationMeta = (page: number, limit: number, total: number) => ({
 const isAdminLikeRole = (role: UserRole) =>
   role === UserRole.ADMIN || role === UserRole.MANAGER || role === UserRole.ACCOUNTANT;
 const EFFECTIVE_INVOICE_DATE_SQL = "COALESCE(invoice.sourceCreatedAt, invoice.createdAt)";
+const resolveCustomerSectionForOrder = (orderType: InvoiceOrderType): "dip_and_dash" | "gaming" =>
+  orderType === "snooker" ? "gaming" : "dip_and_dash";
 
 export class InvoicesService {
   private readonly invoiceRepository = AppDataSource.getRepository(Invoice);
@@ -179,9 +185,49 @@ export class InvoicesService {
     }
   }
 
-  private async resolveCustomerForSync(payload: SyncInvoicePayload, createdByUserId: string) {
+  private resolveForcedBusinessScope(filters: { businessScope?: BusinessScope }, role: UserRole) {
+    if (role === UserRole.SNOOKER_STAFF) {
+      return "snooker" as const;
+    }
+    if (role === UserRole.STAFF) {
+      return "dip_and_dash" as const;
+    }
+    return filters.businessScope;
+  }
+
+  private applyInvoiceBusinessScope(
+    query: SelectQueryBuilder<Invoice>,
+    filters: { businessScope?: BusinessScope },
+    role: UserRole
+  ) {
+    const scope = this.resolveForcedBusinessScope(filters, role);
+    if (scope === "snooker") {
+      query.andWhere("invoice.orderType = :businessScopeOrderType", { businessScopeOrderType: "snooker" });
+      return;
+    }
+    if (scope === "dip_and_dash") {
+      query.andWhere("invoice.orderType != :businessScopeExcludedOrderType", {
+        businessScopeExcludedOrderType: "snooker"
+      });
+    }
+  }
+
+  private assertSyncOrderTypeAllowed(orderType: InvoiceOrderType, role: UserRole) {
+    if (role === UserRole.SNOOKER_STAFF && orderType !== "snooker") {
+      throw new AppError(403, "Snooker staff can sync snooker invoices only");
+    }
+    if (role === UserRole.STAFF && orderType === "snooker") {
+      throw new AppError(403, "Dip & Dash staff can sync Dip & Dash invoices only");
+    }
+  }
+
+  private async resolveCustomerForSync(
+    payload: SyncInvoicePayload,
+    createdByUserId: string,
+    section: "dip_and_dash" | "gaming"
+  ) {
     if (payload.customerId) {
-      const byId = await this.customerRepository.findOne({ where: { id: payload.customerId } });
+      const byId = await this.customerRepository.findOne({ where: { id: payload.customerId, section } });
       if (byId) {
         return byId;
       }
@@ -193,7 +239,7 @@ export class InvoicesService {
     }
 
     const normalizedPhone = normalizePhone(phone);
-    const existing = await this.customerRepository.findOne({ where: { phone: normalizedPhone } });
+    const existing = await this.customerRepository.findOne({ where: { phone: normalizedPhone, section } });
     if (existing) {
       return existing;
     }
@@ -201,6 +247,7 @@ export class InvoicesService {
     const created = this.customerRepository.create({
       name: cleanOptionalText(payload.customerName) ?? "Walk-in Customer",
       phone: normalizedPhone,
+      section,
       sourceDeviceId: cleanOptionalText(payload.deviceId) ?? null,
       createdByUserId,
       isActive: true
@@ -386,14 +433,12 @@ export class InvoicesService {
         }
       }
 
-      if (product.targetSection === "dip_and_dash" && isSnookerOrder) {
-        throw new AppError(409, `${product.name} is not assigned to Snooker inventory.`);
-      }
-      if (product.targetSection === "gaming" && !isSnookerOrder) {
-        throw new AppError(409, `${product.name} is not assigned to Dip & Dash inventory.`);
+      const expectedTargetSection = isSnookerOrder ? "gaming" : "dip_and_dash";
+      const sectionLabel = isSnookerOrder ? "Snooker" : "Dip & Dash";
+      if (product.targetSection !== expectedTargetSection) {
+        throw new AppError(409, `${product.name} is not assigned to ${sectionLabel} inventory.`);
       }
 
-      const sectionLabel = isSnookerOrder ? "Snooker" : "Dip & Dash";
       const sectionStock = isSnookerOrder ? gamingStock : dipAndDashStock;
       if (sectionStock + 0.000001 < soldQuantity) {
         throw new AppError(
@@ -617,6 +662,8 @@ export class InvoicesService {
       query.andWhere("invoice.orderType != :excludeOrderType", { excludeOrderType: filters.excludeOrderType });
     }
 
+    this.applyInvoiceBusinessScope(query, filters, contextUser.role);
+
     if (filters.dateFrom) {
       query.andWhere(`${EFFECTIVE_INVOICE_DATE_SQL} >= :dateFrom`, { dateFrom: new Date(filters.dateFrom) });
     }
@@ -743,6 +790,8 @@ export class InvoicesService {
       query.andWhere("invoice.orderType != :excludeOrderType", { excludeOrderType: filters.excludeOrderType });
     }
 
+    this.applyInvoiceBusinessScope(query, filters, contextUser.role);
+
     const [total, paid, pending, cancelled, refunded, cash, card, upi, mixed, totals] =
       await Promise.all([
         query.clone().getCount(),
@@ -849,6 +898,8 @@ export class InvoicesService {
   }
 
   async createInvoiceFromSync(payload: SyncInvoicePayload, contextUser: ContextUser) {
+    this.assertSyncOrderTypeAllowed(payload.orderType, contextUser.role);
+    const customerSection = resolveCustomerSectionForOrder(payload.orderType);
     const normalizedLines = Array.isArray(payload.lines) ? payload.lines : [];
     const normalizedPayments = Array.isArray(payload.payments) ? payload.payments : [];
     const normalizedUsageEvents = Array.isArray(payload.usageEvents) ? payload.usageEvents : [];
@@ -878,7 +929,7 @@ export class InvoicesService {
 
     try {
       const result = await AppDataSource.manager.transaction(async (manager) => {
-        const customer = await this.resolveCustomerForSync(payload, contextUser.id);
+        const customer = await this.resolveCustomerForSync(payload, contextUser.id, customerSection);
         const isUpdate = Boolean(existingByInvoiceNumber);
         const invoice =
           existingByInvoiceNumber ??

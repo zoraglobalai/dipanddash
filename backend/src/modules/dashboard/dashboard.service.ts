@@ -11,6 +11,7 @@ import { PurchaseOrder } from "../procurement/purchase-order.entity";
 type SalesStatsInput = {
   dateFrom?: string;
   dateTo?: string;
+  businessScope?: "dip_and_dash" | "snooker";
 };
 
 const toMoney = (value: number | string | null | undefined) => {
@@ -51,7 +52,7 @@ export class DashboardService {
   private readonly purchaseOrderRepository = AppDataSource.getRepository(PurchaseOrder);
   private readonly gamingBookingRepository = AppDataSource.getRepository(GamingBooking);
 
-  private async getDipAndDashExcessAmount(from: Date, to: Date) {
+  private async getCashAuditExcessAmount(from: Date, to: Date, section: "dip_and_dash" | "gaming") {
     try {
       const fromDay = toDay(from);
       const toDayValue = toDay(to);
@@ -60,7 +61,12 @@ export class DashboardService {
         .leftJoin("cashAudit.createdByUser", "createdByUser")
         .where("cashAudit.auditDate >= :fromDay", { fromDay })
         .andWhere("cashAudit.auditDate <= :toDay", { toDay: toDayValue })
-        .andWhere("createdByUser.role != :gamingRole", { gamingRole: UserRole.SNOOKER_STAFF })
+        .andWhere(
+          section === "gaming"
+            ? "createdByUser.role = :gamingRole"
+            : "createdByUser.role != :gamingRole",
+          { gamingRole: UserRole.SNOOKER_STAFF }
+        )
         .select("cashAudit.countedAmount", "countedAmount")
         .addSelect("cashAudit.staffCashTakenAmount", "staffCashTakenAmount")
         .addSelect("cashAudit.enteredCardAmount", "enteredCardAmount")
@@ -140,6 +146,12 @@ export class DashboardService {
   }
 
   async getSalesStats(input: SalesStatsInput = {}) {
+    const businessScope = input.businessScope === "snooker" ? "snooker" : "dip_and_dash";
+    const isSnookerScope = businessScope === "snooker";
+    const purchaseSection = isSnookerScope ? "gaming" : "dip_and_dash";
+    const invoiceOrderCondition = isSnookerScope
+      ? "invoice.orderType = 'snooker'"
+      : "invoice.orderType != 'snooker'";
     const now = new Date();
     const parsedInputFrom = input.dateFrom ? startOfDay(new Date(input.dateFrom)) : null;
     const parsedInputTo = input.dateTo ? endOfDay(new Date(input.dateTo)) : null;
@@ -150,12 +162,13 @@ export class DashboardService {
       this.invoiceRepository
         .createQueryBuilder("invoice")
         .where("invoice.status = 'paid'")
-        .andWhere("invoice.orderType != 'snooker'")
+        .andWhere(invoiceOrderCondition)
         .select("MIN(invoice.createdAt)", "minDate")
         .addSelect("MAX(invoice.createdAt)", "maxDate")
         .getRawOne<{ minDate: string | null; maxDate: string | null }>(),
       this.purchaseOrderRepository
         .createQueryBuilder("purchaseOrder")
+        .where("purchaseOrder.purchaseSection = :purchaseSection", { purchaseSection })
         .select("MIN(purchaseOrder.purchaseDate)", "minDate")
         .addSelect("MAX(purchaseOrder.purchaseDate)", "maxDate")
         .getRawOne<{ minDate: string | null; maxDate: string | null }>(),
@@ -184,12 +197,12 @@ export class DashboardService {
     const lowerBounds = [
       toDateBoundary(invoiceBounds?.minDate, "start"),
       toDateBoundary(purchaseBounds?.minDate, "start"),
-      toDateBoundary(gamingBounds?.minDate, "start")
+      isSnookerScope ? toDateBoundary(gamingBounds?.minDate, "start") : null
     ].filter((value): value is Date => Boolean(value));
     const upperBounds = [
       toDateBoundary(invoiceBounds?.maxDate, "end"),
       toDateBoundary(purchaseBounds?.maxDate, "end"),
-      toDateBoundary(gamingBounds?.maxDate, "end")
+      isSnookerScope ? toDateBoundary(gamingBounds?.maxDate, "end") : null
     ].filter((value): value is Date => Boolean(value));
 
     let safeFrom = hasInputFrom
@@ -222,14 +235,14 @@ export class DashboardService {
     const paidInvoiceBase = this.invoiceRepository
       .createQueryBuilder("invoice")
       .where("invoice.status = 'paid'")
-      .andWhere("invoice.orderType != 'snooker'")
+      .andWhere(invoiceOrderCondition)
       .andWhere("invoice.createdAt >= :fromDate", { fromDate: safeFrom })
       .andWhere("invoice.createdAt <= :toDate", { toDate: safeTo });
 
     const previousPaidBase = this.invoiceRepository
       .createQueryBuilder("invoice")
       .where("invoice.status = 'paid'")
-      .andWhere("invoice.orderType != 'snooker'")
+      .andWhere(invoiceOrderCondition)
       .andWhere("invoice.createdAt >= :fromDate", { fromDate: previousFrom })
       .andWhere("invoice.createdAt <= :toDate", { toDate: previousTo });
 
@@ -240,6 +253,7 @@ export class DashboardService {
       previousPurchaseSummary,
       productSalesSummary,
       snookerRevenueSummary,
+      previousSnookerRevenueSummary,
       paymentRows,
       paymentFallbackRows,
       orderTypeRows,
@@ -286,6 +300,7 @@ export class DashboardService {
           .addSelect("COALESCE(SUM(purchaseOrder.totalAmount), 0)", "totalPurchaseAmount")
           .where("purchaseOrder.purchaseDate >= :fromDay", { fromDay: safeFromDay })
           .andWhere("purchaseOrder.purchaseDate <= :toDay", { toDay: safeToDay })
+          .andWhere("purchaseOrder.purchaseSection = :purchaseSection", { purchaseSection })
           .getRawOne<{
             dipAndDashPurchaseAmount: string;
             snookerPurchaseAmount: string;
@@ -304,6 +319,7 @@ export class DashboardService {
           .addSelect("COALESCE(SUM(purchaseOrder.totalAmount), 0)", "totalPurchaseAmount")
           .where("purchaseOrder.purchaseDate >= :fromDay", { fromDay: previousFromDay })
           .andWhere("purchaseOrder.purchaseDate <= :toDay", { toDay: previousToDay })
+          .andWhere("purchaseOrder.purchaseSection = :purchaseSection", { purchaseSection })
           .getRawOne<{
             dipAndDashPurchaseAmount: string;
             snookerPurchaseAmount: string;
@@ -315,28 +331,42 @@ export class DashboardService {
           .leftJoin(Product, "product", `product.id::text = line."referenceId"::text`)
           .where("line.lineType = :lineType", { lineType: "product" })
           .andWhere("invoice.status = 'paid'")
-          .andWhere("invoice.orderType != 'snooker'")
+          .andWhere(invoiceOrderCondition)
           .andWhere("invoice.createdAt >= :fromDate", { fromDate: safeFrom })
           .andWhere("invoice.createdAt <= :toDate", { toDate: safeTo })
           .select("COALESCE(SUM(line.lineTotal), 0)", "soldAmount")
           .addSelect("COALESCE(SUM(line.quantity * COALESCE(product.purchaseUnitPrice, 0)), 0)", "costAmount")
           .getRawOne<{ soldAmount: string; costAmount: string }>(),
-        this.gamingBookingRepository
-          .createQueryBuilder("booking")
-          .where("booking.paymentStatus = :paymentStatus", { paymentStatus: "paid" })
-          .andWhere("booking.checkInAt >= :fromDate", { fromDate: safeFrom })
-          .andWhere("booking.checkInAt <= :toDate", { toDate: safeTo })
-          .select(
-            `COALESCE(SUM(CASE WHEN booking.status = 'completed' THEN COALESCE(booking.finalAmount, booking.systemCalculatedAmount, 0) ELSE COALESCE(booking.systemCalculatedAmount, 0) END), 0)`,
-            "totalRevenue"
-          )
-          .getRawOne<{ totalRevenue: string }>(),
+        isSnookerScope
+          ? this.gamingBookingRepository
+              .createQueryBuilder("booking")
+              .where("booking.paymentStatus = :paymentStatus", { paymentStatus: "paid" })
+              .andWhere("booking.checkInAt >= :fromDate", { fromDate: safeFrom })
+              .andWhere("booking.checkInAt <= :toDate", { toDate: safeTo })
+              .select(
+                `COALESCE(SUM(CASE WHEN booking.status = 'completed' THEN COALESCE(booking.finalAmount, booking.systemCalculatedAmount, 0) ELSE COALESCE(booking.systemCalculatedAmount, 0) END), 0)`,
+                "totalRevenue"
+              )
+              .getRawOne<{ totalRevenue: string }>()
+          : Promise.resolve({ totalRevenue: "0" }),
+        isSnookerScope
+          ? this.gamingBookingRepository
+              .createQueryBuilder("booking")
+              .where("booking.paymentStatus = :paymentStatus", { paymentStatus: "paid" })
+              .andWhere("booking.checkInAt >= :fromDate", { fromDate: previousFrom })
+              .andWhere("booking.checkInAt <= :toDate", { toDate: previousTo })
+              .select(
+                `COALESCE(SUM(CASE WHEN booking.status = 'completed' THEN COALESCE(booking.finalAmount, booking.systemCalculatedAmount, 0) ELSE COALESCE(booking.systemCalculatedAmount, 0) END), 0)`,
+                "totalRevenue"
+              )
+              .getRawOne<{ totalRevenue: string }>()
+          : Promise.resolve({ totalRevenue: "0" }),
         this.invoicePaymentRepository
           .createQueryBuilder("payment")
           .innerJoin(Invoice, "invoice", "invoice.id = payment.invoiceId")
           .where("payment.status = 'success'")
           .andWhere("invoice.status IN (:...revenueStatuses)", { revenueStatuses: ["paid", "pending"] })
-          .andWhere("invoice.orderType != 'snooker'")
+          .andWhere(invoiceOrderCondition)
           .andWhere("invoice.createdAt >= :fromDate", { fromDate: safeFrom })
           .andWhere("invoice.createdAt <= :toDate", { toDate: safeTo })
           .select("payment.mode", "paymentMode")
@@ -348,7 +378,7 @@ export class DashboardService {
         this.invoiceRepository
           .createQueryBuilder("invoice")
           .where("invoice.status = 'paid'")
-          .andWhere("invoice.orderType != 'snooker'")
+          .andWhere(invoiceOrderCondition)
           .andWhere("invoice.createdAt >= :fromDate", { fromDate: safeFrom })
           .andWhere("invoice.createdAt <= :toDate", { toDate: safeTo })
           .andWhere((query) => {
@@ -404,7 +434,7 @@ export class DashboardService {
           .createQueryBuilder("line")
           .leftJoin(Invoice, "invoice", "invoice.id = line.invoiceId")
           .where("invoice.status = 'paid'")
-          .andWhere("invoice.orderType != 'snooker'")
+          .andWhere(invoiceOrderCondition)
           .andWhere("invoice.createdAt >= :fromDate", { fromDate: safeFrom })
           .andWhere("invoice.createdAt <= :toDate", { toDate: safeTo })
           .select("line.nameSnapshot", "name")
@@ -421,21 +451,30 @@ export class DashboardService {
             quantity: string;
             total: string;
           }>(),
-        this.getDipAndDashExcessAmount(safeFrom, safeTo),
-        this.getDipAndDashExcessAmount(previousFrom, previousTo)
+        this.getCashAuditExcessAmount(safeFrom, safeTo, purchaseSection),
+        this.getCashAuditExcessAmount(previousFrom, previousTo, purchaseSection)
       ]);
 
     const billedSales = toMoney(summary?.totalSales ?? 0);
-    const totalSales = toMoney(billedSales + excessAmount);
+    const snookerGamingRevenue = toMoney(snookerRevenueSummary?.totalRevenue ?? 0);
+    const previousSnookerGamingRevenue = toMoney(previousSnookerRevenueSummary?.totalRevenue ?? 0);
+    const totalSales = toMoney(billedSales + excessAmount + (isSnookerScope ? snookerGamingRevenue : 0));
     const previousBilledSales = toMoney(previousSummary?.totalSales ?? 0);
-    const previousSales = toMoney(previousBilledSales + previousExcessAmount);
+    const previousSales = toMoney(
+      previousBilledSales + previousExcessAmount + (isSnookerScope ? previousSnookerGamingRevenue : 0)
+    );
     const dipAndDashPurchaseAmount = toMoney(purchaseSummary?.dipAndDashPurchaseAmount ?? 0);
     const snookerPurchaseAmount = toMoney(purchaseSummary?.snookerPurchaseAmount ?? 0);
     const totalPurchaseAmount = toMoney(purchaseSummary?.totalPurchaseAmount ?? 0);
     const previousDipAndDashPurchaseAmount = toMoney(previousPurchaseSummary?.dipAndDashPurchaseAmount ?? 0);
+    const previousSnookerPurchaseAmount = toMoney(previousPurchaseSummary?.snookerPurchaseAmount ?? 0);
+    const scopedPurchaseAmount = isSnookerScope ? snookerPurchaseAmount : dipAndDashPurchaseAmount;
+    const previousScopedPurchaseAmount = isSnookerScope
+      ? previousSnookerPurchaseAmount
+      : previousDipAndDashPurchaseAmount;
     const previousPurchaseAmount = toMoney(previousPurchaseSummary?.totalPurchaseAmount ?? 0);
-    const netRevenue = toMoney(totalSales - dipAndDashPurchaseAmount);
-    const previousNetRevenue = toMoney(previousSales - previousDipAndDashPurchaseAmount);
+    const netRevenue = toMoney(totalSales - scopedPurchaseAmount);
+    const previousNetRevenue = toMoney(previousSales - previousScopedPurchaseAmount);
     const salesGrowthPercentage =
       previousSales > 0 ? Number((((totalSales - previousSales) / previousSales) * 100).toFixed(2)) : null;
     const netRevenueGrowthPercentage =
@@ -445,7 +484,6 @@ export class DashboardService {
     const productSalesAmount = toMoney(productSalesSummary?.soldAmount ?? 0);
     const productSalesCostAmount = toMoney(productSalesSummary?.costAmount ?? 0);
     const productSalesProfit = toMoney(productSalesAmount - productSalesCostAmount);
-    const snookerGamingRevenue = toMoney(snookerRevenueSummary?.totalRevenue ?? 0);
     const snookerGamingProfit = toMoney(snookerGamingRevenue - snookerPurchaseAmount);
 
     const paymentMap = new Map<string, { paymentMode: string; count: number; amount: number }>();

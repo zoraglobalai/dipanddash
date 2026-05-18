@@ -68,6 +68,7 @@ export class AttendanceController {
   getAdminRecords = async (req: Request, res: Response): Promise<Response> => {
     const data = await this.attendanceService.getAdminRecords({
       name: typeof req.query.name === "string" ? req.query.name : undefined,
+      section: typeof req.query.section === "string" ? (req.query.section as never) : undefined,
       date: typeof req.query.date === "string" ? req.query.date : undefined,
       page: parsePositiveInt(req.query.page, 1),
       limit: parsePositiveInt(req.query.limit, 5)

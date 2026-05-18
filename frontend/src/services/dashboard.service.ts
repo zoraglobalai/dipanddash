@@ -12,7 +12,7 @@ export const dashboardService = {
     const response = await apiClient.get<ApiSuccess<StaffDashboardData>>("/dashboard/staff");
     return response.data;
   },
-  getSalesStats: async (params?: { dateFrom?: string; dateTo?: string }) => {
+  getSalesStats: async (params?: { dateFrom?: string; dateTo?: string; businessScope?: "dip_and_dash" | "snooker" }) => {
     const response = await apiClient.get<ApiSuccess<SalesStatsResponse>>("/dashboard/sales-stats", {
       params
     });

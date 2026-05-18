@@ -8,6 +8,7 @@ import {
   VStack
 } from "@chakra-ui/react";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useLocation } from "react-router-dom";
 import {
   Bar,
   BarChart,
@@ -35,6 +36,7 @@ import { dashboardService } from "@/services/dashboard.service";
 import type { SalesStatsResponse } from "@/types/sales-stats";
 import { UserRole } from "@/types/role";
 import { extractErrorMessage } from "@/utils/api-error";
+import { getBusinessScopeFromSearch, getBusinessTitle } from "@/utils/business-scope";
 
 const formatCurrency = (value: number) =>
   new Intl.NumberFormat("en-IN", {
@@ -72,7 +74,10 @@ const StatsCard = ({ label, value, helper }: { label: string; value: string; hel
 
 export const SalesStaticsPage = () => {
   const { user } = useAuth();
+  const location = useLocation();
   const toast = useAppToast();
+  const businessScope = getBusinessScopeFromSearch(location.search);
+  const businessTitle = getBusinessTitle(businessScope);
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState<SalesStatsResponse | null>(null);
   const [dateFrom, setDateFrom] = useState("");
@@ -83,7 +88,8 @@ export const SalesStaticsPage = () => {
     try {
       const response = await dashboardService.getSalesStats({
         dateFrom: dateFrom || undefined,
-        dateTo: dateTo || undefined
+        dateTo: dateTo || undefined,
+        businessScope
       });
       setData(response.data);
     } catch (error) {
@@ -91,7 +97,7 @@ export const SalesStaticsPage = () => {
     } finally {
       setLoading(false);
     }
-  }, [dateFrom, dateTo, toast]);
+  }, [businessScope, dateFrom, dateTo, toast]);
 
   useEffect(() => {
     void fetchStats();
@@ -120,8 +126,8 @@ export const SalesStaticsPage = () => {
   return (
     <VStack spacing={6} align="stretch">
       <PageHeader
-        title="Sales Statics"
-        subtitle="Advanced sales analytics for revenue, cashier performance, and product movement."
+        title={`${businessTitle} Sales Statics`}
+        subtitle={`Advanced ${businessTitle} analytics for revenue, cashier performance, and product movement.`}
       />
 
       <AppCard>
@@ -188,11 +194,19 @@ export const SalesStaticsPage = () => {
               helper={`${data.cards.uniqueCustomers} unique customers`}
             />
             <StatsCard label="Average Order Value" value={formatCurrency(data.cards.averageOrderValue)} />
-            <StatsCard
-              label="Discount + Tax"
-              value={formatCurrency(data.cards.totalDiscount + data.cards.totalTax)}
-              helper={`Discount ${formatCurrency(data.cards.totalDiscount)} | Tax ${formatCurrency(data.cards.totalTax)}`}
-            />
+            {businessScope === "snooker" ? (
+              <StatsCard
+                label="Gaming Revenue"
+                value={formatCurrency(data.cards.snookerGamingRevenue)}
+                helper={`Gaming profit ${formatCurrency(data.cards.snookerGamingProfit)}`}
+              />
+            ) : (
+              <StatsCard
+                label="Discount + Tax"
+                value={formatCurrency(data.cards.totalDiscount + data.cards.totalTax)}
+                helper={`Discount ${formatCurrency(data.cards.totalDiscount)} | Tax ${formatCurrency(data.cards.totalTax)}`}
+              />
+            )}
             <StatsCard label="Cash Revenue" value={formatCurrency(data.cards.cashSales)} />
             <StatsCard label="Card Revenue" value={formatCurrency(data.cards.cardSales)} />
             <StatsCard

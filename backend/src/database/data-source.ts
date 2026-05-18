@@ -39,8 +39,10 @@ import { GamingBooking } from "../modules/gaming/gaming-booking.entity";
 import { Supplier } from "../modules/procurement/supplier.entity";
 import { Product } from "../modules/procurement/product.entity";
 import { ProductDayLedgerAdjustment } from "../modules/procurement/product-day-ledger-adjustment.entity";
+import { PurchaseBulkImport } from "../modules/procurement/purchase-bulk-import.entity";
 import { PurchaseOrder } from "../modules/procurement/purchase-order.entity";
 import { PurchaseOrderLine } from "../modules/procurement/purchase-order-line.entity";
+import { ProductConsumptionImport } from "../modules/product-consumption/product-consumption-import.entity";
 import { CashAudit } from "../modules/cash-audit/cash-audit.entity";
 import { DumpEntry } from "../modules/dump/dump.entity";
 import { Outlet } from "../modules/outlets/outlet.entity";
@@ -86,6 +88,8 @@ const entities = [
   Supplier,
   Product,
   ProductDayLedgerAdjustment,
+  PurchaseBulkImport,
+  ProductConsumptionImport,
   PurchaseOrder,
   PurchaseOrderLine,
   CashAudit,

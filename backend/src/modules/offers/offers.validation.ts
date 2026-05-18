@@ -4,6 +4,7 @@ import { COUPON_DERIVED_STATUSES, COUPON_DISCOUNT_TYPES } from "./offers.constan
 
 const discountTypeSchema = z.enum(COUPON_DISCOUNT_TYPES);
 const statusSchema = z.enum(COUPON_DERIVED_STATUSES);
+const sectionSchema = z.enum(["dip_and_dash", "gaming"]);
 
 const nullableAmountSchema = z.preprocess((value) => {
   if (value === "" || value === undefined) {
@@ -21,6 +22,7 @@ const nullablePositiveIntSchema = z.preprocess((value) => {
 
 const couponBodySchema = z.object({
   couponCode: z.string().trim().min(2, "Please enter a coupon code").max(60),
+  section: sectionSchema.optional(),
   title: z.string().trim().max(140).optional(),
   description: z.string().trim().max(600).optional(),
   discountType: discountTypeSchema,
@@ -42,6 +44,7 @@ export const listCouponsSchema = z.object({
   query: z.object({
     search: z.string().trim().optional(),
     discountType: discountTypeSchema.optional(),
+    section: sectionSchema.optional(),
     status: statusSchema.optional(),
     firstTimeUserOnly: z.coerce.boolean().optional(),
     page: z.coerce.number().int().min(1).default(1),

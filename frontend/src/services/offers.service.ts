@@ -26,6 +26,7 @@ type CouponUsageResponse = {
 export const offersService = {
   getCoupons: async (params?: {
     search?: string;
+    section?: "dip_and_dash" | "gaming";
     discountType?: CouponDiscountType;
     status?: "active" | "disabled" | "scheduled" | "expired";
     firstTimeUserOnly?: boolean;
@@ -43,6 +44,7 @@ export const offersService = {
 
   createCoupon: async (payload: {
     couponCode: string;
+    section?: "dip_and_dash" | "gaming";
     title?: string;
     description?: string;
     discountType: CouponDiscountType;
@@ -67,6 +69,7 @@ export const offersService = {
     id: string,
     payload: {
       couponCode?: string;
+      section?: "dip_and_dash" | "gaming";
       title?: string;
       description?: string;
       discountType?: CouponDiscountType;
@@ -110,8 +113,8 @@ export const offersService = {
     return response.data;
   },
 
-  getStats: async () => {
-    const response = await apiClient.get<ApiSuccess<{ stats: OfferStats }>>("/offers/stats");
+  getStats: async (params?: { section?: "dip_and_dash" | "gaming" }) => {
+    const response = await apiClient.get<ApiSuccess<{ stats: OfferStats }>>("/offers/stats", { params });
     return response.data;
   },
 

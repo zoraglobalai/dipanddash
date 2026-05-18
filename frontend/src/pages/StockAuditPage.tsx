@@ -10,6 +10,7 @@ import {
   VStack
 } from "@chakra-ui/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useLocation } from "react-router-dom";
 
 import { EmptyState } from "@/components/common/EmptyState";
 import { PageHeader } from "@/components/common/PageHeader";
@@ -20,8 +21,11 @@ import { AppInput } from "@/components/ui/AppInput";
 import { DataTable } from "@/components/ui/DataTable";
 import { useAppToast } from "@/hooks/useAppToast";
 import { ingredientsService } from "@/services/ingredients.service";
+import { procurementService } from "@/services/procurement.service";
 import type { StockAuditData } from "@/types/ingredient";
+import type { ProductListItem, ProductListResponse } from "@/types/procurement";
 import { extractErrorMessage } from "@/utils/api-error";
+import { getBusinessScopeFromSearch } from "@/utils/business-scope";
 import { formatQuantity, formatQuantityWithUnit } from "@/utils/quantity";
 
 const normalizeDateInputValue = (value: string) => {
@@ -73,7 +77,9 @@ const PaginationControls = ({
 );
 
 export const StockAuditPage = () => {
+  const location = useLocation();
   const toast = useAppToast();
+  const isSnookerBusiness = getBusinessScopeFromSearch(location.search) === "snooker";
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [isRangeInitialized, setIsRangeInitialized] = useState(false);
@@ -85,8 +91,16 @@ export const StockAuditPage = () => {
   const [reopeningReportId, setReopeningReportId] = useState<string | null>(null);
   const [stockControlSaving, setStockControlSaving] = useState(false);
   const [data, setData] = useState<StockAuditData | null>(null);
+  const [productSearch, setProductSearch] = useState("");
+  const [productPage, setProductPage] = useState(1);
+  const [productLimit, setProductLimit] = useState(20);
+  const [productAudit, setProductAudit] = useState<ProductListResponse | null>(null);
 
   const fetchAudit = useCallback(async () => {
+    if (isSnookerBusiness) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
       const normalizedDateFrom = normalizeDateInputValue(dateFrom);
@@ -109,15 +123,44 @@ export const StockAuditPage = () => {
     } finally {
       setLoading(false);
     }
-  }, [dateFrom, dateTo, isRangeInitialized, limit, page, staffId, toast]);
+  }, [dateFrom, dateTo, isRangeInitialized, isSnookerBusiness, limit, page, staffId, toast]);
+
+  const fetchProductAudit = useCallback(async () => {
+    if (!isSnookerBusiness) {
+      return;
+    }
+    setLoading(true);
+    try {
+      const response = await procurementService.getProducts({
+        search: productSearch.trim() || undefined,
+        targetSection: "gaming",
+        includeInactive: true,
+        page: productPage,
+        limit: productLimit
+      });
+      setProductAudit(response.data);
+    } catch (error) {
+      toast.error(extractErrorMessage(error, "Unable to fetch snooker stock audit data."));
+    } finally {
+      setLoading(false);
+    }
+  }, [isSnookerBusiness, productLimit, productPage, productSearch, toast]);
 
   useEffect(() => {
+    if (isSnookerBusiness) {
+      void fetchProductAudit();
+      return;
+    }
     void fetchAudit();
-  }, [fetchAudit]);
+  }, [fetchAudit, fetchProductAudit, isSnookerBusiness]);
 
   useEffect(() => {
     setPage(1);
   }, [dateFrom, dateTo, limit, staffId]);
+
+  useEffect(() => {
+    setProductPage(1);
+  }, [productLimit, productSearch]);
 
   const handleReopenClosing = useCallback(
     async (row: StockAuditData["reports"][number]) => {
@@ -326,6 +369,130 @@ export const StockAuditPage = () => {
     },
     [toast]
   );
+
+  const productColumns = useMemo(
+    () => [
+      {
+        key: "name",
+        header: "Product",
+        render: (row: ProductListItem) => (
+          <VStack align="start" spacing={0}>
+            <Text fontWeight={700}>{row.name}</Text>
+            <Text fontSize="xs" color="#6D584E">
+              {row.category}
+            </Text>
+          </VStack>
+        )
+      },
+      {
+        key: "currentStock",
+        header: "Current Stock",
+        render: (row: ProductListItem) => formatQuantityWithUnit(row.gamingAssignedStock ?? row.currentStock, row.unit)
+      },
+      {
+        key: "purchasedQuantity",
+        header: "Purchased",
+        render: (row: ProductListItem) => formatQuantityWithUnit(row.purchasedQuantity, row.unit)
+      },
+      {
+        key: "soldQuantity",
+        header: "Sold",
+        render: (row: ProductListItem) => formatQuantityWithUnit(row.soldQuantity, row.unit)
+      },
+      {
+        key: "valuation",
+        header: "Valuation",
+        render: (row: ProductListItem) => `INR ${row.valuation.toLocaleString("en-IN")}`
+      },
+      {
+        key: "stockStatus",
+        header: "Status",
+        render: (row: ProductListItem) => (
+          <Badge colorScheme={row.stockStatus === "LOW_STOCK" ? "red" : "green"} borderRadius="full" px={3} py={1}>
+            {row.stockStatus === "LOW_STOCK" ? "Low Stock" : "Healthy"}
+          </Badge>
+        )
+      }
+    ],
+    []
+  );
+
+  if (isSnookerBusiness) {
+    const productStats = productAudit?.stats;
+    return (
+      <VStack align="stretch" spacing={6}>
+        <PageHeader
+          title="Snooker Stock Audit"
+          subtitle="Audit snooker product stock without Dip & Dash ingredient records."
+        />
+
+        <AppCard>
+          <SimpleGrid columns={{ base: 1, md: 3 }} spacing={4}>
+            <AppInput
+              label="Search"
+              placeholder="Search product"
+              value={productSearch}
+              onChange={(event) => setProductSearch((event.target as HTMLInputElement).value)}
+            />
+            <FormControl>
+              <FormLabel>Records per page</FormLabel>
+              <Select value={String(productLimit)} onChange={(event) => setProductLimit(Number(event.target.value) || 20)}>
+                <option value="10">10</option>
+                <option value="20">20</option>
+                <option value="50">50</option>
+              </Select>
+            </FormControl>
+            <VStack align="stretch" justify="end">
+              <Text opacity={0}>Refresh</Text>
+              <AppButton onClick={() => void fetchProductAudit()} isLoading={loading}>
+                Refresh
+              </AppButton>
+            </VStack>
+          </SimpleGrid>
+        </AppCard>
+
+        <SimpleGrid columns={{ base: 1, md: 2, xl: 4 }} spacing={4}>
+          <AppCard>
+            <Text color="#725D53" fontSize="sm">Products</Text>
+            <Text mt={1} fontSize="2xl" fontWeight={900}>{productStats?.totalProducts ?? 0}</Text>
+          </AppCard>
+          <AppCard>
+            <Text color="#725D53" fontSize="sm">Active Products</Text>
+            <Text mt={1} fontSize="2xl" fontWeight={900}>{productStats?.activeProducts ?? 0}</Text>
+          </AppCard>
+          <AppCard>
+            <Text color="#725D53" fontSize="sm">Low Stock</Text>
+            <Text mt={1} fontSize="2xl" fontWeight={900}>{productStats?.lowStockProducts ?? 0}</Text>
+          </AppCard>
+          <AppCard>
+            <Text color="#725D53" fontSize="sm">Stock Valuation</Text>
+            <Text mt={1} fontSize="2xl" fontWeight={900}>INR {(productStats?.stockValuation ?? 0).toLocaleString("en-IN")}</Text>
+          </AppCard>
+        </SimpleGrid>
+
+        <AppCard title="Snooker Product Stock">
+          {loading ? (
+            <SkeletonTable />
+          ) : (
+            <>
+              <DataTable
+                columns={productColumns}
+                rows={productAudit?.products ?? []}
+                emptyState={<EmptyState title="No snooker products" description="Snooker products will appear after product entry or purchase." />}
+              />
+              <PaginationControls
+                page={productAudit?.pagination.page ?? 1}
+                totalPages={productAudit?.pagination.totalPages ?? 1}
+                total={productAudit?.pagination.total ?? 0}
+                showing={productAudit?.products.length ?? 0}
+                onPageChange={setProductPage}
+              />
+            </>
+          )}
+        </AppCard>
+      </VStack>
+    );
+  }
 
   return (
     <VStack align="stretch" spacing={6}>

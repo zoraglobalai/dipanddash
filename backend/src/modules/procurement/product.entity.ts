@@ -16,7 +16,7 @@ import { Supplier } from "./supplier.entity";
 import { PurchaseOrderLine } from "./purchase-order-line.entity";
 
 @Entity({ name: "products" })
-@Index("IDX_products_name_unique", ["name"], { unique: true })
+@Index("IDX_products_name_target_section_unique", ["name", "targetSection"], { unique: true })
 @Index("IDX_products_is_active", ["isActive"])
 @Index("IDX_products_category", ["category"])
 @Index("IDX_products_target_section", ["targetSection"])

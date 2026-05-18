@@ -51,6 +51,7 @@ type CouponFormModalProps = {
   getItemsByCategory: (categoryId: string) => Promise<OfferItemMeta[]>;
   onSubmit: (payload: {
     couponCode: string;
+    section: "dip_and_dash" | "gaming";
     title?: string;
     description?: string;
     discountType: CouponDiscountType;
@@ -67,6 +68,7 @@ type CouponFormModalProps = {
     freeItemId?: string | null;
     internalNote?: string;
   }) => Promise<void>;
+  section: "dip_and_dash" | "gaming";
 };
 
 const toDateTimeInput = (value: string | Date) => {
@@ -111,7 +113,8 @@ export const CouponFormModal = ({
   initialData,
   itemCategories,
   getItemsByCategory,
-  onSubmit
+  onSubmit,
+  section
 }: CouponFormModalProps) => {
   const toast = useAppToast();
   const { isCloseConfirmOpen, requestClose, cancelCloseRequest, confirmClose } = useModalCloseGuard(onClose);
@@ -301,6 +304,7 @@ export const CouponFormModal = ({
 
     await onSubmit({
       couponCode: couponCode.trim(),
+      section,
       title: title.trim() || undefined,
       description: description.trim() || undefined,
       discountType,

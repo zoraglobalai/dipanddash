@@ -21,6 +21,7 @@ import { outletsRoutes } from "../modules/outlets/outlets.routes";
 import { outletTransfersRoutes } from "../modules/outlet-transfers/outlet-transfers.routes";
 import { pendingRoutes } from "../modules/pending/pending.routes";
 import { assetsRoutes } from "../modules/assets/assets.routes";
+import { productConsumptionRoutes } from "../modules/product-consumption/product-consumption.routes";
 
 const router = Router();
 
@@ -45,5 +46,6 @@ router.use("/outlets", outletsRoutes);
 router.use("/outlet-transfers", outletTransfersRoutes);
 router.use("/pending", pendingRoutes);
 router.use("/assets", assetsRoutes);
+router.use("/product-consumption", productConsumptionRoutes);
 
 export const apiRoutes = router;

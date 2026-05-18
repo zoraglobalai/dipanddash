@@ -14,6 +14,7 @@ export type AssetUnit =
 export type AssetListItem = {
   id: string;
   name: string;
+  section: "dip_and_dash" | "gaming";
   quantity: number;
   unit: string;
   isActive: boolean;

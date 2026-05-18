@@ -2,9 +2,11 @@ import { Column, CreateDateColumn, Entity, Index, OneToMany, PrimaryGeneratedCol
 
 import { Product } from "./product.entity";
 import { PurchaseOrder } from "./purchase-order.entity";
+import type { PurchaseSection } from "./procurement.constants";
 
 @Entity({ name: "suppliers" })
-@Index("IDX_suppliers_name_unique", ["name"], { unique: true })
+@Index("IDX_suppliers_name_section_unique", ["name", "section"], { unique: true })
+@Index("IDX_suppliers_section", ["section"])
 export class Supplier {
   @PrimaryGeneratedColumn("uuid")
   id!: string;
@@ -20,6 +22,9 @@ export class Supplier {
 
   @Column({ type: "text", nullable: true })
   address!: string | null;
+
+  @Column({ type: "varchar", length: 20, default: "dip_and_dash" })
+  section!: PurchaseSection;
 
   @Column({ type: "boolean", default: true })
   isActive!: boolean;

@@ -8,12 +8,21 @@ type CustomerListResponse = {
 };
 
 export const customersService = {
-  getStats: async () => {
-    const response = await apiClient.get<ApiSuccess<CustomerStats>>("/customers/stats");
+  getStats: async (params?: {
+    scope?: "all" | "dip_and_dash" | "snooker";
+    topPage?: number;
+    topLimit?: number;
+  }) => {
+    const response = await apiClient.get<ApiSuccess<CustomerStats>>("/customers/stats", { params });
     return response.data;
   },
 
-  getCustomers: async (params?: { search?: string; page?: number; limit?: number }) => {
+  getCustomers: async (params?: {
+    search?: string;
+    scope?: "all" | "dip_and_dash" | "snooker";
+    page?: number;
+    limit?: number;
+  }) => {
     const response = await apiClient.get<ApiSuccess<CustomerListResponse>>("/customers", { params });
     return response.data;
   }

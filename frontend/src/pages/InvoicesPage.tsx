@@ -12,6 +12,7 @@ import {
 } from "@chakra-ui/react";
 import { Ban, Eye, Printer, RotateCcw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useLocation } from "react-router-dom";
 
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import { EmptyState } from "@/components/common/EmptyState";
@@ -43,6 +44,7 @@ import type {
 } from "@/types/invoice";
 import { UserRole } from "@/types/role";
 import { extractErrorMessage } from "@/utils/api-error";
+import { getBusinessScopeFromSearch, getBusinessTitle } from "@/utils/business-scope";
 
 const defaultPagination: InvoicePagination = {
   page: 1,
@@ -133,7 +135,12 @@ const sectionConfig: Record<
 
 export const InvoicesPage = () => {
   const { user } = useAuth();
+  const location = useLocation();
   const toast = useAppToast();
+  const scopedBusiness = new URLSearchParams(location.search).has("business");
+  const businessScope = getBusinessScopeFromSearch(location.search);
+  const businessTitle = getBusinessTitle(businessScope);
+  const initialSection: InvoiceSection = businessScope === "snooker" ? "snooker_pos" : "dip_and_dash";
 
   const [stats, setStats] = useState<InvoiceStats>(defaultStats);
   const [statsLoading, setStatsLoading] = useState(true);
@@ -145,7 +152,7 @@ export const InvoicesPage = () => {
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebouncedValue(search, 400);
   const [paymentModeFilter, setPaymentModeFilter] = useState("");
-  const [section, setSection] = useState<InvoiceSection>("dip_and_dash");
+  const [section, setSection] = useState<InvoiceSection>(initialSection);
   const [page, setPage] = useState(1);
   const [limit, setLimit] = useState(5);
 
@@ -184,7 +191,8 @@ export const InvoicesPage = () => {
       const filter = sectionConfig[section].listFilter;
       const response = await invoicesService.getStats({
         orderType: filter.orderType,
-        excludeOrderType: filter.excludeOrderType
+        excludeOrderType: filter.excludeOrderType,
+        businessScope
       });
       setStats(response.data);
     } catch (error) {
@@ -192,7 +200,7 @@ export const InvoicesPage = () => {
     } finally {
       setStatsLoading(false);
     }
-  }, [section, toast]);
+  }, [businessScope, section, toast]);
 
   const fetchInvoices = useCallback(async () => {
     setTableLoading(true);
@@ -204,6 +212,7 @@ export const InvoicesPage = () => {
         paymentMode: (paymentModeFilter || undefined) as InvoicePaymentMode | undefined,
         orderType: filter.orderType,
         excludeOrderType: filter.excludeOrderType,
+        businessScope,
         page,
         limit
       });
@@ -214,7 +223,7 @@ export const InvoicesPage = () => {
     } finally {
       setTableLoading(false);
     }
-  }, [debouncedSearch, limit, page, paymentModeFilter, section, toast]);
+  }, [businessScope, debouncedSearch, limit, page, paymentModeFilter, section, toast]);
 
   useEffect(() => {
     void fetchStats();
@@ -226,7 +235,13 @@ export const InvoicesPage = () => {
 
   useEffect(() => {
     setPage(1);
-  }, [debouncedSearch, paymentModeFilter, limit, section]);
+  }, [debouncedSearch, initialSection, paymentModeFilter, limit, section]);
+
+  useEffect(() => {
+    if (scopedBusiness && section !== initialSection) {
+      setSection(initialSection);
+    }
+  }, [initialSection, scopedBusiness, section]);
 
   const refreshAll = useCallback(async () => {
     await Promise.all([fetchStats(), fetchInvoices()]);
@@ -452,23 +467,27 @@ export const InvoicesPage = () => {
   return (
     <VStack spacing={6} align="stretch">
       <PageHeader
-        title="Invoices"
+        title={`${businessTitle} Invoices`}
         subtitle={sectionConfig[section].subtitle}
       />
 
       <HStack spacing={3} flexWrap="wrap">
-        <AppButton
-          variant={section === "dip_and_dash" ? "solid" : "outline"}
-          onClick={() => setSection("dip_and_dash")}
-        >
-          Dip & Dash
-        </AppButton>
-        <AppButton
-          variant={section === "snooker_pos" ? "solid" : "outline"}
-          onClick={() => setSection("snooker_pos")}
-        >
-          Snooker POS
-        </AppButton>
+        {!scopedBusiness ? (
+          <>
+            <AppButton
+              variant={section === "dip_and_dash" ? "solid" : "outline"}
+              onClick={() => setSection("dip_and_dash")}
+            >
+              Dip & Dash
+            </AppButton>
+            <AppButton
+              variant={section === "snooker_pos" ? "solid" : "outline"}
+              onClick={() => setSection("snooker_pos")}
+            >
+              Snooker POS
+            </AppButton>
+          </>
+        ) : null}
         <Text fontSize="sm" color="#7A6258" fontWeight={600}>
           {sectionConfig[section].label}
         </Text>

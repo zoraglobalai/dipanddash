@@ -487,7 +487,7 @@ export const GamingPage = () => {
         });
         collected.push(
           ...response.data.products.filter(
-            (product) => product.targetSection === "gaming" || product.targetSection === "both"
+            (product) => product.targetSection === "gaming"
           )
         );
         totalPages = response.data.pagination.totalPages;

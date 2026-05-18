@@ -175,7 +175,7 @@ const calcCheckoutAmount = (booking: GamingBooking, checkOutAtIso: string) => {
 const getGamingProductOptions = (snapshot: CatalogSnapshot | null) => {
   if (!snapshot) return [] as ProductOption[];
   return (snapshot.products ?? [])
-    .filter((x) => x.isActive && (x.targetSection === "gaming" || x.targetSection === "both"))
+    .filter((x) => x.isActive && x.targetSection === "gaming")
     .map((x) => ({ id: x.id, label: x.name, unitPrice: x.sellingPrice, gstPercentage: 0 }));
 };
 
@@ -508,6 +508,7 @@ export const StaffGamingBookingPage = () => {
 
   const saveBooking = async () => {
     if (!session) return;
+    if (saving) return;
     if (!selectedResourceCodes.length) {
       toast({ status: "warning", title: "Select at least one board/console." });
       return;
@@ -1475,7 +1476,7 @@ export const StaffGamingBookingPage = () => {
               {!isEditMode ? <FormControl><FormLabel>Note</FormLabel><Input value={form.note} onChange={(e) => setForm((p) => ({ ...p, note: e.target.value }))} placeholder="Booking note" /></FormControl> : null}
             </VStack>
           </ModalBody>
-          <ModalFooter><HStack><Button variant="outline" onClick={bookingModal.onClose}>Cancel</Button><Button isLoading={saving} onClick={() => void saveBooking()}>{formMode === "create" ? "Create Booking" : "Save Changes"}</Button></HStack></ModalFooter>
+          <ModalFooter><HStack><Button variant="outline" onClick={bookingModal.onClose} isDisabled={saving}>Cancel</Button><Button isLoading={saving} isDisabled={saving} onClick={() => void saveBooking()}>{formMode === "create" ? "Create Booking" : "Save Changes"}</Button></HStack></ModalFooter>
         </ModalContent>
       </Modal>
 

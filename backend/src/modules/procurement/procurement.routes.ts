@@ -10,6 +10,7 @@ import { purchaseInvoiceImageUpload } from "./procurement-upload.middleware";
 import {
   createProductSchema,
   createPurchaseOrderSchema,
+  deletePurchaseBulkImportSchema,
   deletePurchaseOrderSchema,
   createSupplierSchema,
   deleteProductLedgerRecordSchema,
@@ -23,6 +24,7 @@ import {
   procurementStatsSchema,
   procurementUnitsSchema,
   productStockHistorySchema,
+  purchaseBulkImportHistorySchema,
   purchaseOrderByIdSchema,
   purchaseOrderListSchema,
   supplierListSchema,
@@ -179,6 +181,18 @@ router.post(
   authorizePurchaseModule,
   purchaseBulkUpload.single("file"),
   asyncHandler(procurementController.bulkImportPurchaseOrder)
+);
+router.get(
+  "/purchase-orders/bulk/history",
+  authorizePurchaseModule,
+  validateRequest(purchaseBulkImportHistorySchema),
+  asyncHandler(procurementController.listPurchaseBulkImportHistory)
+);
+router.delete(
+  "/purchase-orders/bulk/history/:id",
+  authorizePurchaseModule,
+  validateRequest(deletePurchaseBulkImportSchema),
+  asyncHandler(procurementController.deletePurchaseBulkImport)
 );
 router.get(
   "/purchase-orders/:id",

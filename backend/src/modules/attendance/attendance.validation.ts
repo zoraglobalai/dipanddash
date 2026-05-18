@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+const attendanceSectionSchema = z.enum(["dip_and_dash", "gaming"]);
 
 export const attendancePunchSchema = z.object({
   body: z.object({
@@ -29,6 +30,7 @@ export const attendanceAdminQuerySchema = z.object({
   params: z.object({}),
   query: z.object({
     name: z.string().optional(),
+    section: attendanceSectionSchema.optional(),
     date: z
       .string()
       .regex(datePattern, "Date must be in YYYY-MM-DD format")

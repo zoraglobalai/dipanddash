@@ -12,10 +12,13 @@ import {
   type CouponDiscountType
 } from "./offers.constants";
 
+type CouponSection = "dip_and_dash" | "gaming";
+
 type CouponListFilters = {
   page: number;
   limit: number;
   search?: string;
+  section?: CouponSection;
   discountType?: CouponDiscountType;
   status?: CouponDerivedStatus;
   firstTimeUserOnly?: boolean;
@@ -23,6 +26,7 @@ type CouponListFilters = {
 
 type CouponPayload = {
   couponCode: string;
+  section?: CouponSection;
   title?: string;
   description?: string;
   discountType: CouponDiscountType;
@@ -44,6 +48,7 @@ type CouponUpdatePayload = Partial<CouponPayload>;
 
 type CouponDraft = {
   couponCode: string;
+  section: CouponSection;
   title: string | null;
   description: string | null;
   discountType: CouponDiscountType;
@@ -148,10 +153,11 @@ export class OffersService {
     return new Map(usageCounts.map((entry) => [entry.couponId, Number(entry.count)]));
   }
 
-  private async validateUniqueCouponCode(couponCode: string, excludeId?: string) {
+  private async validateUniqueCouponCode(couponCode: string, section: CouponSection, excludeId?: string) {
     const query = this.couponRepository
       .createQueryBuilder("coupon")
-      .where("LOWER(coupon.couponCode) = LOWER(:couponCode)", { couponCode });
+      .where("LOWER(coupon.couponCode) = LOWER(:couponCode)", { couponCode })
+      .andWhere("coupon.section = :section", { section });
 
     if (excludeId) {
       query.andWhere("coupon.id != :excludeId", { excludeId });
@@ -224,6 +230,7 @@ export class OffersService {
   private buildCreateDraft(payload: CouponPayload): CouponDraft {
     return {
       couponCode: sanitizeCouponCode(payload.couponCode),
+      section: payload.section ?? "dip_and_dash",
       title: cleanOptionalText(payload.title) ?? null,
       description: cleanOptionalText(payload.description) ?? null,
       discountType: payload.discountType,
@@ -257,6 +264,7 @@ export class OffersService {
         payload.couponCode !== undefined
           ? sanitizeCouponCode(payload.couponCode)
           : existing.couponCode,
+      section: payload.section ?? existing.section,
       title:
         payload.title !== undefined
           ? (cleanOptionalText(payload.title) ?? null)
@@ -321,6 +329,7 @@ export class OffersService {
     return {
       id: coupon.id,
       couponCode: coupon.couponCode,
+      section: coupon.section,
       title: coupon.title,
       description: coupon.description,
       discountType: coupon.discountType,
@@ -384,6 +393,10 @@ export class OffersService {
       });
     }
 
+    if (filters.section) {
+      query.andWhere("coupon.section = :section", { section: filters.section });
+    }
+
     if (filters.discountType) {
       query.andWhere("coupon.discountType = :discountType", { discountType: filters.discountType });
     }
@@ -430,11 +443,12 @@ export class OffersService {
   async createCoupon(payload: CouponPayload) {
     const draft = this.buildCreateDraft(payload);
 
-    await this.validateUniqueCouponCode(draft.couponCode);
+    await this.validateUniqueCouponCode(draft.couponCode, draft.section);
     await this.validateCouponDraft(draft);
 
     const coupon = this.couponRepository.create({
       couponCode: draft.couponCode,
+      section: draft.section,
       title: draft.title,
       description: draft.description,
       discountType: draft.discountType,
@@ -461,12 +475,13 @@ export class OffersService {
     const existing = await this.getCouponOrFail(id);
     const draft = this.buildUpdateDraft(existing, payload);
 
-    if (draft.couponCode !== existing.couponCode) {
-      await this.validateUniqueCouponCode(draft.couponCode, id);
+    if (draft.couponCode !== existing.couponCode || draft.section !== existing.section) {
+      await this.validateUniqueCouponCode(draft.couponCode, draft.section, id);
     }
     await this.validateCouponDraft(draft);
 
     existing.couponCode = draft.couponCode;
+    existing.section = draft.section;
     existing.title = draft.title;
     existing.description = draft.description;
     existing.discountType = draft.discountType;
@@ -567,37 +582,50 @@ export class OffersService {
     };
   }
 
-  async getStats() {
+  async getStats(section?: CouponSection) {
     const now = new Date();
+    const scopedCouponQuery = () => {
+      const query = this.couponRepository.createQueryBuilder("coupon");
+      if (section) {
+        query.where("coupon.section = :section", { section });
+      }
+      return query;
+    };
 
     const [totalCoupons, activeCoupons, expiredCoupons, scheduledCoupons, disabledCoupons, freeItemCoupons, totalCouponUsages] =
       await Promise.all([
-        this.couponRepository.count(),
-        this.couponRepository
-          .createQueryBuilder("coupon")
+        section ? this.couponRepository.count({ where: { section } }) : this.couponRepository.count(),
+        scopedCouponQuery()
           .where("coupon.isActive = true")
+          .andWhere(section ? "coupon.section = :section" : "1 = 1", { section })
           .andWhere("coupon.validFrom <= :now", { now })
           .andWhere("coupon.validUntil >= :now", { now })
           .getCount(),
-        this.couponRepository
-          .createQueryBuilder("coupon")
+        scopedCouponQuery()
           .where("coupon.isActive = true")
+          .andWhere(section ? "coupon.section = :section" : "1 = 1", { section })
           .andWhere("coupon.validUntil < :now", { now })
           .getCount(),
-        this.couponRepository
-          .createQueryBuilder("coupon")
+        scopedCouponQuery()
           .where("coupon.isActive = true")
+          .andWhere(section ? "coupon.section = :section" : "1 = 1", { section })
           .andWhere("coupon.validFrom > :now", { now })
           .getCount(),
-        this.couponRepository
-          .createQueryBuilder("coupon")
+        scopedCouponQuery()
           .where("coupon.isActive = false")
+          .andWhere(section ? "coupon.section = :section" : "1 = 1", { section })
           .getCount(),
-        this.couponRepository
-          .createQueryBuilder("coupon")
+        scopedCouponQuery()
           .where("coupon.discountType = :discountType", { discountType: "free_item" })
+          .andWhere(section ? "coupon.section = :section" : "1 = 1", { section })
           .getCount(),
-        this.couponUsageRepository.count()
+        section
+          ? this.couponUsageRepository
+              .createQueryBuilder("usage")
+              .innerJoin(Coupon, "coupon", "coupon.id = usage.couponId")
+              .where("coupon.section = :section", { section })
+              .getCount()
+          : this.couponUsageRepository.count()
       ]);
 
     return {

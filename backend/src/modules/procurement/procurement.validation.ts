@@ -17,12 +17,14 @@ const supplierBodySchema = z.object({
   storeName: z.string().trim().min(2, "Store name must be at least 2 characters").max(160).optional(),
   phone: z.string().trim().min(7, "Phone number is too short").max(20),
   address: z.string().trim().max(500).optional(),
+  section: z.enum(PURCHASE_SECTIONS).optional(),
   isActive: z.boolean().optional()
 });
 
 export const supplierListSchema = z.object({
   query: z.object({
     search: z.string().trim().optional(),
+    section: z.enum(PURCHASE_SECTIONS).optional(),
     includeInactive: z.coerce.boolean().optional(),
     page: z.coerce.number().int().min(1).default(1),
     limit: z.coerce.number().int().min(1).max(200).default(10)
@@ -165,10 +167,18 @@ const purchaseLineSchema = z
     lineType: z.enum(PURCHASE_LINE_TYPES),
     ingredientId: z.string().uuid("Invalid ingredient id").optional(),
     productId: z.string().uuid("Invalid product id").optional(),
+    productName: z.string().trim().min(2, "Product name must be at least 2 characters").max(160).optional(),
+    productPackSize: z.string().trim().max(60).optional(),
+    productCategory: z.string().trim().max(80).optional(),
+    productUnit: z.enum(PRODUCT_UNITS).optional(),
     quantity: z.coerce.number().positive("Quantity must be greater than zero"),
     quantityUnit: z.string().trim().optional(),
     unitPrice: z.coerce.number().min(0, "Unit price cannot be negative"),
+    gstPercentage: z.coerce.number().min(0, "GST percentage cannot be negative").optional(),
     gstValue: z.coerce.number().min(0, "GST value cannot be negative").optional().default(0),
+    sourceAmount: z.coerce.number().min(0, "Amount cannot be negative").optional(),
+    sourceGrandTotal: z.coerce.number().min(0, "Grand total cannot be negative").optional(),
+    sourceRowNumber: z.coerce.number().int().min(1, "Source row number must be positive").optional(),
     expiryDate: z.string().regex(datePattern, "Expiry date must be in YYYY-MM-DD format").optional(),
     note: z.string().trim().max(255).optional()
   })
@@ -205,11 +215,11 @@ const purchaseLineSchema = z
     }
 
     if (value.lineType === "product") {
-      if (!value.productId) {
+      if (!value.productId && !value.productName) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          message: "productId is required for product line",
-          path: ["productId"]
+          message: "productId or productName is required for product line",
+          path: ["productName"]
         });
       }
       if (value.ingredientId) {
@@ -230,14 +240,30 @@ const purchaseLineSchema = z
   });
 
 export const createPurchaseOrderSchema = z.object({
-  body: z.object({
-    supplierId: z.string().uuid("Invalid supplier id"),
-    purchaseDate: z.string().regex(datePattern, "Date must be in YYYY-MM-DD format").optional(),
-    purchaseSection: z.enum(PURCHASE_SECTIONS).default("dip_and_dash"),
-    note: z.string().trim().max(500).optional(),
-    invoiceImageUrl: z.string().trim().max(600, "Invoice image URL is too long").optional(),
-    lines: z.array(purchaseLineSchema).min(1, "At least one purchase line is required")
-  })
+  body: z
+    .object({
+      supplierId: z.string().uuid("Invalid supplier id").optional(),
+      supplierName: z.string().trim().min(2, "Vendor name must be at least 2 characters").max(140).optional(),
+      supplierPhone: z.string().trim().max(20).optional(),
+      purchaseDate: z.string().regex(datePattern, "Date must be in YYYY-MM-DD format").optional(),
+      purchaseSection: z.enum(PURCHASE_SECTIONS).default("dip_and_dash"),
+      note: z.string().trim().max(500).optional(),
+      vendorInvoiceNumber: z.string().trim().max(80).optional(),
+      projectName: z.string().trim().max(120).optional(),
+      purchaseMonth: z.string().trim().max(40).optional(),
+      receivedDate: z.string().regex(datePattern, "Received date must be in YYYY-MM-DD format").optional(),
+      invoiceImageUrl: z.string().trim().max(600, "Invoice image URL is too long").optional(),
+      lines: z.array(purchaseLineSchema).min(1, "At least one purchase line is required")
+    })
+    .superRefine((value, ctx) => {
+      if (!value.supplierId && !value.supplierName) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "supplierId or supplierName is required",
+          path: ["supplierName"]
+        });
+      }
+    })
 });
 
 export const updatePurchaseOrderSchema = z.object({
@@ -249,6 +275,10 @@ export const updatePurchaseOrderSchema = z.object({
     purchaseDate: z.string().regex(datePattern, "Date must be in YYYY-MM-DD format").optional(),
     purchaseSection: z.enum(PURCHASE_SECTIONS).default("dip_and_dash"),
     note: z.string().trim().max(500).optional(),
+    vendorInvoiceNumber: z.string().trim().max(80).optional(),
+    projectName: z.string().trim().max(120).optional(),
+    purchaseMonth: z.string().trim().max(40).optional(),
+    receivedDate: z.string().regex(datePattern, "Received date must be in YYYY-MM-DD format").optional(),
     invoiceImageUrl: z.string().trim().max(600, "Invoice image URL is too long").optional(),
     lines: z.array(purchaseLineSchema).min(1, "At least one purchase line is required")
   })
@@ -261,8 +291,23 @@ export const purchaseOrderListSchema = z.object({
     purchaseType: z.enum(PURCHASE_ORDER_TYPES).optional(),
     dateFrom: z.string().regex(datePattern, "Date must be in YYYY-MM-DD format").optional(),
     dateTo: z.string().regex(datePattern, "Date must be in YYYY-MM-DD format").optional(),
+    purchaseSection: z.enum(PURCHASE_SECTIONS).optional(),
     page: z.coerce.number().int().min(1).default(1),
     limit: z.coerce.number().int().min(1).max(200).default(10)
+  })
+});
+
+export const purchaseBulkImportHistorySchema = z.object({
+  query: z.object({
+    purchaseSection: z.enum(PURCHASE_SECTIONS).optional(),
+    page: z.coerce.number().int().min(1).default(1),
+    limit: z.coerce.number().int().min(1).max(100).default(20)
+  })
+});
+
+export const deletePurchaseBulkImportSchema = z.object({
+  params: z.object({
+    id: z.string().uuid("Invalid purchase bulk import id")
   })
 });
 
@@ -283,14 +328,16 @@ export const procurementMetaSchema = z.object({
     date: z.string().regex(datePattern, "Date must be in YYYY-MM-DD format").optional(),
     ingredientCategoryId: z.string().uuid("Invalid category id").optional(),
     ingredientSearch: z.string().trim().optional(),
-    productSearch: z.string().trim().optional()
+    productSearch: z.string().trim().optional(),
+    purchaseSection: z.enum(PURCHASE_SECTIONS).optional()
   })
 });
 
 export const procurementStatsSchema = z.object({
   query: z.object({
     dateFrom: z.string().regex(datePattern, "Date must be in YYYY-MM-DD format").optional(),
-    dateTo: z.string().regex(datePattern, "Date must be in YYYY-MM-DD format").optional()
+    dateTo: z.string().regex(datePattern, "Date must be in YYYY-MM-DD format").optional(),
+    purchaseSection: z.enum(PURCHASE_SECTIONS).optional()
   })
 });
 

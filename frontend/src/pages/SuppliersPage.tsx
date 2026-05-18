@@ -19,6 +19,7 @@ import {
 } from "@chakra-ui/react";
 import { Edit2, Plus, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useLocation } from "react-router-dom";
 
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import { EmptyState } from "@/components/common/EmptyState";
@@ -33,8 +34,9 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useAppToast } from "@/hooks/useAppToast";
 import { useModalCloseGuard } from "@/hooks/useModalCloseGuard";
 import { procurementService } from "@/services/procurement.service";
-import type { SupplierListItem } from "@/types/procurement";
+import type { PurchaseSection, SupplierListItem } from "@/types/procurement";
 import { extractErrorMessage } from "@/utils/api-error";
+import { businessScopeToPurchaseSection, getBusinessScopeFromSearch, getBusinessTitle } from "@/utils/business-scope";
 
 const defaultPagination = {
   page: 1,
@@ -73,10 +75,18 @@ type SupplierFormModalProps = {
   onClose: () => void;
   initialData: SupplierListItem | null;
   loading: boolean;
-  onSubmit: (payload: { name: string; storeName?: string; phone: string; address?: string; isActive: boolean }) => Promise<void>;
+  onSubmit: (payload: {
+    name: string;
+    storeName?: string;
+    phone: string;
+    address?: string;
+    section: PurchaseSection;
+    isActive: boolean;
+  }) => Promise<void>;
+  section: PurchaseSection;
 };
 
-const SupplierFormModal = ({ isOpen, onClose, initialData, loading, onSubmit }: SupplierFormModalProps) => {
+const SupplierFormModal = ({ isOpen, onClose, initialData, loading, onSubmit, section }: SupplierFormModalProps) => {
   const { isCloseConfirmOpen, requestClose, cancelCloseRequest, confirmClose } = useModalCloseGuard(onClose);
   const [name, setName] = useState("");
   const [storeName, setStoreName] = useState("");
@@ -101,6 +111,7 @@ const SupplierFormModal = ({ isOpen, onClose, initialData, loading, onSubmit }: 
       storeName: storeName.trim() || undefined,
       phone: phone.trim(),
       address: address.trim() || undefined,
+      section,
       isActive
     });
   };
@@ -156,7 +167,11 @@ const SupplierFormModal = ({ isOpen, onClose, initialData, loading, onSubmit }: 
 };
 
 export const SuppliersPage = () => {
+  const location = useLocation();
   const toast = useAppToast();
+  const businessScope = getBusinessScopeFromSearch(location.search);
+  const businessTitle = getBusinessTitle(businessScope);
+  const supplierSection = businessScopeToPurchaseSection(businessScope);
 
   const [rows, setRows] = useState<SupplierListItem[]>([]);
   const [stats, setStats] = useState({
@@ -185,6 +200,7 @@ export const SuppliersPage = () => {
     try {
       const response = await procurementService.getSuppliers({
         search: debouncedSearch || undefined,
+        section: supplierSection,
         includeInactive: true,
         page,
         limit
@@ -197,7 +213,7 @@ export const SuppliersPage = () => {
     } finally {
       setLoading(false);
     }
-  }, [debouncedSearch, limit, page, toast]);
+  }, [debouncedSearch, limit, page, supplierSection, toast]);
 
   useEffect(() => {
     void loadSuppliers();
@@ -205,7 +221,7 @@ export const SuppliersPage = () => {
 
   useEffect(() => {
     setPage(1);
-  }, [debouncedSearch, limit]);
+  }, [debouncedSearch, limit, supplierSection]);
 
   const handleCreateClick = () => {
     setSelectedSupplier(null);
@@ -227,6 +243,7 @@ export const SuppliersPage = () => {
     storeName?: string;
     phone: string;
     address?: string;
+    section: PurchaseSection;
     isActive: boolean;
   }) => {
     setMutationLoading(true);
@@ -350,8 +367,8 @@ export const SuppliersPage = () => {
   return (
     <VStack spacing={5} align="stretch">
       <PageHeader
-        title="Suppliers"
-        subtitle="Manage ingredient and product suppliers with purchase visibility."
+        title={`${businessTitle} Suppliers`}
+        subtitle={`Manage ${businessTitle} suppliers with scoped purchase visibility.`}
       />
 
       <SimpleGrid columns={{ base: 2, lg: 5 }} spacing={3}>
@@ -479,6 +496,7 @@ export const SuppliersPage = () => {
         }}
         initialData={selectedSupplier}
         loading={mutationLoading}
+        section={supplierSection}
         onSubmit={handleSubmitSupplier}
       />
 

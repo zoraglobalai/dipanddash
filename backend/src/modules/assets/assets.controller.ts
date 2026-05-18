@@ -30,6 +30,7 @@ export class AssetsController {
   listAssets = async (req: Request, res: Response): Promise<Response> => {
     const data = await this.assetsService.listAssets({
       search: typeof req.query.search === "string" ? req.query.search : undefined,
+      section: typeof req.query.section === "string" ? (req.query.section as never) : undefined,
       includeInactive: parseBoolean(req.query.includeInactive, false),
       page: parsePositiveInt(req.query.page, 1),
       limit: parsePositiveInt(req.query.limit, 10)

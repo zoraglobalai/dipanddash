@@ -19,6 +19,7 @@ import {
 } from "@chakra-ui/react";
 import { Edit2, Eye, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useLocation } from "react-router-dom";
 
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import { EmptyState } from "@/components/common/EmptyState";
@@ -38,6 +39,7 @@ import {
   type CashAuditStatsResponse
 } from "@/types/cash-audit";
 import { extractErrorMessage } from "@/utils/api-error";
+import { businessScopeToPurchaseSection, getBusinessScopeFromSearch } from "@/utils/business-scope";
 
 type AuditSection = "dip_and_dash" | "gaming";
 
@@ -109,12 +111,15 @@ const buildDenominationText = (counts: CashAuditRecord["denominationCounts"]) =>
 };
 
 export const CashAuditPage = () => {
+  const location = useLocation();
   const toast = useAppToast();
   const detailModal = useDisclosure();
   const editModal = useDisclosure();
   const deleteDialog = useDisclosure();
 
-  const [section, setSection] = useState<AuditSection>("dip_and_dash");
+  const businessSection = businessScopeToPurchaseSection(getBusinessScopeFromSearch(location.search));
+  const isSectionLocked = new URLSearchParams(location.search).has("business");
+  const [section, setSection] = useState<AuditSection>(businessSection);
   const [stats, setStats] = useState<CashAuditStatsResponse | null>(null);
   const [records, setRecords] = useState<CashAuditRecord[]>([]);
   const [selectedRecord, setSelectedRecord] = useState<CashAuditRecord | null>(null);
@@ -174,6 +179,14 @@ export const CashAuditPage = () => {
     void fetchData(pagination.page, pagination.limit, section);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (section === businessSection) {
+      return;
+    }
+    setSection(businessSection);
+    void fetchData(1, pagination.limit, businessSection);
+  }, [businessSection, fetchData, pagination.limit, section]);
 
   const handleRefresh = useCallback(() => {
     void fetchData(1, pagination.limit, section);
@@ -368,20 +381,22 @@ export const CashAuditPage = () => {
               {SECTION_META[section].description}
             </Text>
           </VStack>
-          <HStack>
-            <AppButton
-              variant={section === "dip_and_dash" ? "solid" : "outline"}
-              onClick={() => handleSectionChange("dip_and_dash")}
-            >
-              Dip & Dash Cash Audit
-            </AppButton>
-            <AppButton
-              variant={section === "gaming" ? "solid" : "outline"}
-              onClick={() => handleSectionChange("gaming")}
-            >
-              Gaming Cash Audit
-            </AppButton>
-          </HStack>
+          {!isSectionLocked ? (
+            <HStack>
+              <AppButton
+                variant={section === "dip_and_dash" ? "solid" : "outline"}
+                onClick={() => handleSectionChange("dip_and_dash")}
+              >
+                Dip & Dash Cash Audit
+              </AppButton>
+              <AppButton
+                variant={section === "gaming" ? "solid" : "outline"}
+                onClick={() => handleSectionChange("gaming")}
+              >
+                Gaming Cash Audit
+              </AppButton>
+            </HStack>
+          ) : null}
         </HStack>
       </AppCard>
 

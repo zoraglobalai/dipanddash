@@ -24,6 +24,7 @@ export type OfferItemMeta = {
 export type CouponListItem = {
   id: string;
   couponCode: string;
+  section: "dip_and_dash" | "gaming";
   title: string | null;
   description: string | null;
   discountType: CouponDiscountType;

@@ -8,6 +8,7 @@ export const APP_ROUTES = {
   SUPPLIERS: "/suppliers",
   PURCHASE: "/purchase",
   PURCHASE_PRODUCTS: "/purchase-products",
+  PRODUCTS_CONSUMPTION: "/products-consumption",
   ASSETS_ENTRY: "/assets-entry",
   ITEMS_ENTRY: "/items-entry",
   INGREDIENT_ENTRY: "/ingredient-entry",

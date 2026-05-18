@@ -176,9 +176,7 @@ export class PosCatalogService {
     const visibleCombos = isSnookerStaff ? [] : combos;
     const visibleComboItems = isSnookerStaff ? [] : comboItems;
     const visibleProducts = products.filter((product) =>
-      isSnookerStaff
-        ? product.targetSection === "gaming" || product.targetSection === "both"
-        : product.targetSection === "dip_and_dash" || product.targetSection === "both"
+      isSnookerStaff ? product.targetSection === "gaming" : product.targetSection === "dip_and_dash"
     );
 
     const allocationPoolMap = new Map<
@@ -375,19 +373,9 @@ export class PosCatalogService {
 
           let currentStock = normalizedTotal;
           if (isSnookerStaff) {
-            currentStock =
-              product.targetSection === "both"
-                ? normalizedGaming
-                : product.targetSection === "gaming"
-                  ? normalizedTotal
-                  : 0;
+            currentStock = product.targetSection === "gaming" ? normalizedTotal : 0;
           } else {
-            currentStock =
-              product.targetSection === "both"
-                ? normalizedDip
-                : product.targetSection === "dip_and_dash"
-                  ? normalizedTotal
-                  : 0;
+            currentStock = product.targetSection === "dip_and_dash" ? normalizedTotal : 0;
           }
 
           return {

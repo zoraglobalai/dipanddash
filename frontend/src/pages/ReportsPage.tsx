@@ -8,6 +8,7 @@ import {
 } from "@chakra-ui/react";
 import { Download, FileBarChart2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useLocation } from "react-router-dom";
 
 import { EmptyState } from "@/components/common/EmptyState";
 import { PageHeader } from "@/components/common/PageHeader";
@@ -17,10 +18,12 @@ import { AppInput } from "@/components/ui/AppInput";
 import { AppSearchableSelect } from "@/components/ui/AppSearchableSelect";
 import { DataTable } from "@/components/ui/DataTable";
 import { StatCard } from "@/components/ui/StatCard";
+import { customersService } from "@/services/customers.service";
 import { reportsService } from "@/services/reports.service";
 import type { GeneratedReportResponse, ReportCatalogItem, ReportRow } from "@/types/report";
 import { extractErrorMessage } from "@/utils/api-error";
 import { useAppToast } from "@/hooks/useAppToast";
+import { getBusinessScopeFromSearch, getBusinessTitle } from "@/utils/business-scope";
 
 const currencyFormatter = new Intl.NumberFormat("en-IN", {
   style: "currency",
@@ -37,6 +40,7 @@ const toCsvValue = (value: string | number | null) => {
 const STOCK_SNAPSHOT_NUMERIC_KEYS = new Set(["overallPurchase", "overallConsumption", "currentStock"]);
 const SNOOKER_REPORT_KEYS = new Set([
   "gaming_report",
+  "gaming_detailed_report",
   "cash_audit_report",
   "daily_sales_report",
   "customer_report",
@@ -114,11 +118,20 @@ const getDefaultRange = () => {
 
 export const ReportsPage = () => {
   const toast = useAppToast();
+  const location = useLocation();
   const defaultRange = useMemo(() => getDefaultRange(), []);
+  const scopedBusiness = new URLSearchParams(location.search).has("business");
+  const routeBusinessScope = getBusinessScopeFromSearch(location.search) as BusinessScope;
+  const businessTitle = getBusinessTitle(routeBusinessScope);
 
   const [catalog, setCatalog] = useState<ReportCatalogItem[]>([]);
-  const [businessScope, setBusinessScope] = useState<BusinessScope | "">("");
+  const [businessScope, setBusinessScope] = useState<BusinessScope | "">(scopedBusiness ? routeBusinessScope : "");
   const [selectedReportKey, setSelectedReportKey] = useState("");
+  const [selectedCustomerId, setSelectedCustomerId] = useState("");
+  const [customerOptions, setCustomerOptions] = useState<
+    Array<{ label: string; value: string; description?: string; searchText?: string }>
+  >([]);
+  const [customersLoading, setCustomersLoading] = useState(false);
   const [dateFrom, setDateFrom] = useState(defaultRange.from);
   const [dateTo, setDateTo] = useState(defaultRange.to);
   const [search, setSearch] = useState("");
@@ -162,6 +175,18 @@ export const ReportsPage = () => {
     );
   }, [businessScope, catalog]);
 
+  useEffect(() => {
+    if (scopedBusiness && businessScope !== routeBusinessScope) {
+      setBusinessScope(routeBusinessScope);
+      setSelectedReportKey("");
+      setSelectedCustomerId("");
+      setHasGenerated(false);
+      setReportData(null);
+      setSearch("");
+      setPage(1);
+    }
+  }, [businessScope, routeBusinessScope, scopedBusiness]);
+
   const selectedReport = useMemo(
     () => scopedCatalog.find((item) => item.key === selectedReportKey) ?? null,
     [scopedCatalog, selectedReportKey]
@@ -177,6 +202,7 @@ export const ReportsPage = () => {
   }, [businessScope, selectedReport, selectedReportKey]);
   const isStockConsumptionReport = selectedReportKey === "stock_consumption_report";
   const isSnookerStockSnapshotReport = selectedReportKey === "stock_report_snooker";
+  const showCustomerFilter = selectedReportKey === "customer_report" || selectedReportKey === "gaming_detailed_report";
 
   const fetchCatalog = useCallback(async () => {
     setLoading(true);
@@ -209,6 +235,7 @@ export const ReportsPage = () => {
           dateFrom,
           dateTo,
           search: nextSearch || undefined,
+          customerId: selectedCustomerId || undefined,
           page: nextPage,
           limit: nextLimit
         });
@@ -220,7 +247,7 @@ export const ReportsPage = () => {
         setReportLoading(false);
       }
     },
-    [businessScope, dateFrom, dateTo, limit, page, search, selectedReportKey, toast]
+    [businessScope, dateFrom, dateTo, limit, page, search, selectedCustomerId, selectedReportKey, toast]
   );
 
   useEffect(() => {
@@ -243,6 +270,44 @@ export const ReportsPage = () => {
     setDateTo(today);
   }, [isSnookerStockSnapshotReport]);
 
+  const loadCustomerOptions = useCallback(async () => {
+    if (!showCustomerFilter || !businessScope) {
+      setCustomerOptions([]);
+      return;
+    }
+
+    setCustomersLoading(true);
+    try {
+      const scope = businessScope === "snooker" ? "snooker" : "dip_and_dash";
+      let currentPage = 1;
+      let totalPages = 1;
+      const customers: Array<{ id: string; name: string; phone: string }> = [];
+      do {
+        const response = await customersService.getCustomers({ scope, page: currentPage, limit: 200 });
+        customers.push(...response.data.customers);
+        totalPages = response.data.pagination.totalPages;
+        currentPage += 1;
+      } while (currentPage <= totalPages);
+
+      setCustomerOptions(
+        customers.map((customer) => ({
+          label: customer.name,
+          value: customer.id,
+          description: customer.phone,
+          searchText: `${customer.name} ${customer.phone}`
+        }))
+      );
+    } catch (err) {
+      toast.error(extractErrorMessage(err, "Unable to fetch customers"));
+    } finally {
+      setCustomersLoading(false);
+    }
+  }, [businessScope, showCustomerFilter, toast]);
+
+  useEffect(() => {
+    void loadCustomerOptions();
+  }, [loadCustomerOptions]);
+
   const tableColumns = useMemo(() => {
     if (!reportData?.columns.length) {
       return [];
@@ -252,7 +317,10 @@ export const ReportsPage = () => {
       key: column.key,
       header: column.label,
       render: (row: ReportRow) => {
-        if (selectedReportKey === "gaming_report" && column.key === "overnightSession") {
+        if (
+          (selectedReportKey === "gaming_report" || selectedReportKey === "gaming_detailed_report") &&
+          column.key === "overnightSession"
+        ) {
           const raw = String(row[column.key] ?? "");
           const isOvernight = raw.toLowerCase().startsWith("yes");
           return (
@@ -344,6 +412,7 @@ export const ReportsPage = () => {
           dateFrom,
           dateTo,
           search: search || undefined,
+          customerId: selectedCustomerId || undefined,
           page: currentPage,
           limit: 500
         });
@@ -386,7 +455,7 @@ export const ReportsPage = () => {
     } finally {
       setExportLoading(false);
     }
-  }, [businessScope, dateFrom, dateTo, search, selectedReportKey, toast]);
+  }, [businessScope, dateFrom, dateTo, search, selectedCustomerId, selectedReportKey, toast]);
 
   const handleStockExport = useCallback(
     async (format: "excel" | "pdf") => {
@@ -440,7 +509,7 @@ export const ReportsPage = () => {
   return (
     <VStack align="stretch" spacing={6}>
       <PageHeader
-        title="Reports"
+        title={scopedBusiness ? `${businessTitle} Reports` : "Reports"}
         subtitle="Generate business reports with date range, searchable output and export-ready data."
         action={
           <HStack spacing={2}>
@@ -493,12 +562,14 @@ export const ReportsPage = () => {
             onValueChange={(value) => {
               setBusinessScope(value as BusinessScope | "");
               setSelectedReportKey("");
+              setSelectedCustomerId("");
               setHasGenerated(false);
               setReportData(null);
               setSearch("");
               setPage(1);
             }}
             placeholder="Select business"
+            isDisabled={scopedBusiness}
             isClearable={false}
           />
           <AppSearchableSelect
@@ -507,6 +578,7 @@ export const ReportsPage = () => {
             options={reportOptions}
             onValueChange={(value) => {
               setSelectedReportKey(value);
+              setSelectedCustomerId("");
               setHasGenerated(false);
               setReportData(null);
             }}
@@ -537,6 +609,21 @@ export const ReportsPage = () => {
                 setPage(1);
               }}
             />
+            {showCustomerFilter ? (
+              <AppSearchableSelect
+                label="Customer"
+                value={selectedCustomerId}
+                options={customerOptions}
+                onValueChange={(value) => {
+                  setSelectedCustomerId(value);
+                  setPage(1);
+                }}
+                placeholder={customersLoading ? "Loading customers" : "All customers"}
+                emptyText="No customers found."
+                isLoading={customersLoading}
+                isDisabled={customersLoading || !businessScope}
+              />
+            ) : null}
           <VStack align="stretch" spacing={1}>
             <Text fontWeight={600}>Rows per page</Text>
             <Select

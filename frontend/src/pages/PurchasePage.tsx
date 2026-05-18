@@ -28,8 +28,9 @@ import {
   VStack,
   useDisclosure
 } from "@chakra-ui/react";
-import { Download, Edit2, Eye, Plus, RotateCcw, Trash2, Upload } from "lucide-react";
+import { Download, Edit2, Eye, History, Plus, RotateCcw, Trash2, Upload } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { useLocation } from "react-router-dom";
 
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import { EmptyState } from "@/components/common/EmptyState";
@@ -63,18 +64,22 @@ import type {
   StockHealth,
   PurchaseSection,
   PurchaseLineType,
+  PurchaseBulkImportHistoryItem,
+  PurchaseBulkImportResult,
   PurchaseOrderDetail,
   PurchaseOrderSummary,
   SupplierListItem
 } from "@/types/procurement";
 import { extractErrorMessage } from "@/utils/api-error";
+import { businessScopeToPurchaseSection, getBusinessScopeFromSearch, getBusinessTitle } from "@/utils/business-scope";
 
 const defaultPagination = {
   page: 1,
-  limit: 5,
+  limit: 10,
   total: 0,
   totalPages: 1
 };
+const TABLE_PAGE_SIZE = 10;
 
 const formatCurrency = (value: number) =>
   new Intl.NumberFormat("en-IN", {
@@ -202,9 +207,12 @@ type DraftPurchaseLine = {
   ingredientCategoryId: string;
   ingredientId: string;
   productId: string;
+  productName: string;
+  productPackSize: string;
   quantity: string;
   quantityUnit: string;
   unitPrice: string;
+  gstPercentage: string;
   gstValue: string;
   expiryDate: string;
   note: string;
@@ -217,9 +225,12 @@ const createEmptyLine = (): DraftPurchaseLine => ({
   ingredientCategoryId: "",
   ingredientId: "",
   productId: "",
+  productName: "",
+  productPackSize: "",
   quantity: "1",
   quantityUnit: "",
   unitPrice: "0",
+  gstPercentage: "0",
   gstValue: "0",
   expiryDate: "",
   note: ""
@@ -230,6 +241,7 @@ type PurchaseOrderModalProps = {
   onClose: () => void;
   loading: boolean;
   mode: "create" | "edit";
+  initialPurchaseSection: PurchaseSection;
   isBootstrapping: boolean;
   meta: ProcurementMetaResponse | null;
   initialData: PurchaseOrderDetail | null;
@@ -246,6 +258,7 @@ const PurchaseOrderModal = memo(({
   onClose,
   loading,
   mode,
+  initialPurchaseSection,
   isBootstrapping,
   meta,
   initialData,
@@ -255,13 +268,20 @@ const PurchaseOrderModal = memo(({
   const isEditMode = mode === "edit";
   const { isCloseConfirmOpen, requestClose, cancelCloseRequest, confirmClose } = useModalCloseGuard(onClose);
   const [supplierId, setSupplierId] = useState("");
+  const [supplierName, setSupplierName] = useState("");
+  const [supplierPhone, setSupplierPhone] = useState("");
   const [purchaseDate, setPurchaseDate] = useState(getTodayDate());
   const [purchaseSection, setPurchaseSection] = useState<PurchaseSection>("dip_and_dash");
+  const [vendorInvoiceNumber, setVendorInvoiceNumber] = useState("");
+  const [projectName, setProjectName] = useState("");
+  const [purchaseMonth, setPurchaseMonth] = useState("");
+  const [receivedDate, setReceivedDate] = useState("");
   const [note, setNote] = useState("");
   const [lines, setLines] = useState<DraftPurchaseLine[]>([createEmptyLine()]);
   const [invoiceImageFile, setInvoiceImageFile] = useState<File | null>(null);
   const [invoiceImageUrl, setInvoiceImageUrl] = useState<string | undefined>(undefined);
   const [invoicePreviewUrl, setInvoicePreviewUrl] = useState("");
+  const isSnookerPurchase = purchaseSection === "gaming";
 
   useEffect(() => {
     if (!isOpen) {
@@ -273,8 +293,14 @@ const PurchaseOrderModal = memo(({
       }
       const nextDate = initialData.purchaseDate || getTodayDate();
       setSupplierId(initialData.supplierId);
+      setSupplierName(initialData.supplierName);
+      setSupplierPhone(initialData.supplierPhone);
       setPurchaseDate(nextDate);
       setPurchaseSection(initialData.purchaseSection ?? "dip_and_dash");
+      setVendorInvoiceNumber(initialData.vendorInvoiceNumber ?? "");
+      setProjectName(initialData.projectName ?? "");
+      setPurchaseMonth(initialData.purchaseMonth ?? "");
+      setReceivedDate(initialData.receivedDate ?? "");
       setNote(initialData.note ?? "");
       setInvoiceImageFile(null);
       setInvoiceImageUrl(initialData.invoiceImageUrl ?? undefined);
@@ -292,9 +318,12 @@ const PurchaseOrderModal = memo(({
             ingredientCategoryId: matchedIngredient?.categoryId ?? "",
             ingredientId: line.ingredientId ?? "",
             productId: line.productId ?? "",
+            productName: line.productId ? "" : line.itemNameSnapshot,
+            productPackSize: line.packSizeSnapshot ?? "",
             quantity: String(line.enteredQuantity ?? line.stockAdded),
             quantityUnit: line.enteredUnit ?? line.unit,
             unitPrice: String(line.unitPrice),
+            gstPercentage: String(line.gstPercentage ?? 0),
             gstValue: String(line.gstValue ?? 0),
             expiryDate: line.expiryDate ?? "",
             note: ""
@@ -309,17 +338,27 @@ const PurchaseOrderModal = memo(({
 
     const nextDate = meta?.date ?? getTodayDate();
     setSupplierId(meta?.suppliers[0]?.id ?? "");
+    setSupplierName("");
+    setSupplierPhone("");
     setPurchaseDate(nextDate);
-    setPurchaseSection("dip_and_dash");
+    setPurchaseSection(initialPurchaseSection);
+    setVendorInvoiceNumber("");
+    setProjectName(initialPurchaseSection === "gaming" ? "147-Snooker's" : "");
+    setPurchaseMonth("");
+    setReceivedDate("");
     setNote("");
-    setLines([createEmptyLine()]);
+    setLines([
+      initialPurchaseSection === "gaming"
+        ? { ...createEmptyLine(), lineType: "product", quantityUnit: "pcs" }
+        : createEmptyLine()
+    ]);
     setInvoiceImageFile(null);
     setInvoiceImageUrl(undefined);
     setInvoicePreviewUrl("");
     if (meta?.date !== nextDate) {
       void onLoadMetaForDate(nextDate);
     }
-  }, [initialData, isEditMode, isOpen, meta?.date, onLoadMetaForDate]);
+  }, [initialData, initialPurchaseSection, isEditMode, isOpen, meta?.date, onLoadMetaForDate]);
 
   useEffect(() => {
     return () => {
@@ -450,7 +489,10 @@ const PurchaseOrderModal = memo(({
   };
 
   const addLine = () => {
-    setLines((previous) => [...previous, createEmptyLine()]);
+    setLines((previous) => [
+      ...previous,
+      isSnookerPurchase ? { ...createEmptyLine(), lineType: "product", quantityUnit: "pcs" } : createEmptyLine()
+    ]);
   };
 
   const removeLine = (id: string) => {
@@ -472,6 +514,8 @@ const PurchaseOrderModal = memo(({
     const product = productById.get(productId);
     updateLine(line.id, {
       productId,
+      productName: "",
+      productPackSize: product?.packSize ?? line.productPackSize,
       quantityUnit: product?.unit ?? line.quantityUnit,
       unitPrice: product ? String(product.purchaseUnitPrice) : line.unitPrice
     });
@@ -500,13 +544,18 @@ const PurchaseOrderModal = memo(({
       .map((line) => {
         const quantity = Number(line.quantity);
         const unitPrice = Number(line.unitPrice);
+        const gstPercentage = Number(line.gstPercentage);
         const gstValue = Number(line.gstValue);
+        const sourceAmount = Number((quantity * unitPrice).toFixed(2));
+        const sourceGrandTotal = Number((sourceAmount + Math.max(0, gstValue)).toFixed(2));
         if (
           !Number.isFinite(quantity) ||
           !Number.isFinite(unitPrice) ||
+          !Number.isFinite(gstPercentage) ||
           !Number.isFinite(gstValue) ||
           quantity <= 0 ||
           unitPrice < 0 ||
+          gstPercentage < 0 ||
           gstValue < 0
         ) {
           return null;
@@ -514,35 +563,57 @@ const PurchaseOrderModal = memo(({
         if (line.lineType === "ingredient" && !line.ingredientId) {
           return null;
         }
-        if (line.lineType === "product" && !line.productId) {
+        if (line.lineType === "product" && !line.productId && !line.productName.trim()) {
           return null;
         }
         return {
           lineType: line.lineType,
           ingredientId: line.lineType === "ingredient" ? line.ingredientId || undefined : undefined,
           productId: line.lineType === "product" ? line.productId || undefined : undefined,
+          productName: line.lineType === "product" && !line.productId ? line.productName.trim() : undefined,
+          productPackSize:
+            line.lineType === "product" && !line.productId ? line.productPackSize.trim() || undefined : undefined,
+          productCategory:
+            line.lineType === "product" && !line.productId
+              ? purchaseSection === "gaming"
+                ? "Snooker Beverages"
+                : "General"
+              : undefined,
+          productUnit: line.lineType === "product" && !line.productId ? "pcs" : undefined,
           quantity,
-          quantityUnit: line.quantityUnit || undefined,
+          quantityUnit: line.quantityUnit || (line.lineType === "product" && !line.productId ? "pcs" : undefined),
           unitPrice,
+          gstPercentage,
           gstValue,
+          sourceAmount,
+          sourceGrandTotal,
           expiryDate: line.lineType === "product" ? line.expiryDate || undefined : undefined,
-          note: line.note.trim() || undefined
+          note: purchaseSection === "gaming" ? undefined : line.note.trim() || undefined
         } as CreatePurchaseLineInput;
       })
       .filter((line): line is CreatePurchaseLineInput => Boolean(line));
 
-    if (!supplierId || payloadLines.length !== lines.length) {
+    if (
+      payloadLines.length !== lines.length ||
+      (purchaseSection === "gaming" ? !supplierName.trim() : !supplierId)
+    ) {
       return;
     }
 
     await onSubmit({
-      supplierId,
+      supplierId: purchaseSection === "gaming" ? (isEditMode ? supplierId : undefined) : supplierId,
+      supplierName: purchaseSection === "gaming" ? supplierName.trim() : undefined,
+      supplierPhone: purchaseSection === "gaming" ? supplierPhone.trim() || undefined : undefined,
       purchaseDate,
       purchaseSection,
-      note: note.trim() || undefined,
-      invoiceImageUrl,
+      note: purchaseSection === "gaming" ? undefined : note.trim() || undefined,
+      vendorInvoiceNumber: purchaseSection === "gaming" ? vendorInvoiceNumber.trim() || undefined : undefined,
+      projectName: purchaseSection === "gaming" ? projectName.trim() || undefined : undefined,
+      purchaseMonth: purchaseSection === "gaming" ? purchaseMonth.trim() || undefined : undefined,
+      receivedDate: purchaseSection === "gaming" ? receivedDate || undefined : undefined,
+      invoiceImageUrl: purchaseSection === "gaming" ? undefined : invoiceImageUrl,
       lines: payloadLines,
-      invoiceImageFile
+      invoiceImageFile: purchaseSection === "gaming" ? null : invoiceImageFile
     });
   };
 
@@ -578,37 +649,80 @@ const PurchaseOrderModal = memo(({
               </Center>
             ) : (
               <VStack spacing={4} align="stretch">
-              <SimpleGrid columns={{ base: 1, md: 2, xl: 4 }} spacing={3}>
-                <AppSearchableSelect
-                  label="Supplier"
-                  value={supplierId}
-                  options={supplierOptions}
-                  onValueChange={setSupplierId}
-                  placeholder="Select supplier"
-                  searchPlaceholder="Search supplier"
-                />
-                <AppInput
-                  label="Purchase Date"
-                  type="date"
-                  value={purchaseDate}
-                  onChange={(event) => void handleDateChange((event.target as HTMLInputElement).value)}
-                />
-                <AppSearchableSelect
-                  label="This Purchase Is For"
-                  value={purchaseSection}
-                  options={PURCHASE_SECTION_OPTIONS}
-                  onValueChange={(value) => setPurchaseSection(value as PurchaseSection)}
-                  isClearable={false}
-                />
-                <Box border="1px solid" borderColor="rgba(133, 78, 48, 0.2)" borderRadius="12px" px={4} py={3} bg="white">
-                  <Text color="#6F594F" fontWeight={600} fontSize="sm">
-                    Draft Total
-                  </Text>
-                  <Text fontSize="2xl" fontWeight={900}>
-                    {formatCurrency(totalAmount)}
-                  </Text>
-                </Box>
-              </SimpleGrid>
+              {isSnookerPurchase ? (
+                <SimpleGrid columns={{ base: 1, md: 2, xl: 4 }} spacing={3}>
+                  <AppInput
+                    label="Vendor Name"
+                    value={supplierName}
+                    onChange={(event) => setSupplierName((event.target as HTMLInputElement).value)}
+                  />
+                  <AppInput
+                    label="Phone Number"
+                    value={supplierPhone}
+                    onChange={(event) => setSupplierPhone((event.target as HTMLInputElement).value)}
+                  />
+                  <AppInput
+                    label="Vendor Invoice No#"
+                    value={vendorInvoiceNumber}
+                    onChange={(event) => setVendorInvoiceNumber((event.target as HTMLInputElement).value)}
+                  />
+                  <AppInput
+                    label="Purchase Date"
+                    type="date"
+                    value={purchaseDate}
+                    onChange={(event) => void handleDateChange((event.target as HTMLInputElement).value)}
+                  />
+                  <AppInput
+                    label="Project Name"
+                    value={projectName}
+                    onChange={(event) => setProjectName((event.target as HTMLInputElement).value)}
+                  />
+                  <AppInput
+                    label="Month"
+                    value={purchaseMonth}
+                    onChange={(event) => setPurchaseMonth((event.target as HTMLInputElement).value)}
+                  />
+                  <AppInput
+                    label="Received Date"
+                    type="date"
+                    value={receivedDate}
+                    onChange={(event) => setReceivedDate((event.target as HTMLInputElement).value)}
+                  />
+                  <Box border="1px solid" borderColor="rgba(133, 78, 48, 0.2)" borderRadius="12px" px={4} py={3} bg="white">
+                    <Text color="#6F594F" fontWeight={600} fontSize="sm">
+                      Grand Total
+                    </Text>
+                    <Text fontSize="2xl" fontWeight={900}>
+                      {formatCurrency(totalAmount)}
+                    </Text>
+                  </Box>
+                </SimpleGrid>
+              ) : (
+                <SimpleGrid columns={{ base: 1, md: 2, xl: 4 }} spacing={3}>
+                  <AppSearchableSelect
+                    label="Supplier"
+                    value={supplierId}
+                    options={supplierOptions}
+                    onValueChange={setSupplierId}
+                    placeholder="Select supplier"
+                    searchPlaceholder="Search supplier"
+                  />
+                  <AppInput
+                    label="Purchase Date"
+                    type="date"
+                    value={purchaseDate}
+                    onChange={(event) => void handleDateChange((event.target as HTMLInputElement).value)}
+                  />
+                  <Box border="1px solid" borderColor="rgba(133, 78, 48, 0.2)" borderRadius="12px" px={4} py={3} bg="white">
+                    <Text color="#6F594F" fontWeight={600} fontSize="sm">
+                      Draft Total
+                    </Text>
+                    <Text fontSize="2xl" fontWeight={900}>
+                      {formatCurrency(totalAmount)}
+                    </Text>
+                  </Box>
+                </SimpleGrid>
+              )}
 
               {lines.map((line, index) => {
                 const selectedIngredient = ingredientById.get(line.ingredientId);
@@ -616,7 +730,7 @@ const PurchaseOrderModal = memo(({
                 const lineUnitOptions =
                   line.lineType === "ingredient"
                     ? selectedIngredient?.unitOptions ?? []
-                    : selectedProduct?.unitOptions ?? [];
+                    : selectedProduct?.unitOptions ?? ["pcs"];
                 const quantityNumber = Number(line.quantity);
                 const unitPriceNumber = Number(line.unitPrice);
                 const gstValueNumber = Number(line.gstValue);
@@ -629,6 +743,110 @@ const PurchaseOrderModal = memo(({
                   gstValueNumber >= 0
                     ? quantityNumber * unitPriceNumber + gstValueNumber
                     : 0;
+                const lineAmount =
+                  Number.isFinite(quantityNumber) && Number.isFinite(unitPriceNumber) && quantityNumber > 0 && unitPriceNumber >= 0
+                    ? quantityNumber * unitPriceNumber
+                    : 0;
+
+                if (isSnookerPurchase) {
+                  return (
+                    <AppCard
+                      key={line.id}
+                      p={{ base: 3, md: 4 }}
+                      border="1px solid"
+                      borderColor="rgba(133, 78, 48, 0.2)"
+                      bg="linear-gradient(160deg, #FFFFFF 0%, #FFF8EF 100%)"
+                    >
+                      <SimpleGrid columns={{ base: 1, md: 2, xl: 4 }} spacing={3}>
+                        <AppInput
+                          label="Description"
+                          value={line.productName}
+                          onChange={(event) =>
+                            updateLine(line.id, {
+                              lineType: "product",
+                              productName: (event.target as HTMLInputElement).value,
+                              productId: ""
+                            })
+                          }
+                        />
+                        <AppInput
+                          label="Alt Type"
+                          value={line.productPackSize}
+                          onChange={(event) =>
+                            updateLine(line.id, { productPackSize: (event.target as HTMLInputElement).value })
+                          }
+                        />
+                        <AppInput
+                          label="Purchase Qty"
+                          type="number"
+                          min={0}
+                          step="0.001"
+                          value={line.quantity}
+                          onChange={(event) =>
+                            updateLine(line.id, { quantity: (event.target as HTMLInputElement).value })
+                          }
+                        />
+                        <AppInput
+                          label="Unit price"
+                          type="number"
+                          min={0}
+                          step="0.01"
+                          value={line.unitPrice}
+                          onChange={(event) =>
+                            updateLine(line.id, { unitPrice: (event.target as HTMLInputElement).value })
+                          }
+                        />
+                        <AppInput label="Amount" value={lineAmount.toFixed(2)} isDisabled />
+                        <AppInput
+                          label="GST%"
+                          type="number"
+                          min={0}
+                          step="0.0001"
+                          value={line.gstPercentage}
+                          onChange={(event) =>
+                            updateLine(line.id, { gstPercentage: (event.target as HTMLInputElement).value })
+                          }
+                        />
+                        <AppInput
+                          label="Gst Amount"
+                          type="number"
+                          min={0}
+                          step="0.01"
+                          value={line.gstValue}
+                          onChange={(event) =>
+                            updateLine(line.id, { gstValue: (event.target as HTMLInputElement).value })
+                          }
+                        />
+                        <Box
+                          border="1px solid"
+                          borderColor="rgba(133, 78, 48, 0.2)"
+                          borderRadius="12px"
+                          p={3}
+                          bg="white"
+                        >
+                          <Text fontSize="sm" color="#6F594F" fontWeight={600}>
+                            Grand Total
+                          </Text>
+                          <Text mt={1} fontSize="xl" fontWeight={900} color="#2A1A14">
+                            {formatCurrency(lineTotal)}
+                          </Text>
+                        </Box>
+                        <FormControl>
+                          <FormLabel>Actions</FormLabel>
+                          <ActionIconButton
+                            aria-label="Remove line"
+                            tooltip="Remove line"
+                            icon={<Trash2 size={16} />}
+                            variant="outline"
+                            colorScheme="accentRed"
+                            onClick={() => removeLine(line.id)}
+                            isDisabled={lines.length <= 1}
+                          />
+                        </FormControl>
+                      </SimpleGrid>
+                    </AppCard>
+                  );
+                }
 
                 return (
                   <AppCard
@@ -651,6 +869,8 @@ const PurchaseOrderModal = memo(({
                             ingredientCategoryId: "",
                             ingredientId: "",
                             productId: "",
+                            productName: "",
+                            productPackSize: "",
                             quantityUnit: "",
                             unitPrice: "0",
                             gstValue: "0",
@@ -703,6 +923,26 @@ const PurchaseOrderModal = memo(({
                             onValueChange={(value) => handleProductPick(line, value)}
                             placeholder="Select product"
                             searchPlaceholder="Search product"
+                            emptyText="No product found. Type a new product below."
+                          />
+                          <AppInput
+                            label="New Product"
+                            value={line.productName}
+                            onChange={(event) =>
+                              updateLine(line.id, {
+                                productName: (event.target as HTMLInputElement).value,
+                                productId: ""
+                              })
+                            }
+                            placeholder="Type only if not in list"
+                          />
+                          <AppInput
+                            label="Pack / Alt Type"
+                            value={line.productPackSize}
+                            onChange={(event) =>
+                              updateLine(line.id, { productPackSize: (event.target as HTMLInputElement).value })
+                            }
+                            placeholder="TIN-300 ml"
                           />
                           <Box
                             border="1px solid"
@@ -838,72 +1078,76 @@ const PurchaseOrderModal = memo(({
                 </Text>
               </HStack>
 
-              <FormControl>
-                <FormLabel>Invoice Image (optional)</FormLabel>
-                <AppInput
-                  type="file"
-                  accept="image/png,image/jpeg,image/jpg,image/webp"
-                  p={1}
-                  onChange={(event) => {
-                    const target = event.target as HTMLInputElement;
-                    handleInvoiceFileChange(target.files?.[0] ?? null);
-                  }}
-                />
-                <Text mt={2} fontSize="xs" color="#7A6359">
-                  Upload supplier invoice image for future reference. Max size: 5 MB.
-                </Text>
-                {invoiceImageFile ? (
-                  <HStack
-                    mt={3}
-                    align="center"
-                    justify="space-between"
-                    p={3}
-                    border="1px solid"
-                    borderColor="rgba(133, 78, 48, 0.22)"
-                    borderRadius="12px"
-                    bg="white"
-                  >
-                    <HStack align="center" spacing={3}>
-                      {invoicePreviewUrl ? (
-                        <Box
-                          as="img"
-                          src={invoicePreviewUrl}
-                          alt="Invoice preview"
-                          w="56px"
-                          h="56px"
-                          borderRadius="10px"
-                          objectFit="cover"
-                          border="1px solid"
-                          borderColor="rgba(133, 78, 48, 0.2)"
-                        />
-                      ) : null}
-                      <Box>
-                        <Text fontWeight={700} color="#3C2A23">
-                          {invoiceImageFile.name}
-                        </Text>
-                        <Text fontSize="xs" color="#7A6359">
-                          {(invoiceImageFile.size / 1024 / 1024).toFixed(2)} MB
-                        </Text>
-                      </Box>
-                    </HStack>
-                    <AppButton variant="outline" size="sm" onClick={() => handleInvoiceFileChange(null)}>
-                      Remove
-                    </AppButton>
-                  </HStack>
-                ) : null}
-              </FormControl>
+              {!isSnookerPurchase ? (
+                <>
+                  <FormControl>
+                    <FormLabel>Invoice Image (optional)</FormLabel>
+                    <AppInput
+                      type="file"
+                      accept="image/png,image/jpeg,image/jpg,image/webp"
+                      p={1}
+                      onChange={(event) => {
+                        const target = event.target as HTMLInputElement;
+                        handleInvoiceFileChange(target.files?.[0] ?? null);
+                      }}
+                    />
+                    <Text mt={2} fontSize="xs" color="#7A6359">
+                      Upload supplier invoice image for future reference. Max size: 5 MB.
+                    </Text>
+                    {invoiceImageFile ? (
+                      <HStack
+                        mt={3}
+                        align="center"
+                        justify="space-between"
+                        p={3}
+                        border="1px solid"
+                        borderColor="rgba(133, 78, 48, 0.22)"
+                        borderRadius="12px"
+                        bg="white"
+                      >
+                        <HStack align="center" spacing={3}>
+                          {invoicePreviewUrl ? (
+                            <Box
+                              as="img"
+                              src={invoicePreviewUrl}
+                              alt="Invoice preview"
+                              w="56px"
+                              h="56px"
+                              borderRadius="10px"
+                              objectFit="cover"
+                              border="1px solid"
+                              borderColor="rgba(133, 78, 48, 0.2)"
+                            />
+                          ) : null}
+                          <Box>
+                            <Text fontWeight={700} color="#3C2A23">
+                              {invoiceImageFile.name}
+                            </Text>
+                            <Text fontSize="xs" color="#7A6359">
+                              {(invoiceImageFile.size / 1024 / 1024).toFixed(2)} MB
+                            </Text>
+                          </Box>
+                        </HStack>
+                        <AppButton variant="outline" size="sm" onClick={() => handleInvoiceFileChange(null)}>
+                          Remove
+                        </AppButton>
+                      </HStack>
+                    ) : null}
+                  </FormControl>
 
-              <FormControl>
-                <FormLabel>Note (optional)</FormLabel>
-                <Textarea
-                  value={note}
-                  onChange={(event) => setNote((event.target as HTMLTextAreaElement).value)}
-                  placeholder="Add purchase note"
-                  borderColor="rgba(193, 14, 14, 0.18)"
-                  focusBorderColor="brand.400"
-                  bg="white"
-                />
-              </FormControl>
+                  <FormControl>
+                    <FormLabel>Note (optional)</FormLabel>
+                    <Textarea
+                      value={note}
+                      onChange={(event) => setNote((event.target as HTMLTextAreaElement).value)}
+                      placeholder="Add purchase note"
+                      borderColor="rgba(193, 14, 14, 0.18)"
+                      focusBorderColor="brand.400"
+                      bg="white"
+                    />
+                  </FormControl>
+                </>
+              ) : null}
               </VStack>
             )}
           </ModalBody>
@@ -926,15 +1170,18 @@ const PurchaseOrderModal = memo(({
               isLoading={loading}
               isDisabled={
                 isBootstrapping ||
-                !supplierId ||
+                (isSnookerPurchase ? !supplierName.trim() : !supplierId) ||
+                !purchaseDate ||
                 lines.some(
                   (line) =>
+                    (isSnookerPurchase && !line.productName.trim()) ||
                     !line.quantity ||
-                    !line.quantityUnit ||
+                    (!isSnookerPurchase && !line.quantityUnit) ||
                     !line.unitPrice ||
                     !line.gstValue ||
-                    (line.lineType === "ingredient" && !line.ingredientId) ||
-                    (line.lineType === "product" && !line.productId)
+                    !line.gstPercentage ||
+                    (!isSnookerPurchase && line.lineType === "ingredient" && !line.ingredientId) ||
+                    (!isSnookerPurchase && line.lineType === "product" && !line.productId && !line.productName.trim())
                 )
               }
             >
@@ -962,6 +1209,7 @@ type ProductFormModalProps = {
   initialData: ProductListItem | null;
   suppliers: SupplierListItem[];
   units: string[];
+  forcedTargetSection?: ProductTargetSection;
   onSubmit: (payload: {
     name: string;
     category: string;
@@ -978,7 +1226,16 @@ type ProductFormModalProps = {
   }) => Promise<void>;
 };
 
-const ProductFormModal = memo(({ isOpen, onClose, loading, initialData, suppliers, units, onSubmit }: ProductFormModalProps) => {
+const ProductFormModal = memo(({
+  isOpen,
+  onClose,
+  loading,
+  initialData,
+  suppliers,
+  units,
+  forcedTargetSection,
+  onSubmit
+}: ProductFormModalProps) => {
   const { isCloseConfirmOpen, requestClose, cancelCloseRequest, confirmClose } = useModalCloseGuard(onClose);
   const [form, setForm] = useState({
     name: "",
@@ -1007,13 +1264,13 @@ const ProductFormModal = memo(({ isOpen, onClose, loading, initialData, supplier
       unit: (initialData?.unit ?? units[0] ?? "pcs") as ProductUnit,
       minStock: String(initialData?.minStock ?? 0),
       sellingPrice: String(initialData?.sellingPrice ?? 0),
-      targetSection: initialData?.targetSection ?? "dip_and_dash",
+      targetSection: forcedTargetSection ?? initialData?.targetSection ?? "dip_and_dash",
       dipAndDashAssignedStock: String(initialData?.dipAndDashAssignedStock ?? 0),
       gamingAssignedStock: String(initialData?.gamingAssignedStock ?? 0),
       defaultSupplierId: initialData?.defaultSupplierId ?? "",
       isActive: initialData?.isActive ?? true
     });
-  }, [initialData, isOpen, units]);
+  }, [forcedTargetSection, initialData, isOpen, units]);
 
   const splitCurrentStock = Number(initialData?.currentStock ?? 0);
   const dipAndDashAssignedStock = Math.max(0, Number(form.dipAndDashAssignedStock || 0));
@@ -1053,9 +1310,9 @@ const ProductFormModal = memo(({ isOpen, onClose, loading, initialData, supplier
       unit: form.unit,
       minStock: Number(form.minStock),
       sellingPrice: Number(form.sellingPrice),
-      targetSection: form.targetSection,
-      dipAndDashAssignedStock: form.targetSection === "both" ? dipAndDashAssignedStock : undefined,
-      gamingAssignedStock: form.targetSection === "both" ? gamingAssignedStock : undefined,
+      targetSection: forcedTargetSection ?? form.targetSection,
+      dipAndDashAssignedStock: !forcedTargetSection && form.targetSection === "both" ? dipAndDashAssignedStock : undefined,
+      gamingAssignedStock: !forcedTargetSection && form.targetSection === "both" ? gamingAssignedStock : undefined,
       defaultSupplierId: form.defaultSupplierId || null,
       isActive: form.isActive
     });
@@ -1133,15 +1390,22 @@ const ProductFormModal = memo(({ isOpen, onClose, loading, initialData, supplier
                     setForm((prev) => ({ ...prev, sellingPrice: (event.target as HTMLInputElement).value }))
                   }
                 />
-                <AppSearchableSelect
-                  label="Assign To"
-                  value={form.targetSection}
-                  options={PRODUCT_TARGET_SECTION_OPTIONS}
-                  onValueChange={(value) =>
-                    setForm((prev) => ({ ...prev, targetSection: value as ProductTargetSection }))
-                  }
-                  isClearable={false}
-                />
+                {forcedTargetSection ? (
+                  <AppCard p={3} bg="rgba(255, 250, 242, 0.95)" borderColor="rgba(133, 78, 48, 0.22)">
+                    <Text fontSize="xs" color="#7B645B">Assigned To</Text>
+                    <Text fontWeight={900}>{formatTargetSectionLabel(forcedTargetSection)}</Text>
+                  </AppCard>
+                ) : (
+                  <AppSearchableSelect
+                    label="Assign To"
+                    value={form.targetSection}
+                    options={PRODUCT_TARGET_SECTION_OPTIONS}
+                    onValueChange={(value) =>
+                      setForm((prev) => ({ ...prev, targetSection: value as ProductTargetSection }))
+                    }
+                    isClearable={false}
+                  />
+                )}
               </SimpleGrid>
               {form.targetSection === "both" ? (
                 <AppCard p={3} bg="rgba(255, 250, 242, 0.95)" borderColor="rgba(133, 78, 48, 0.22)">
@@ -1228,6 +1492,7 @@ const ProductFormModal = memo(({ isOpen, onClose, loading, initialData, supplier
 ProductFormModal.displayName = "ProductFormModal";
 
 type ProductLedgerRow = ProductDayLedgerResponse["rows"][number];
+type PurchaseBulkRowDetail = PurchaseBulkImportResult["rowDetails"][number] & { id: string };
 type ProductStockHistoryPurchaseRow = ProductStockHistoryResponse["purchases"]["rows"][number];
 type ProductStockHistoryConsumptionRow = ProductStockHistoryResponse["consumptions"]["rows"][number];
 
@@ -1473,7 +1738,12 @@ type PurchasePageProps = {
 };
 
 export const PurchasePage = ({ initialSection = "orders", standalone = false }: PurchasePageProps) => {
+  const location = useLocation();
   const toast = useAppToast();
+  const businessScope = getBusinessScopeFromSearch(location.search);
+  const businessTitle = getBusinessTitle(businessScope);
+  const scopedPurchaseSection = businessScopeToPurchaseSection(businessScope);
+  const scopedTargetSection = scopedPurchaseSection as ProductTargetSection;
   const initialTabIndex = initialSection === "products" ? 1 : 0;
   const [activeTabIndex, setActiveTabIndex] = useState(initialTabIndex);
 
@@ -1498,7 +1768,7 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
   const debouncedOrderSearch = useDebouncedValue(orderSearch, 350);
   const [orderSupplierFilter, setOrderSupplierFilter] = useState("");
   const [orderPage, setOrderPage] = useState(1);
-  const [orderLimit, setOrderLimit] = useState(5);
+  const [orderLimit, setOrderLimit] = useState(TABLE_PAGE_SIZE);
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
 
@@ -1538,7 +1808,7 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
   const [productCategoryFilter, setProductCategoryFilter] = useState("");
   const [productSupplierFilter, setProductSupplierFilter] = useState("");
   const [productPage, setProductPage] = useState(1);
-  const [productLimit, setProductLimit] = useState(5);
+  const [productLimit, setProductLimit] = useState(TABLE_PAGE_SIZE);
   const [productLedgerRows, setProductLedgerRows] = useState<ProductDayLedgerResponse["rows"]>([]);
   const [productLedgerPagination, setProductLedgerPagination] = useState(defaultPagination);
   const [productLedgerStats, setProductLedgerStats] = useState<ProductDayLedgerResponse["stats"]>({
@@ -1556,26 +1826,36 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
   const [productLedgerProductId, setProductLedgerProductId] = useState("");
   const [productLedgerSearch, setProductLedgerSearch] = useState("");
   const debouncedProductLedgerSearch = useDebouncedValue(productLedgerSearch, 350);
-  const [productLedgerTargetSection, setProductLedgerTargetSection] = useState("");
+  const [productLedgerTargetSection, setProductLedgerTargetSection] = useState<ProductTargetSection>(scopedTargetSection);
   const [productLedgerPage, setProductLedgerPage] = useState(1);
-  const [productLedgerLimit, setProductLedgerLimit] = useState(12);
+  const [productLedgerLimit, setProductLedgerLimit] = useState(TABLE_PAGE_SIZE);
 
   const [mutationLoading, setMutationLoading] = useState(false);
   const [purchaseBulkTemplateLoading, setPurchaseBulkTemplateLoading] = useState(false);
   const [purchaseBulkUploadLoading, setPurchaseBulkUploadLoading] = useState(false);
+  const [purchaseBulkHistoryLoading, setPurchaseBulkHistoryLoading] = useState(false);
+  const [purchaseBulkHistoryRows, setPurchaseBulkHistoryRows] = useState<PurchaseBulkImportHistoryItem[]>([]);
+  const [purchaseBulkHistoryPagination, setPurchaseBulkHistoryPagination] = useState(defaultPagination);
+  const [purchaseBulkHistoryPage, setPurchaseBulkHistoryPage] = useState(1);
   const [productBulkTemplateLoading, setProductBulkTemplateLoading] = useState(false);
   const [productBulkUploadLoading, setProductBulkUploadLoading] = useState(false);
   const [orderFormMode, setOrderFormMode] = useState<"create" | "edit">("create");
+  const [newPurchaseSection, setNewPurchaseSection] = useState<PurchaseSection>(scopedPurchaseSection);
   const [orderFormBootstrapping, setOrderFormBootstrapping] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<PurchaseOrderDetail | null>(null);
   const [editingOrder, setEditingOrder] = useState<PurchaseOrderDetail | null>(null);
   const [selectedOrderToDelete, setSelectedOrderToDelete] = useState<PurchaseOrderSummary | null>(null);
+  const [purchaseBulkImportToDelete, setPurchaseBulkImportToDelete] = useState<PurchaseBulkImportHistoryItem | null>(null);
   const [selectedProduct, setSelectedProduct] = useState<ProductListItem | null>(null);
   const [selectedProductToDelete, setSelectedProductToDelete] = useState<{ id: string; name: string } | null>(null);
   const [editingLedgerRow, setEditingLedgerRow] = useState<ProductLedgerRow | null>(null);
   const [ledgerRowToReset, setLedgerRowToReset] = useState<ProductLedgerRow | null>(null);
   const [ledgerRowToDelete, setLedgerRowToDelete] = useState<ProductLedgerRow | null>(null);
+  const [purchaseBulkSummary, setPurchaseBulkSummary] = useState<PurchaseBulkImportResult | null>(null);
+  const [purchaseBulkDetailsPage, setPurchaseBulkDetailsPage] = useState(1);
   const purchaseBulkInputRef = useRef<HTMLInputElement | null>(null);
+  const purchaseBulkHistorySectionRef = useRef<HTMLDivElement | null>(null);
+  const purchaseBulkDetailsSectionRef = useRef<HTMLDivElement | null>(null);
   const productBulkInputRef = useRef<HTMLInputElement | null>(null);
   const orderDetailCacheRef = useRef<Map<string, PurchaseOrderDetail>>(new Map());
 
@@ -1583,6 +1863,7 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
   const orderDetailModal = useDisclosure();
   const productModal = useDisclosure();
   const deleteOrderDialog = useDisclosure();
+  const deletePurchaseBulkDialog = useDisclosure();
   const deleteProductDialog = useDisclosure();
   const ledgerEditModal = useDisclosure();
   const resetLedgerDialog = useDisclosure();
@@ -1592,23 +1873,28 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
   const loadMeta = useCallback(
     async (date?: string) => {
       try {
-        const response = await procurementService.getMeta({ date });
+        const response = await procurementService.getMeta({ date, purchaseSection: scopedPurchaseSection });
         setMeta(response.data);
       } catch (error) {
         toast.error("Unable to fetch procurement meta", extractErrorMessage(error));
       }
     },
-    [toast]
+    [scopedPurchaseSection, toast]
   );
 
   const loadSuppliers = useCallback(async () => {
     try {
-      const response = await procurementService.getSuppliers({ includeInactive: true, page: 1, limit: 100 });
+      const response = await procurementService.getSuppliers({
+        includeInactive: true,
+        section: scopedPurchaseSection,
+        page: 1,
+        limit: 100
+      });
       setSuppliers(response.data.suppliers);
     } catch (error) {
       toast.error("Unable to fetch suppliers", extractErrorMessage(error));
     }
-  }, [toast]);
+  }, [scopedPurchaseSection, toast]);
 
   const loadUnits = useCallback(async () => {
     try {
@@ -1623,14 +1909,15 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
     try {
       const response = await procurementService.getStats({
         dateFrom: dateFrom || undefined,
-        dateTo: dateTo || undefined
+        dateTo: dateTo || undefined,
+        purchaseSection: scopedPurchaseSection
       });
       setStats(response.data.summary);
       setRecentPurchases(response.data.recentPurchases);
     } catch (error) {
       toast.error("Unable to fetch purchase stats", extractErrorMessage(error));
     }
-  }, [dateFrom, dateTo, toast]);
+  }, [dateFrom, dateTo, scopedPurchaseSection, toast]);
 
   const loadOrders = useCallback(async () => {
     setOrdersLoading(true);
@@ -1638,6 +1925,7 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
       const response = await procurementService.getPurchaseOrders({
         search: debouncedOrderSearch || undefined,
         supplierId: orderSupplierFilter || undefined,
+        purchaseSection: scopedPurchaseSection,
         dateFrom: dateFrom || undefined,
         dateTo: dateTo || undefined,
         page: orderPage,
@@ -1651,7 +1939,7 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
     } finally {
       setOrdersLoading(false);
     }
-  }, [dateFrom, dateTo, debouncedOrderSearch, orderLimit, orderPage, orderSupplierFilter, toast]);
+  }, [dateFrom, dateTo, debouncedOrderSearch, orderLimit, orderPage, orderSupplierFilter, scopedPurchaseSection, toast]);
 
   const loadProducts = useCallback(async () => {
     setProductsLoading(true);
@@ -1660,6 +1948,7 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
         search: debouncedProductSearch || undefined,
         category: productCategoryFilter || undefined,
         supplierId: productSupplierFilter || undefined,
+        targetSection: scopedTargetSection,
         includeInactive: true,
         page: productPage,
         limit: productLimit
@@ -1672,13 +1961,14 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
     } finally {
       setProductsLoading(false);
     }
-  }, [debouncedProductSearch, productCategoryFilter, productLimit, productPage, productSupplierFilter, toast]);
+  }, [debouncedProductSearch, productCategoryFilter, productLimit, productPage, productSupplierFilter, scopedTargetSection, toast]);
 
   const loadStockOverview = useCallback(async () => {
     setStockOverviewLoading(true);
     try {
       const response = await procurementService.getProducts({
         search: debouncedStockOverviewSearch || undefined,
+        targetSection: scopedTargetSection,
         includeInactive: true,
         page: stockOverviewPage,
         limit: stockOverviewLimit
@@ -1690,7 +1980,7 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
     } finally {
       setStockOverviewLoading(false);
     }
-  }, [debouncedStockOverviewSearch, stockOverviewPage, toast]);
+  }, [debouncedStockOverviewSearch, scopedTargetSection, stockOverviewPage, toast]);
 
   const loadProductStockHistory = useCallback(async () => {
     if (!stockHistoryProduct) {
@@ -1727,7 +2017,7 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
         dateTo: productLedgerDateTo || undefined,
         productId: productLedgerProductId || undefined,
         search: debouncedProductLedgerSearch || undefined,
-        targetSection: (productLedgerTargetSection || undefined) as ProductTargetSection | undefined,
+        targetSection: productLedgerTargetSection,
         page: productLedgerPage,
         limit: productLedgerLimit
       });
@@ -1755,12 +2045,21 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
   }, [loadSuppliers, loadUnits, loadMeta]);
 
   useEffect(() => {
+    setNewPurchaseSection(scopedPurchaseSection);
+    setProductLedgerTargetSection(scopedTargetSection);
+    setOrderPage(1);
+    setProductPage(1);
+    setStockOverviewPage(1);
+    setProductLedgerPage(1);
+  }, [scopedPurchaseSection, scopedTargetSection]);
+
+  useEffect(() => {
     void loadOrders();
   }, [loadOrders]);
 
   useEffect(() => {
     setOrderPage(1);
-  }, [debouncedOrderSearch, orderSupplierFilter, orderLimit, dateFrom, dateTo]);
+  }, [debouncedOrderSearch, orderSupplierFilter, orderLimit, dateFrom, dateTo, scopedPurchaseSection]);
 
   useEffect(() => {
     void loadProducts();
@@ -1779,11 +2078,11 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
 
   useEffect(() => {
     setProductPage(1);
-  }, [debouncedProductSearch, productCategoryFilter, productSupplierFilter, productLimit]);
+  }, [debouncedProductSearch, productCategoryFilter, productSupplierFilter, productLimit, scopedTargetSection]);
 
   useEffect(() => {
     setStockOverviewPage(1);
-  }, [debouncedStockOverviewSearch]);
+  }, [debouncedStockOverviewSearch, scopedTargetSection]);
 
   useEffect(() => {
     void loadProductLedger();
@@ -1818,8 +2117,8 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
   }, [productRows]);
 
   const ledgerTargetSectionOptions: AppSearchableSelectOption[] = useMemo(
-    () => [{ value: "", label: "All Sections" }, ...PRODUCT_TARGET_SECTION_OPTIONS],
-    []
+    () => [{ value: scopedTargetSection, label: formatTargetSectionLabel(scopedTargetSection) }],
+    [scopedTargetSection]
   );
   const ledgerProductOptions: AppSearchableSelectOption[] = useMemo(() => {
     const productMap = new Map<string, AppSearchableSelectOption>();
@@ -1882,11 +2181,16 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
     productModal.onOpen();
   };
 
-  const openCreateOrder = () => {
+  const openCreateOrderForSection = (section: PurchaseSection) => {
+    setNewPurchaseSection(section);
     setOrderFormMode("create");
     setOrderFormBootstrapping(false);
     setEditingOrder(null);
     orderModal.onOpen();
+  };
+
+  const openCreateOrder = () => {
+    openCreateOrderForSection(scopedPurchaseSection);
   };
 
   const openEditProduct = (row: ProductListItem) => {
@@ -1966,6 +2270,7 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
   const openEditOrder = useCallback(
     async (row: PurchaseOrderSummary) => {
       setOrderFormMode("edit");
+      setNewPurchaseSection(row.purchaseSection);
       setOrderFormBootstrapping(true);
       const cached = orderDetailCacheRef.current.get(row.id);
       if (cached) {
@@ -2000,6 +2305,14 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
     [deleteOrderDialog]
   );
 
+  const openDeletePurchaseBulkImport = useCallback(
+    (row: PurchaseBulkImportHistoryItem) => {
+      setPurchaseBulkImportToDelete(row);
+      deletePurchaseBulkDialog.onOpen();
+    },
+    [deletePurchaseBulkDialog]
+  );
+
   const openPurchaseBulkPicker = useCallback(() => {
     purchaseBulkInputRef.current?.click();
   }, []);
@@ -2007,6 +2320,40 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
   const openProductBulkPicker = useCallback(() => {
     productBulkInputRef.current?.click();
   }, []);
+
+  const loadPurchaseBulkHistory = useCallback(
+    async (page = purchaseBulkHistoryPage) => {
+      setPurchaseBulkHistoryLoading(true);
+      try {
+        const response = await procurementService.getPurchaseBulkImportHistory({
+          purchaseSection: scopedPurchaseSection,
+          page,
+          limit: 10
+        });
+        setPurchaseBulkHistoryRows(response.data.imports);
+        setPurchaseBulkHistoryPagination(response.data.pagination);
+      } catch (error) {
+        toast.error("Unable to fetch upload history", extractErrorMessage(error));
+      } finally {
+        setPurchaseBulkHistoryLoading(false);
+      }
+    },
+    [purchaseBulkHistoryPage, scopedPurchaseSection, toast]
+  );
+
+  const openPurchaseBulkHistory = useCallback(() => {
+    void loadPurchaseBulkHistory(1);
+    setPurchaseBulkHistoryPage(1);
+    window.setTimeout(() => {
+      purchaseBulkHistorySectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 50);
+  }, [loadPurchaseBulkHistory]);
+
+  useEffect(() => {
+    if (activeTabIndex === 0) {
+      void loadPurchaseBulkHistory(purchaseBulkHistoryPage);
+    }
+  }, [activeTabIndex, loadPurchaseBulkHistory, purchaseBulkHistoryPage]);
 
   const handleDownloadPurchaseTemplate = useCallback(async () => {
     setPurchaseBulkTemplateLoading(true);
@@ -2038,16 +2385,20 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
       if (!selectedFile) {
         return;
       }
-      if (!selectedFile.name.toLowerCase().endsWith(".csv")) {
-        toast.warning("Please upload a CSV file.");
+      const lowerFileName = selectedFile.name.toLowerCase();
+      if (!lowerFileName.endsWith(".csv") && !lowerFileName.endsWith(".xlsx")) {
+        toast.warning("Please upload a CSV or XLSX file.");
         return;
       }
 
       setPurchaseBulkUploadLoading(true);
       try {
         const response = await procurementService.importPurchaseBulkCsv(selectedFile);
+        const summary = response.data;
+        setPurchaseBulkSummary(summary);
+        setPurchaseBulkDetailsPage(1);
         toast.success(
-          `Imported ${response.data.purchaseNumber} with ${response.data.lineCount} lines (${response.data.ingredientLineCount} ingredients, ${response.data.productLineCount} products).`
+          `Purchase import done. Inserted ${summary.insertedRows}, skipped duplicates ${summary.skippedDuplicateRows}, failed ${summary.failedRows}, products created ${summary.createdProducts}.`
         );
         await Promise.all([
           loadOrders(),
@@ -2055,16 +2406,27 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
           loadStockOverview(),
           loadProductLedger(),
           loadStats(),
-          loadMeta(response.data.purchaseDate),
-          loadSuppliers()
+          loadMeta(summary.createdOrders[0]?.purchaseDate ?? getTodayDate()),
+          loadSuppliers(),
+          loadPurchaseBulkHistory(1)
         ]);
       } catch (error) {
-        toast.error("Unable to import purchase CSV", extractErrorMessage(error));
+        toast.error("Unable to import purchase file", extractErrorMessage(error));
       } finally {
         setPurchaseBulkUploadLoading(false);
       }
     },
-    [loadMeta, loadOrders, loadProductLedger, loadProducts, loadStats, loadStockOverview, loadSuppliers, toast]
+    [
+      loadMeta,
+      loadOrders,
+      loadProductLedger,
+      loadProducts,
+      loadStats,
+      loadStockOverview,
+      loadSuppliers,
+      loadPurchaseBulkHistory,
+      toast
+    ]
   );
 
   const handleDownloadProductTemplate = useCallback(async () => {
@@ -2327,15 +2689,76 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
     }
   };
 
+  const handleDeletePurchaseBulkImport = async () => {
+    if (!purchaseBulkImportToDelete) {
+      return;
+    }
+    setMutationLoading(true);
+    try {
+      const response = await procurementService.deletePurchaseBulkImport(purchaseBulkImportToDelete.id);
+      const deletedOrderIds = new Set(response.data.deletedOrders.map((order) => order.id));
+      response.data.deletedOrders.forEach((order) => orderDetailCacheRef.current.delete(order.id));
+
+      if (selectedOrder && deletedOrderIds.has(selectedOrder.id)) {
+        setSelectedOrder(null);
+        orderDetailModal.onClose();
+      }
+      if (editingOrder && deletedOrderIds.has(editingOrder.id)) {
+        setEditingOrder(null);
+        setOrderFormBootstrapping(false);
+        setOrderFormMode("create");
+        orderModal.onClose();
+      }
+
+      const nextHistoryPage =
+        purchaseBulkHistoryRows.length === 1 && purchaseBulkHistoryPage > 1
+          ? purchaseBulkHistoryPage - 1
+          : purchaseBulkHistoryPage;
+      setPurchaseBulkHistoryPage(nextHistoryPage);
+      setPurchaseBulkSummary((current) => {
+        const currentImportId = current?.importId ?? (current as PurchaseBulkImportHistoryItem | null)?.id;
+        return currentImportId === purchaseBulkImportToDelete.id ? null : current;
+      });
+      setPurchaseBulkImportToDelete(null);
+      deletePurchaseBulkDialog.onClose();
+
+      toast.success(
+        "Bulk upload deleted successfully",
+        `${response.data.deletedOrderCount} purchase orders deleted and stock rolled back.`
+      );
+      await Promise.all([
+        loadPurchaseBulkHistory(nextHistoryPage),
+        loadOrders(),
+        loadProducts(),
+        loadStockOverview(),
+        loadProductLedger(),
+        loadStats(),
+        loadMeta(meta?.date)
+      ]);
+    } catch (error) {
+      toast.error("Unable to delete bulk upload", extractErrorMessage(error));
+    } finally {
+      setMutationLoading(false);
+    }
+  };
+
   const latestPurchase = recentPurchases[0] ?? null;
   const isOrdersSection = activeTabIndex === 0;
   const isStandaloneProducts = standalone && initialSection === "products";
   const topSoldProduct = productStats.topSoldProducts[0] ?? null;
-  const pageTitle = standalone && initialSection === "products" ? "Products" : "Purchase";
+  const pageTitle = standalone && initialSection === "products" ? `${businessTitle} Products` : `${businessTitle} Purchase`;
   const pageSubtitle =
     standalone && initialSection === "products"
-      ? "Manage packaged products with stock, valuation and ageing visibility."
-      : "Manage supplier purchases, ingredient restocking and packaged products.";
+      ? `Manage ${businessTitle} products with stock, valuation and ageing visibility.`
+      : `Manage ${businessTitle} supplier purchases and stock entries.`;
+  const purchaseBulkRowDetails: PurchaseBulkRowDetail[] =
+    purchaseBulkSummary?.rowDetails.map((row) => ({ ...row, id: `upload-row-${row.rowNumber}-${row.status}` })) ?? [];
+  const purchaseBulkDetailsTotalPages = Math.max(1, Math.ceil(purchaseBulkRowDetails.length / TABLE_PAGE_SIZE));
+  const purchaseBulkDetailsCurrentPage = Math.min(purchaseBulkDetailsPage, purchaseBulkDetailsTotalPages);
+  const paginatedPurchaseBulkRowDetails = purchaseBulkRowDetails.slice(
+    (purchaseBulkDetailsCurrentPage - 1) * TABLE_PAGE_SIZE,
+    purchaseBulkDetailsCurrentPage * TABLE_PAGE_SIZE
+  );
   const orderColumns = useMemo(
     () => [
       { key: "purchaseNumber", header: "Purchase No", render: (row: PurchaseOrderSummary) => <Text fontWeight={800}>{row.purchaseNumber}</Text> },
@@ -2592,7 +3015,7 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
       <Input
         ref={purchaseBulkInputRef}
         type="file"
-        accept=".csv,text/csv"
+        accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         display="none"
         onChange={(event) => void handlePurchaseBulkFileSelect(event)}
       />
@@ -2650,7 +3073,15 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
                   onClick={openPurchaseBulkPicker}
                   isLoading={purchaseBulkUploadLoading}
                 >
-                  Upload CSV
+                  Upload
+                </AppButton>
+                <AppButton
+                  variant="outline"
+                  leftIcon={<History size={16} />}
+                  onClick={openPurchaseBulkHistory}
+                  isLoading={purchaseBulkHistoryLoading}
+                >
+                  History
                 </AppButton>
               </>
             ) : (
@@ -2726,13 +3157,12 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
                     <Select
                       value={orderLimit}
                       onChange={(event) => setOrderLimit(Number((event.target as HTMLSelectElement).value))}
+                      isDisabled
                       bg="white"
                       borderColor="rgba(193, 14, 14, 0.18)"
                       focusBorderColor="brand.400"
                     >
-                      <option value={5}>5</option>
                       <option value={10}>10</option>
-                      <option value={20}>20</option>
                     </Select>
                   </FormControl>
                 </GridItem>
@@ -2760,6 +3190,262 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
               </HStack>
               <Text mt={2} color="#6F594F" fontSize="sm">Filtered Total Amount: {formatCurrency(orderStats.totalAmount)}</Text>
             </AppCard>
+
+            <Box ref={purchaseBulkHistorySectionRef} mt={4} scrollMarginTop="24px">
+            <AppCard>
+              <HStack justify="space-between" align="flex-start" gap={3} flexWrap="wrap" mb={4}>
+                <Box>
+                  <Text fontSize="xl" fontWeight={900}>Purchase Bulk Upload History</Text>
+                  <Text color="#6F594F" fontSize="sm">
+                    Upload pannina file-wise summary and row-wise inserted / not inserted details.
+                  </Text>
+                </Box>
+                <AppButton
+                  variant="outline"
+                  leftIcon={<History size={16} />}
+                  onClick={() => void loadPurchaseBulkHistory(1)}
+                  isLoading={purchaseBulkHistoryLoading}
+                >
+                  Refresh History
+                </AppButton>
+              </HStack>
+
+              {purchaseBulkHistoryLoading ? (
+                <SkeletonTable rows={4} />
+              ) : (
+                <DataTable
+                  columns={[
+                    {
+                      key: "createdAt",
+                      header: "Uploaded At",
+                      render: (row: PurchaseBulkImportHistoryItem) => formatDateTime(row.createdAt)
+                    },
+                    {
+                      key: "fileName",
+                      header: "File",
+                      render: (row: PurchaseBulkImportHistoryItem) => (
+                        <Box>
+                          <Text fontWeight={800}>{row.fileName}</Text>
+                          <Text fontSize="xs" color="#7A6359">{formatPurchaseSectionLabel(row.purchaseSection)}</Text>
+                        </Box>
+                      )
+                    },
+                    {
+                      key: "insertedRows",
+                      header: "Inserted",
+                      render: (row: PurchaseBulkImportHistoryItem) => row.insertedRows
+                    },
+                    {
+                      key: "notInserted",
+                      header: "Not Inserted",
+                      render: (row: PurchaseBulkImportHistoryItem) => row.skippedDuplicateRows + row.failedRows
+                    },
+                    {
+                      key: "createdOrders",
+                      header: "Orders / Products",
+                      render: (row: PurchaseBulkImportHistoryItem) =>
+                        `${row.createdOrders?.length ?? 0} orders / ${row.createdProducts ?? 0} products`
+                    },
+                    {
+                      key: "actions",
+                      header: "Actions",
+                      render: (row: PurchaseBulkImportHistoryItem) => (
+                        <HStack flexWrap="wrap">
+                          <AppButton
+                            size="sm"
+                            variant="outline"
+                            leftIcon={<Eye size={14} />}
+                            onClick={() => {
+                              setPurchaseBulkSummary(row);
+                              setPurchaseBulkDetailsPage(1);
+                              window.setTimeout(() => {
+                                purchaseBulkDetailsSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+                              }, 50);
+                            }}
+                          >
+                            Show Rows
+                          </AppButton>
+                          <AppButton
+                            size="sm"
+                            variant="outline"
+                            leftIcon={<Trash2 size={14} />}
+                            onClick={() => openDeletePurchaseBulkImport(row)}
+                            isDisabled={!(row.createdOrders?.length ?? 0) || mutationLoading}
+                          >
+                            Delete
+                          </AppButton>
+                        </HStack>
+                      )
+                    }
+                  ]}
+                  rows={purchaseBulkHistoryRows}
+                  emptyState={<EmptyState title="No upload history" description="Upload history refresh pannunga or new bulk upload pannunga." />}
+                />
+              )}
+
+              {purchaseBulkHistoryRows.length ? (
+                <HStack justify="space-between" mt={4} flexWrap="wrap" gap={3}>
+                  <Text color="#6F594F" fontSize="sm">
+                    Showing {purchaseBulkHistoryRows.length} of {purchaseBulkHistoryPagination.total} uploads
+                  </Text>
+                  <HStack flexWrap="wrap">
+                    <AppButton
+                      variant="outline"
+                      isDisabled={purchaseBulkHistoryPagination.page <= 1 || purchaseBulkHistoryLoading}
+                      onClick={() => {
+                        const nextPage = Math.max(1, purchaseBulkHistoryPagination.page - 1);
+                        setPurchaseBulkHistoryPage(nextPage);
+                        void loadPurchaseBulkHistory(nextPage);
+                      }}
+                    >
+                      Previous
+                    </AppButton>
+                    <Text fontWeight={700}>
+                      Page {purchaseBulkHistoryPagination.page} of {purchaseBulkHistoryPagination.totalPages}
+                    </Text>
+                    <AppButton
+                      variant="outline"
+                      isDisabled={
+                        purchaseBulkHistoryPagination.page >= purchaseBulkHistoryPagination.totalPages ||
+                        purchaseBulkHistoryLoading
+                      }
+                      onClick={() => {
+                        const nextPage = Math.min(
+                          purchaseBulkHistoryPagination.totalPages,
+                          purchaseBulkHistoryPagination.page + 1
+                        );
+                        setPurchaseBulkHistoryPage(nextPage);
+                        void loadPurchaseBulkHistory(nextPage);
+                      }}
+                    >
+                      Next
+                    </AppButton>
+                  </HStack>
+                </HStack>
+              ) : null}
+
+              {purchaseBulkSummary ? (
+                <Box ref={purchaseBulkDetailsSectionRef} mt={4} scrollMarginTop="24px">
+                <AppCard p={4} bg="rgba(255, 250, 242, 0.95)" borderColor="rgba(133, 78, 48, 0.22)">
+                  <HStack justify="space-between" align="flex-start" gap={3} flexWrap="wrap" mb={4}>
+                    <Box>
+                      <Text fontWeight={900}>Selected Upload Row Details</Text>
+                      <Text fontSize="sm" color="#7A6359">
+                        {purchaseBulkSummary.fileName ?? "Latest upload"} | {purchaseBulkSummary.insertedRows} inserted,{" "}
+                        {purchaseBulkSummary.skippedDuplicateRows + purchaseBulkSummary.failedRows} not inserted.
+                      </Text>
+                    </Box>
+                    <HStack align="flex-start" gap={3} flexWrap="wrap">
+                      <SimpleGrid columns={{ base: 2, md: 4 }} spacing={3} minW={{ base: "full", md: "420px" }}>
+                        <Box><Text fontSize="xs" color="#7B645B">Inserted</Text><Text fontWeight={900}>{purchaseBulkSummary.insertedRows}</Text></Box>
+                        <Box><Text fontSize="xs" color="#7B645B">Duplicate</Text><Text fontWeight={900}>{purchaseBulkSummary.skippedDuplicateRows}</Text></Box>
+                        <Box><Text fontSize="xs" color="#7B645B">Failed</Text><Text fontWeight={900}>{purchaseBulkSummary.failedRows}</Text></Box>
+                        <Box><Text fontSize="xs" color="#7B645B">Total Rows</Text><Text fontWeight={900}>{purchaseBulkSummary.totalRows}</Text></Box>
+                      </SimpleGrid>
+                      <AppButton variant="outline" onClick={() => setPurchaseBulkSummary(null)}>
+                        Close Rows
+                      </AppButton>
+                    </HStack>
+                  </HStack>
+                  <DataTable
+                    columns={[
+                      {
+                        key: "rowNumber",
+                        header: "Row",
+                        render: (row: PurchaseBulkRowDetail) => <Text fontWeight={800}>#{row.rowNumber}</Text>
+                      },
+                      {
+                        key: "status",
+                        header: "Status",
+                        render: (row: PurchaseBulkRowDetail) => {
+                          const tone =
+                            row.status === "inserted"
+                              ? { bg: "green.100", color: "green.700", label: "Inserted" }
+                              : row.status === "skipped_duplicate"
+                                ? { bg: "orange.100", color: "orange.700", label: "Duplicate" }
+                                : { bg: "red.100", color: "red.700", label: "Failed" };
+                          return (
+                            <Box px={3} py={1} borderRadius="full" bg={tone.bg} color={tone.color} fontSize="xs" fontWeight={800} w="fit-content">
+                              {tone.label}
+                            </Box>
+                          );
+                        }
+                      },
+                      {
+                        key: "itemName",
+                        header: "Item / Supplier",
+                        render: (row: PurchaseBulkRowDetail) => (
+                          <Box>
+                            <Text fontWeight={700}>{row.itemName || "-"}</Text>
+                            <Text fontSize="xs" color="#7A6359">{row.supplierName || "-"}</Text>
+                          </Box>
+                        )
+                      },
+                      {
+                        key: "quantity",
+                        header: "Qty",
+                        render: (row: PurchaseBulkRowDetail) =>
+                          row.quantity === null || row.quantity === undefined ? "-" : `${row.quantity} ${row.quantityUnit || "pcs"}`
+                      },
+                      {
+                        key: "unitPrice",
+                        header: "Unit Price",
+                        render: (row: PurchaseBulkRowDetail) =>
+                          row.unitPrice === null || row.unitPrice === undefined ? "-" : formatCurrency(row.unitPrice)
+                      },
+                      {
+                        key: "grandTotal",
+                        header: "Grand Total",
+                        render: (row: PurchaseBulkRowDetail) =>
+                          row.grandTotal === null || row.grandTotal === undefined ? "-" : formatCurrency(row.grandTotal)
+                      },
+                      {
+                        key: "purchaseNumber",
+                        header: "Purchase",
+                        render: (row: PurchaseBulkRowDetail) => row.purchaseNumber || "-"
+                      },
+                      {
+                        key: "reason",
+                        header: "Reason",
+                        render: (row: PurchaseBulkRowDetail) => row.reason || "-"
+                      }
+                    ]}
+                    rows={paginatedPurchaseBulkRowDetails}
+                    emptyState={<EmptyState title="No row details" description="Select an upload to see row details." />}
+                  />
+                  <HStack justify="space-between" mt={4} flexWrap="wrap" gap={3}>
+                    <Text color="#6F594F" fontSize="sm">
+                      Showing {paginatedPurchaseBulkRowDetails.length} of {purchaseBulkRowDetails.length} rows
+                    </Text>
+                    <HStack flexWrap="wrap">
+                      <AppButton
+                        variant="outline"
+                        isDisabled={purchaseBulkDetailsCurrentPage <= 1}
+                        onClick={() => setPurchaseBulkDetailsPage((current) => Math.max(1, current - 1))}
+                      >
+                        Previous
+                      </AppButton>
+                      <Text fontWeight={700}>
+                        Page {purchaseBulkDetailsCurrentPage} of {purchaseBulkDetailsTotalPages}
+                      </Text>
+                      <AppButton
+                        variant="outline"
+                        isDisabled={purchaseBulkDetailsCurrentPage >= purchaseBulkDetailsTotalPages}
+                        onClick={() =>
+                          setPurchaseBulkDetailsPage((current) =>
+                            Math.min(purchaseBulkDetailsTotalPages, current + 1)
+                          )
+                        }
+                      >
+                        Next
+                      </AppButton>
+                    </HStack>
+                  </HStack>
+                </AppCard>
+                </Box>
+              ) : null}
+            </AppCard>
+            </Box>
           </TabPanel>
 
           <TabPanel px={0}>
@@ -2787,7 +3473,8 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
                       label="Section"
                       value={productLedgerTargetSection}
                       options={ledgerTargetSectionOptions}
-                      onValueChange={setProductLedgerTargetSection}
+                      onValueChange={(value) => setProductLedgerTargetSection(value as ProductTargetSection)}
+                      isDisabled
                     />
                     <AppInput
                       label="Date From"
@@ -2806,14 +3493,12 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
                       <Select
                         value={String(productLedgerLimit)}
                         onChange={(event) => setProductLedgerLimit(Number((event.target as HTMLSelectElement).value))}
+                        isDisabled
                         bg="white"
                         borderColor="rgba(193, 14, 14, 0.18)"
                         focusBorderColor="brand.400"
                       >
-                        <option value={12}>12</option>
-                        <option value={25}>25</option>
-                        <option value={50}>50</option>
-                        <option value={100}>100</option>
+                        <option value={10}>10</option>
                       </Select>
                     </FormControl>
                     <Box alignSelf={{ base: "stretch", xl: "end" }}>
@@ -3044,13 +3729,12 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
                           <Select
                             value={productLimit}
                             onChange={(event) => setProductLimit(Number((event.target as HTMLSelectElement).value))}
+                            isDisabled
                             bg="white"
                             borderColor="rgba(193, 14, 14, 0.18)"
                             focusBorderColor="brand.400"
                           >
-                            <option value={5}>5</option>
                             <option value={10}>10</option>
-                            <option value={20}>20</option>
                           </Select>
                         </FormControl>
                       </GridItem>
@@ -3262,6 +3946,7 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
           }}
           loading={mutationLoading}
           mode={orderFormMode}
+          initialPurchaseSection={editingOrder?.purchaseSection ?? newPurchaseSection}
           isBootstrapping={orderFormBootstrapping}
           meta={meta}
           initialData={editingOrder}
@@ -3281,6 +3966,7 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
           initialData={selectedProduct}
           suppliers={suppliers}
           units={units}
+          forcedTargetSection={scopedTargetSection}
           onSubmit={handleSaveProduct}
         />
       ) : null}
@@ -3655,6 +4341,22 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
           setSelectedOrderToDelete(null);
         }}
         onConfirm={() => void handleDeleteOrder()}
+        isLoading={mutationLoading}
+      />
+
+      <ConfirmDialog
+        isOpen={deletePurchaseBulkDialog.isOpen}
+        title="Delete bulk upload?"
+        description={
+          purchaseBulkImportToDelete
+            ? `Delete ${purchaseBulkImportToDelete.fileName}? This removes ${purchaseBulkImportToDelete.createdOrders?.length ?? 0} purchase orders created from this upload and rolls product stock back automatically.`
+            : "Are you sure you want to delete this bulk upload?"
+        }
+        onClose={() => {
+          deletePurchaseBulkDialog.onClose();
+          setPurchaseBulkImportToDelete(null);
+        }}
+        onConfirm={() => void handleDeletePurchaseBulkImport()}
         isLoading={mutationLoading}
       />
 

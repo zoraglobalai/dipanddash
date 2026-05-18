@@ -5,12 +5,15 @@ import type {
   ProductBulkImportResult,
   ProductDayLedgerResponse,
   ProductStockHistoryResponse,
+  PurchaseBulkImportHistoryResponse,
+  PurchaseBulkImportDeleteResponse,
   PurchaseBulkImportResult,
   ProcurementMetaResponse,
   ProcurementStatsResponse,
   ProcurementUnitsResponse,
   ProductListItem,
   ProductListResponse,
+  PurchaseSection,
   PurchaseOrderDetail,
   PurchaseOrderListResponse,
   SupplierListItem,
@@ -20,6 +23,7 @@ import type {
 export const procurementService = {
   getSuppliers: async (params?: {
     search?: string;
+    section?: PurchaseSection;
     includeInactive?: boolean;
     page?: number;
     limit?: number;
@@ -28,7 +32,14 @@ export const procurementService = {
     return response.data;
   },
 
-  createSupplier: async (payload: { name: string; storeName?: string; phone: string; address?: string; isActive?: boolean }) => {
+  createSupplier: async (payload: {
+    name: string;
+    storeName?: string;
+    phone: string;
+    address?: string;
+    section?: PurchaseSection;
+    isActive?: boolean;
+  }) => {
     const response = await apiClient.post<ApiSuccess<{ supplier: SupplierListItem }>>(
       "/procurement/suppliers",
       payload
@@ -38,7 +49,14 @@ export const procurementService = {
 
   updateSupplier: async (
     id: string,
-    payload: { name?: string; storeName?: string; phone?: string; address?: string; isActive?: boolean }
+    payload: {
+      name?: string;
+      storeName?: string;
+      phone?: string;
+      address?: string;
+      section?: PurchaseSection;
+      isActive?: boolean;
+    }
   ) => {
     const response = await apiClient.patch<ApiSuccess<{ supplier: SupplierListItem }>>(
       `/procurement/suppliers/${id}`,
@@ -121,6 +139,7 @@ export const procurementService = {
     search?: string;
     supplierId?: string;
     purchaseType?: string;
+    purchaseSection?: PurchaseSection;
     dateFrom?: string;
     dateTo?: string;
     page?: number;
@@ -197,6 +216,23 @@ export const procurementService = {
     );
     return response.data;
   },
+  getPurchaseBulkImportHistory: async (params?: {
+    purchaseSection?: PurchaseSection;
+    page?: number;
+    limit?: number;
+  }) => {
+    const response = await apiClient.get<ApiSuccess<PurchaseBulkImportHistoryResponse>>(
+      "/procurement/purchase-orders/bulk/history",
+      { params }
+    );
+    return response.data;
+  },
+  deletePurchaseBulkImport: async (id: string) => {
+    const response = await apiClient.delete<ApiSuccess<PurchaseBulkImportDeleteResponse>>(
+      `/procurement/purchase-orders/bulk/history/${id}`
+    );
+    return response.data;
+  },
   downloadProductBulkTemplate: async () => {
     return apiClient.get<Blob>("/procurement/products/bulk/template", {
       responseType: "blob"
@@ -223,12 +259,13 @@ export const procurementService = {
     ingredientCategoryId?: string;
     ingredientSearch?: string;
     productSearch?: string;
+    purchaseSection?: PurchaseSection;
   }) => {
     const response = await apiClient.get<ApiSuccess<ProcurementMetaResponse>>("/procurement/meta", { params });
     return response.data;
   },
 
-  getStats: async (params?: { dateFrom?: string; dateTo?: string }) => {
+  getStats: async (params?: { dateFrom?: string; dateTo?: string; purchaseSection?: PurchaseSection }) => {
     const response = await apiClient.get<ApiSuccess<ProcurementStatsResponse>>("/procurement/stats", { params });
     return response.data;
   },

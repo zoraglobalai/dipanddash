@@ -708,6 +708,47 @@ export class GamingService {
     return `GM-${y}${m}${d}-${hh}${mm}-${random}`;
   }
 
+  private async findDuplicateCreateBooking(input: {
+    staffId: string;
+    bookingType: GamingBookingType;
+    resourceCodes: string[];
+    customerGroup: BookingCustomerMember[];
+    checkInAt: Date;
+  }) {
+    const primaryCustomer = this.resolvePrimaryCustomer(input.customerGroup);
+    const phone = normalizePhone(primaryCustomer?.phone ?? "");
+    const name = (primaryCustomer?.name ?? "").trim().toLowerCase();
+    if (!phone && !name) {
+      return null;
+    }
+
+    const from = new Date(input.checkInAt.getTime() - 2 * 60 * 1000);
+    const to = new Date(input.checkInAt.getTime() + 2 * 60 * 1000);
+    const rows = await this.bookingRepository
+      .createQueryBuilder("booking")
+      .leftJoinAndSelect("booking.staff", "staff")
+      .where("booking.staffId = :staffId", { staffId: input.staffId })
+      .andWhere("booking.bookingType = :bookingType", { bookingType: input.bookingType })
+      .andWhere("booking.checkInAt BETWEEN :from AND :to", { from, to })
+      .andWhere("booking.status != :cancelledStatus", { cancelledStatus: "cancelled" })
+      .orderBy("booking.createdAt", "DESC")
+      .getMany();
+
+    return (
+      rows.find((booking) => {
+        const bookingCodes = booking.resourceCodes?.length ? booking.resourceCodes : [booking.resourceCode];
+        if (!bookingCodes.some((code) => input.resourceCodes.includes(code))) {
+          return false;
+        }
+        const bookingPhone = normalizePhone(booking.primaryCustomerPhone ?? "");
+        if (phone && bookingPhone === phone) {
+          return true;
+        }
+        return Boolean(name && (booking.primaryCustomerName ?? "").trim().toLowerCase() === name);
+      }) ?? null
+    );
+  }
+
   private async assertResourcesAvailable(resourceCodes: string[], excludeBookingId?: string) {
     const query = this.bookingRepository
       .createQueryBuilder("booking")
@@ -757,6 +798,17 @@ export class GamingService {
     const staff = await this.userRepository.findOne({ where: { id: staffId, isActive: true } });
     if (!staff) {
       throw new AppError(404, "Staff member not found for this booking.");
+    }
+
+    const duplicate = await this.findDuplicateCreateBooking({
+      staffId: staff.id,
+      bookingType,
+      resourceCodes,
+      customerGroup,
+      checkInAt
+    });
+    if (duplicate) {
+      return this.toDto(duplicate);
     }
 
     const calculated = this.calculateAmount({
@@ -1394,7 +1446,8 @@ export class GamingService {
         .select("COALESCE(SUM(line.stockAdded), 0)", "quantity")
         .addSelect("COALESCE(SUM(line.lineTotal), 0)", "amount")
         .where("line.lineType = :lineType", { lineType: "product" })
-        .andWhere("product.targetSection IN (:...sections)", { sections: ["gaming", "both"] })
+        .andWhere("purchaseOrder.purchaseSection = :purchaseSection", { purchaseSection: "gaming" })
+        .andWhere("product.targetSection = :targetSection", { targetSection: "gaming" })
         .andWhere(dateRange.from ? "purchaseOrder.purchaseDate >= :purchaseDateFrom" : "1=1", {
           purchaseDateFrom: input.dateFrom
         })
@@ -1412,7 +1465,7 @@ export class GamingService {
         .where("line.lineType = :lineType", { lineType: "product" })
         .andWhere("invoice.status = :status", { status: "paid" })
         .andWhere("invoice.orderType = :orderType", { orderType: "snooker" })
-        .andWhere("product.targetSection IN (:...sections)", { sections: ["gaming", "both"] })
+        .andWhere("product.targetSection = :targetSection", { targetSection: "gaming" })
         .andWhere(dateRange.from ? "invoice.createdAt >= :salesFrom" : "1=1", {
           salesFrom: dateRange.from ?? undefined
         })
@@ -1423,7 +1476,7 @@ export class GamingService {
       this.productRepository
         .createQueryBuilder("product")
         .select("COALESCE(SUM(product.currentStock * product.purchaseUnitPrice), 0)", "value")
-        .where("product.targetSection IN (:...sections)", { sections: ["gaming", "both"] })
+        .where("product.targetSection = :targetSection", { targetSection: "gaming" })
         .getRawOne<{ value: string }>()
     ]);
     const now = new Date();

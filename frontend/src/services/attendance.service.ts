@@ -5,6 +5,7 @@ import { apiClient } from "@/lib/api-client";
 type AttendanceQuery = {
   date?: string;
   name?: string;
+  section?: "dip_and_dash" | "gaming";
   page?: number;
   limit?: number;
 };

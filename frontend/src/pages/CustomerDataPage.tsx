@@ -1,5 +1,6 @@
 import { Box, FormControl, FormLabel, HStack, Select, SimpleGrid, Text, VStack } from "@chakra-ui/react";
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useLocation } from "react-router-dom";
 
 import { EmptyState } from "@/components/common/EmptyState";
 import { PageHeader } from "@/components/common/PageHeader";
@@ -15,6 +16,7 @@ import { customersService } from "@/services/customers.service";
 import type { CustomerListRow, CustomerPagination, CustomerStats } from "@/types/customer";
 import { UserRole } from "@/types/role";
 import { extractErrorMessage } from "@/utils/api-error";
+import { businessScopeToCustomerScope, getBusinessScopeFromSearch, getBusinessTitle } from "@/utils/business-scope";
 
 const formatCurrency = (value: number) =>
   new Intl.NumberFormat("en-IN", {
@@ -24,9 +26,11 @@ const formatCurrency = (value: number) =>
     maximumFractionDigits: 2
   }).format(value);
 
+const DEFAULT_CUSTOMER_PAGE_SIZE = 10;
+
 const defaultPagination: CustomerPagination = {
   page: 1,
-  limit: 5,
+  limit: DEFAULT_CUSTOMER_PAGE_SIZE,
   total: 0,
   totalPages: 1
 };
@@ -40,7 +44,8 @@ const emptyStats: CustomerStats = {
   paidInvoices: 0,
   totalRevenue: 0,
   averageOrderValue: 0,
-  topCustomers: []
+  topCustomers: [],
+  topCustomersPagination: defaultPagination
 };
 
 const StatsCard = ({ label, value, helper }: { label: string; value: string; helper?: string }) => (
@@ -71,7 +76,11 @@ const StatsCard = ({ label, value, helper }: { label: string; value: string; hel
 
 export const CustomerDataPage = () => {
   const { user } = useAuth();
+  const location = useLocation();
   const toast = useAppToast();
+  const businessScope = getBusinessScopeFromSearch(location.search);
+  const businessTitle = getBusinessTitle(businessScope);
+  const customerScope = businessScopeToCustomerScope(businessScope);
   const [stats, setStats] = useState<CustomerStats>(emptyStats);
   const [statsLoading, setStatsLoading] = useState(true);
 
@@ -82,25 +91,31 @@ export const CustomerDataPage = () => {
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebouncedValue(search, 400);
   const [page, setPage] = useState(1);
-  const [limit, setLimit] = useState(5);
+  const [limit, setLimit] = useState(DEFAULT_CUSTOMER_PAGE_SIZE);
+  const [topCustomerPage, setTopCustomerPage] = useState(1);
 
   const fetchStats = useCallback(async () => {
     setStatsLoading(true);
     try {
-      const response = await customersService.getStats();
+      const response = await customersService.getStats({
+        scope: customerScope,
+        topPage: topCustomerPage,
+        topLimit: DEFAULT_CUSTOMER_PAGE_SIZE
+      });
       setStats(response.data);
     } catch (error) {
       toast.error(extractErrorMessage(error, "Unable to fetch customer stats."));
     } finally {
       setStatsLoading(false);
     }
-  }, [toast]);
+  }, [customerScope, toast, topCustomerPage]);
 
   const fetchCustomers = useCallback(async () => {
     setTableLoading(true);
     try {
       const response = await customersService.getCustomers({
         search: debouncedSearch || undefined,
+        scope: customerScope,
         page,
         limit
       });
@@ -111,7 +126,7 @@ export const CustomerDataPage = () => {
     } finally {
       setTableLoading(false);
     }
-  }, [debouncedSearch, limit, page, toast]);
+  }, [customerScope, debouncedSearch, limit, page, toast]);
 
   const refreshAll = useCallback(async () => {
     await Promise.all([fetchStats(), fetchCustomers()]);
@@ -127,7 +142,11 @@ export const CustomerDataPage = () => {
 
   useEffect(() => {
     setPage(1);
-  }, [debouncedSearch, limit]);
+  }, [customerScope, debouncedSearch, limit]);
+
+  useEffect(() => {
+    setTopCustomerPage(1);
+  }, [customerScope]);
 
   const columns = useMemo(
     () =>
@@ -196,8 +215,8 @@ export const CustomerDataPage = () => {
   return (
     <VStack spacing={6} align="stretch">
       <PageHeader
-        title="Customer Data"
-        subtitle="Track customer purchase behavior, repeat ratio, and revenue contribution."
+        title={`${businessTitle} Customer Data`}
+        subtitle={`Track ${businessTitle} customer behavior, repeat ratio, and revenue contribution.`}
       />
 
       <SimpleGrid columns={{ base: 1, sm: 2, xl: 4 }} spacing={4}>
@@ -240,7 +259,7 @@ export const CustomerDataPage = () => {
                   const nextLimit =
                     Number(
                       (event.target as HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement).value
-                    ) || 5;
+                    ) || DEFAULT_CUSTOMER_PAGE_SIZE;
                   setLimit(nextLimit);
                   setPage(1);
                 }}
@@ -295,25 +314,57 @@ export const CustomerDataPage = () => {
 
       <AppCard title="Top Customers" subtitle="Highest revenue contribution from paid invoices.">
         {stats.topCustomers.length ? (
-          <DataTable
-            columns={[
-              { key: "name", header: "Name" },
-              { key: "phone", header: "Phone" },
-              { key: "invoiceCount", header: "Orders" },
-              {
-                key: "totalSpent",
-                header: "Revenue",
-                render: (row: CustomerStats["topCustomers"][number]) => formatCurrency(row.totalSpent)
-              },
-              {
-                key: "lastInvoiceAt",
-                header: "Last Order",
-                render: (row: CustomerStats["topCustomers"][number]) =>
-                  row.lastInvoiceAt ? new Date(row.lastInvoiceAt).toLocaleString("en-IN") : "-"
-              }
-            ]}
-            rows={stats.topCustomers}
-          />
+          <VStack spacing={4} align="stretch">
+            <DataTable
+              columns={[
+                { key: "name", header: "Name" },
+                { key: "phone", header: "Phone" },
+                { key: "invoiceCount", header: "Orders" },
+                {
+                  key: "totalSpent",
+                  header: "Revenue",
+                  render: (row: CustomerStats["topCustomers"][number]) => formatCurrency(row.totalSpent)
+                },
+                {
+                  key: "lastInvoiceAt",
+                  header: "Last Order",
+                  render: (row: CustomerStats["topCustomers"][number]) =>
+                    row.lastInvoiceAt ? new Date(row.lastInvoiceAt).toLocaleString("en-IN") : "-"
+                }
+              ]}
+              rows={stats.topCustomers}
+            />
+            <HStack justify="space-between" flexWrap="wrap" gap={3}>
+              <Text color="#705B52" fontSize="sm">
+                Showing {stats.topCustomers.length} of {stats.topCustomersPagination.total} records
+              </Text>
+              <HStack>
+                <AppButton
+                  variant="outline"
+                  isDisabled={stats.topCustomersPagination.page <= 1 || statsLoading}
+                  onClick={() => setTopCustomerPage((current) => Math.max(1, current - 1))}
+                >
+                  Previous
+                </AppButton>
+                <Text fontWeight={700}>
+                  Page {stats.topCustomersPagination.page} of {stats.topCustomersPagination.totalPages}
+                </Text>
+                <AppButton
+                  variant="outline"
+                  isDisabled={
+                    stats.topCustomersPagination.page >= stats.topCustomersPagination.totalPages || statsLoading
+                  }
+                  onClick={() =>
+                    setTopCustomerPage((current) =>
+                      Math.min(stats.topCustomersPagination.totalPages, current + 1)
+                    )
+                  }
+                >
+                  Next
+                </AppButton>
+              </HStack>
+            </HStack>
+          </VStack>
         ) : (
           <EmptyState
             title="No customer revenue data"

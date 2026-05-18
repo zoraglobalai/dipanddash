@@ -65,6 +65,9 @@ const SuppliersPage = lazy(() =>
 const PurchasePage = lazy(() =>
   import("@/pages/PurchasePage").then((module) => ({ default: module.PurchasePage }))
 );
+const ProductConsumptionPage = lazy(() =>
+  import("@/pages/ProductConsumptionPage").then((module) => ({ default: module.ProductConsumptionPage }))
+);
 const AssetsEntryPage = lazy(() =>
   import("@/pages/AssetsEntryPage").then((module) => ({ default: module.AssetsEntryPage }))
 );
@@ -221,6 +224,16 @@ export const AppRouter = () => {
                 <ModuleGuard allow={["purchase"]}>
                   <Suspended>
                     <PurchasePage initialSection="products" standalone />
+                  </Suspended>
+                </ModuleGuard>
+              }
+            />
+            <Route
+              path={APP_ROUTES.PRODUCTS_CONSUMPTION}
+              element={
+                <ModuleGuard allow={["gaming", "purchase", "stock-audit"]}>
+                  <Suspended>
+                    <ProductConsumptionPage />
                   </Suspended>
                 </ModuleGuard>
               }

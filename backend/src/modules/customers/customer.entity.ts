@@ -11,7 +11,8 @@ import {
 
 import { User } from "../users/user.entity";
 
-@Index("IDX_customers_phone_unique", ["phone"], { unique: true })
+@Index("IDX_customers_phone_section_unique", ["phone", "section"], { unique: true })
+@Index("IDX_customers_section", ["section"])
 @Entity({ name: "customers" })
 export class Customer {
   @PrimaryGeneratedColumn("uuid")
@@ -22,6 +23,9 @@ export class Customer {
 
   @Column({ type: "varchar", length: 20 })
   phone!: string;
+
+  @Column({ type: "varchar", length: 20, default: "dip_and_dash" })
+  section!: "dip_and_dash" | "gaming";
 
   @Column({ type: "varchar", length: 160, nullable: true })
   email!: string | null;

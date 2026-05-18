@@ -19,6 +19,7 @@ import {
 } from "@chakra-ui/react";
 import { Edit2, Plus, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useLocation } from "react-router-dom";
 
 import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import { EmptyState } from "@/components/common/EmptyState";
@@ -35,6 +36,7 @@ import { assetsService } from "@/services/assets.service";
 import type { AssetListItem, AssetListResponse, AssetUnit } from "@/types/assets";
 import type { PaginationData } from "@/types/ingredient";
 import { extractErrorMessage } from "@/utils/api-error";
+import { businessScopeToPurchaseSection, getBusinessScopeFromSearch, getBusinessTitle } from "@/utils/business-scope";
 
 const defaultPagination: PaginationData = {
   page: 1,
@@ -76,13 +78,15 @@ type AssetFormModalProps = {
   initialData: AssetListItem | null;
   onSubmit: (payload: {
     name: string;
+    section: "dip_and_dash" | "gaming";
     quantity: number;
     unit: AssetUnit;
     isActive: boolean;
   }) => Promise<void>;
+  section: "dip_and_dash" | "gaming";
 };
 
-const AssetFormModal = ({ isOpen, onClose, loading, initialData, onSubmit }: AssetFormModalProps) => {
+const AssetFormModal = ({ isOpen, onClose, loading, initialData, onSubmit, section }: AssetFormModalProps) => {
   const [form, setForm] = useState({
     name: "",
     quantity: "0",
@@ -107,6 +111,7 @@ const AssetFormModal = ({ isOpen, onClose, loading, initialData, onSubmit }: Ass
   const handleSave = async () => {
     await onSubmit({
       name: form.name.trim(),
+      section,
       quantity: Number(form.quantity),
       unit: form.unit,
       isActive: form.isActive
@@ -178,9 +183,13 @@ const AssetFormModal = ({ isOpen, onClose, loading, initialData, onSubmit }: Ass
 };
 
 export const AssetsEntryPage = () => {
+  const location = useLocation();
   const toast = useAppToast();
   const assetModal = useDisclosure();
   const deleteDialog = useDisclosure();
+  const businessScope = getBusinessScopeFromSearch(location.search);
+  const businessTitle = getBusinessTitle(businessScope);
+  const assetSection = businessScopeToPurchaseSection(businessScope);
 
   const [rows, setRows] = useState<AssetListItem[]>([]);
   const [pagination, setPagination] = useState<PaginationData>(defaultPagination);
@@ -204,6 +213,7 @@ export const AssetsEntryPage = () => {
     try {
       const response = await assetsService.getAssets({
         search: debouncedSearch || undefined,
+        section: assetSection,
         includeInactive: true,
         page,
         limit
@@ -216,7 +226,7 @@ export const AssetsEntryPage = () => {
     } finally {
       setLoading(false);
     }
-  }, [debouncedSearch, limit, page, toast]);
+  }, [assetSection, debouncedSearch, limit, page, toast]);
 
   useEffect(() => {
     void loadAssets();
@@ -224,7 +234,7 @@ export const AssetsEntryPage = () => {
 
   useEffect(() => {
     setPage(1);
-  }, [debouncedSearch, limit]);
+  }, [assetSection, debouncedSearch, limit]);
 
   const lowQuantityRows = useMemo(() => rows.filter((row) => row.isActive && row.quantity <= 0), [rows]);
 
@@ -303,6 +313,7 @@ export const AssetsEntryPage = () => {
   const handleSaveAsset = useCallback(
     async (payload: {
       name: string;
+      section: "dip_and_dash" | "gaming";
       quantity: number;
       unit: AssetUnit;
       isActive: boolean;
@@ -349,8 +360,8 @@ export const AssetsEntryPage = () => {
   return (
     <VStack spacing={6} align="stretch">
       <PageHeader
-        title="Assets Entry"
-        subtitle="Manage kitchen assets like vessels, gas cylinders and equipment."
+        title={`${businessTitle} Assets`}
+        subtitle={`Manage ${businessTitle} assets and equipment separately.`}
       />
 
       <AppCard
@@ -469,6 +480,7 @@ export const AssetsEntryPage = () => {
         }}
         loading={mutationLoading}
         initialData={selectedAsset}
+        section={assetSection}
         onSubmit={handleSaveAsset}
       />
 

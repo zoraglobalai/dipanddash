@@ -4,7 +4,7 @@ import { StatusCodes } from "http-status-codes";
 import { sendSuccess } from "../../common/api-response";
 import { AUTH_MESSAGES } from "../../constants/auth";
 import { AppError } from "../../errors/app-error";
-import type { ProductTargetSection } from "./procurement.constants";
+import type { ProductTargetSection, PurchaseSection } from "./procurement.constants";
 import { ProcurementService } from "./procurement.service";
 import { procurementUnitsData } from "./procurement.validation";
 
@@ -56,15 +56,33 @@ export class ProcurementController {
 
   bulkImportPurchaseOrder = async (req: UploadRequest, res: Response): Promise<Response> => {
     if (!req.file) {
-      throw new AppError(StatusCodes.BAD_REQUEST, "Please choose a CSV file to upload.");
+      throw new AppError(StatusCodes.BAD_REQUEST, "Please choose a purchase file to upload.");
     }
     const userId = req.user?.id;
     if (!userId) {
       throw new AppError(StatusCodes.UNAUTHORIZED, AUTH_MESSAGES.UNAUTHORIZED);
     }
 
-    const data = await this.procurementService.bulkImportPurchaseOrderFromCsv(req.file.buffer, userId);
+    const data = await this.procurementService.bulkImportPurchaseOrderFromCsv(
+      req.file.buffer,
+      userId,
+      req.file.originalname
+    );
     return sendSuccess(res, StatusCodes.CREATED, "Purchase order imported successfully", data);
+  };
+
+  listPurchaseBulkImportHistory = async (req: Request, res: Response): Promise<Response> => {
+    const data = await this.procurementService.listPurchaseBulkImportHistory({
+      purchaseSection: typeof req.query.purchaseSection === "string" ? (req.query.purchaseSection as PurchaseSection) : undefined,
+      page: parsePositiveInt(req.query.page, 1),
+      limit: parsePositiveInt(req.query.limit, 20)
+    });
+    return sendSuccess(res, StatusCodes.OK, "Purchase upload history fetched successfully", data);
+  };
+
+  deletePurchaseBulkImport = async (req: Request, res: Response): Promise<Response> => {
+    const data = await this.procurementService.deletePurchaseBulkImport(req.params.id);
+    return sendSuccess(res, StatusCodes.OK, "Purchase bulk upload deleted successfully", data);
   };
 
   downloadProductBulkTemplate = async (_req: Request, res: Response): Promise<Response> => {
@@ -86,6 +104,7 @@ export class ProcurementController {
   listSuppliers = async (req: Request, res: Response): Promise<Response> => {
     const data = await this.procurementService.listSuppliers({
       search: typeof req.query.search === "string" ? req.query.search : undefined,
+      section: typeof req.query.section === "string" ? (req.query.section as PurchaseSection) : undefined,
       includeInactive: parseBoolean(req.query.includeInactive, true),
       page: parsePositiveInt(req.query.page, 1),
       limit: parsePositiveInt(req.query.limit, 10)
@@ -208,6 +227,10 @@ export class ProcurementController {
       search: typeof req.query.search === "string" ? req.query.search : undefined,
       supplierId: typeof req.query.supplierId === "string" ? req.query.supplierId : undefined,
       purchaseType: typeof req.query.purchaseType === "string" ? (req.query.purchaseType as any) : undefined,
+      purchaseSection:
+        typeof req.query.purchaseSection === "string"
+          ? (req.query.purchaseSection as PurchaseSection)
+          : undefined,
       dateFrom: typeof req.query.dateFrom === "string" ? req.query.dateFrom : undefined,
       dateTo: typeof req.query.dateTo === "string" ? req.query.dateTo : undefined,
       page: parsePositiveInt(req.query.page, 1),
@@ -247,7 +270,11 @@ export class ProcurementController {
       ingredientCategoryId:
         typeof req.query.ingredientCategoryId === "string" ? req.query.ingredientCategoryId : undefined,
       ingredientSearch: typeof req.query.ingredientSearch === "string" ? req.query.ingredientSearch : undefined,
-      productSearch: typeof req.query.productSearch === "string" ? req.query.productSearch : undefined
+      productSearch: typeof req.query.productSearch === "string" ? req.query.productSearch : undefined,
+      purchaseSection:
+        typeof req.query.purchaseSection === "string"
+          ? (req.query.purchaseSection as PurchaseSection)
+          : undefined
     });
     return sendSuccess(res, StatusCodes.OK, "Procurement meta fetched successfully", data);
   };
@@ -255,7 +282,11 @@ export class ProcurementController {
   getStats = async (req: Request, res: Response): Promise<Response> => {
     const data = await this.procurementService.getStats({
       dateFrom: typeof req.query.dateFrom === "string" ? req.query.dateFrom : undefined,
-      dateTo: typeof req.query.dateTo === "string" ? req.query.dateTo : undefined
+      dateTo: typeof req.query.dateTo === "string" ? req.query.dateTo : undefined,
+      purchaseSection:
+        typeof req.query.purchaseSection === "string"
+          ? (req.query.purchaseSection as PurchaseSection)
+          : undefined
     });
     return sendSuccess(res, StatusCodes.OK, "Procurement stats fetched successfully", data);
   };

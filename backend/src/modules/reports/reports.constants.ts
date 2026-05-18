@@ -25,6 +25,7 @@ export const REPORT_KEYS = [
   "peak_sales_time_report",
   "stock_consumption_report",
   "gaming_report",
+  "gaming_detailed_report",
   "cash_audit_report"
 ] as const;
 
@@ -194,6 +195,12 @@ export const REPORT_CATALOG: ReportCatalogItem[] = [
     key: "gaming_report",
     title: "Gaming Report",
     description: "Snooker/console sessions, revenue and payment status.",
+    category: "Gaming"
+  },
+  {
+    key: "gaming_detailed_report",
+    title: "Gaming Detailed Report",
+    description: "Gaming sessions with linked snooker product quantities, rates and line totals.",
     category: "Gaming"
   },
   {

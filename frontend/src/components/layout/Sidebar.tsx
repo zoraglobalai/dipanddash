@@ -85,11 +85,14 @@ export const Sidebar = ({
   const hasMenuMatch = visibleNavItems.some((item) => !item.isLogout);
 
   const isItemActive = (item: NavItem): boolean => {
+    const [itemPathname, itemSearch = ""] = item.path?.split("?") ?? [];
+    const normalizedItemSearch = itemSearch ? `?${itemSearch}` : "";
     const isCurrent =
       !item.isLogout &&
       Boolean(item.path) &&
-      (location.pathname === item.path ||
-        (item.path === "/dashboard" && location.pathname.startsWith("/dashboard")));
+      Boolean(itemPathname) &&
+      location.pathname === itemPathname &&
+      (!normalizedItemSearch || location.search === normalizedItemSearch);
 
     if (isCurrent) {
       return true;
@@ -136,7 +139,7 @@ export const Sidebar = ({
 
       return changed ? next : previous;
     });
-  }, [location.pathname, navItems]);
+  }, [location.pathname, location.search, navItems]);
 
   const buildButtonNode = (item: NavItem, depth: number, key: string): ReactNode => {
     const isActive = isItemActive(item);
