@@ -21,8 +21,13 @@ const readBooleanEnv = (key: string, fallback: boolean) => {
   return fallback;
 };
 
+const productionApiBaseUrl = "https://dipanddash-yc72.vercel.app/api";
+
 export const env = {
-  apiBaseUrl: readEnv("VITE_API_BASE_URL", "http://localhost:5000/api"),
+  apiBaseUrl: readEnv(
+    "VITE_API_BASE_URL",
+    import.meta.env.PROD ? productionApiBaseUrl : "http://localhost:5000/api"
+  ),
   clientType: readEnv("VITE_CLIENT_TYPE", "desktop"),
   deviceId: readEnv("VITE_DEVICE_ID", `desktop-${Math.random().toString(36).slice(2, 10)}`),
   branchId: readEnv("VITE_BRANCH_ID", "main"),

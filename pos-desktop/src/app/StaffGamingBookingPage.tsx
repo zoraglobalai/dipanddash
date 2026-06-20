@@ -117,7 +117,7 @@ const formatDateTime = (value: string | null) => (value ? new Date(value).toLoca
 const statusBadgeColor = (status: GamingBookingStatus) => status === "ongoing" ? "green" : status === "upcoming" ? "blue" : status === "completed" ? "purple" : "gray";
 const foodStatusColor = (status: GamingBooking["foodInvoiceStatus"]) => status === "paid" ? "green" : status === "pending" ? "orange" : status === "cancelled" ? "red" : "gray";
 const SNOOKER_INCLUDED_MEMBERS = 4;
-const EXTRA_MEMBER_CHARGE = 50;
+const EXTRA_MEMBER_CHARGE = 75;
 const AMOUNT_DIFF_THRESHOLD = 0.01;
 const BOOKINGS_PER_PAGE = 10;
 const roundCheckoutAmount = (value: number) => Math.round(Math.max(0, Number(value) || 0));

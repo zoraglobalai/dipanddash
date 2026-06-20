@@ -121,7 +121,7 @@ type UpdateBookingInput = {
 
 const normalizePhone = (value: string) => value.replace(/[^\d+]/g, "").trim();
 const SNOOKER_INCLUDED_MEMBERS = 4;
-const SNOOKER_EXTRA_MEMBER_FEE = 50;
+const SNOOKER_EXTRA_MEMBER_FEE = 75;
 const AMOUNT_DIFF_THRESHOLD = 0.01;
 const cleanText = (value?: string | null) => {
   if (value === undefined || value === null) {

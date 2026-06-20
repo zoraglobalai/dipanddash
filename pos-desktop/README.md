@@ -44,6 +44,8 @@ npm run tauri:build:update
 
 ## Notes
 
+- Production builds use `https://dipanddash-yc72.vercel.app/api` unless
+  `VITE_API_BASE_URL` is supplied during the build.
 - Backend endpoints used by desktop:
   - `/api/pos-catalog/snapshot`
   - `/api/customers/*`

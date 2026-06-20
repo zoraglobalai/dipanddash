@@ -170,7 +170,7 @@ const toLocalNow = () => {
   return new Date(now.getTime() - offsetMinutes * 60000).toISOString().slice(0, 16);
 };
 const SNOOKER_INCLUDED_MEMBERS = 4;
-const EXTRA_MEMBER_CHARGE = 50;
+const EXTRA_MEMBER_CHARGE = 75;
 const AMOUNT_DIFF_THRESHOLD = 0.01;
 
 const resolvePayableAmountForForm = (input: {

@@ -1,6 +1,6 @@
 [package]
 name = "dip_dash_pos"
-version = "0.1.2"
+version = "0.1.3"
 description = "Dip & Dash Staff POS desktop application"
 authors = ["Dip & Dash Team"]
 license = ""

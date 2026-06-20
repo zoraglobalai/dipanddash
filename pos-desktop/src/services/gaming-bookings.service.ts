@@ -100,7 +100,7 @@ const CONSOLE_RESOURCES: Array<{ code: GamingResourceCode; label: string }> = [
 const ALL_RESOURCES = [...SNOOKER_RESOURCES, ...CONSOLE_RESOURCES];
 
 const SNOOKER_INCLUDED_MEMBERS = 4;
-const EXTRA_MEMBER_CHARGE = 50;
+const EXTRA_MEMBER_CHARGE = 75;
 const AMOUNT_DIFF_THRESHOLD = 0.01;
 const GAMING_BOOKINGS_API_MAX_LIMIT = 200;
 const GAMING_PAYMENT_CHANNELS: readonly GamingPaymentChannel[] = ["cash", "card", "upi"];
