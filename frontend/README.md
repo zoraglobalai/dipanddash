@@ -23,7 +23,9 @@ Built as phase one of a multi-client architecture where this admin web app and t
    ```
 
 ## Environment
-- `VITE_API_BASE_URL`: backend API base URL (default `http://localhost:5000/api`)
+- `VITE_API_BASE_URL`: backend API base URL. Production defaults to
+  `https://dipanddash-yc72.vercel.app/api`; local development defaults to
+  `http://localhost:5000/api`.
 
 ## Highlights
 - Cookie-based auth session restore (`/auth/me`)
