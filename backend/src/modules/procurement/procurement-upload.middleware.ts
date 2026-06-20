@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import multer from "multer";
 
+import { uploadsRootDirectory } from "../../config/uploads";
 import { AppError } from "../../errors/app-error";
 
 const MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024;
@@ -14,7 +15,7 @@ const sanitizeFileName = (value: string) =>
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "");
 
-const uploadsDirectory = path.resolve(process.cwd(), "uploads", "purchase-invoices");
+const uploadsDirectory = path.join(uploadsRootDirectory, "purchase-invoices");
 fs.mkdirSync(uploadsDirectory, { recursive: true });
 
 const storage = multer.diskStorage({
