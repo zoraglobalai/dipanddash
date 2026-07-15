@@ -12,7 +12,7 @@ import {
   Text
 } from "@chakra-ui/react";
 import { BrowserMultiFormatReader, type IScannerControls } from "@zxing/browser";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ChangeEvent } from "react";
 
 type BarcodeScannerModalProps = {
   isOpen: boolean;
@@ -24,6 +24,7 @@ export const BarcodeScannerModal = ({ isOpen, onClose, onDetected }: BarcodeScan
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const controlsRef = useRef<IScannerControls | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const detectedRef = useRef(false);
   const onCloseRef = useRef(onClose);
   const onDetectedRef = useRef(onDetected);
@@ -64,9 +65,34 @@ export const BarcodeScannerModal = ({ isOpen, onClose, onDetected }: BarcodeScan
           throw new Error("UNSUPPORTED_CAMERA");
         }
 
+        const requestStream = async (constraints: MediaStreamConstraints) => {
+          let requestExpired = false;
+          let timeoutId: number | undefined;
+          const streamRequest = navigator.mediaDevices.getUserMedia(constraints).then((openedStream) => {
+            if (requestExpired || disposed) {
+              openedStream.getTracks().forEach((track) => track.stop());
+              throw new Error("CAMERA_REQUEST_EXPIRED");
+            }
+            return openedStream;
+          });
+          const timeout = new Promise<never>((_, reject) => {
+            timeoutId = window.setTimeout(() => {
+              requestExpired = true;
+              reject(new Error("CAMERA_TIMEOUT"));
+            }, 10000);
+          });
+          try {
+            return await Promise.race([streamRequest, timeout]);
+          } finally {
+            if (timeoutId !== undefined) {
+              window.clearTimeout(timeoutId);
+            }
+          }
+        };
+
         let stream: MediaStream;
         try {
-          stream = await navigator.mediaDevices.getUserMedia({
+          stream = await requestStream({
             video: {
               facingMode: { ideal: "environment" },
               width: { ideal: 1280 },
@@ -78,7 +104,10 @@ export const BarcodeScannerModal = ({ isOpen, onClose, onDetected }: BarcodeScan
           if (preferredCameraError instanceof DOMException && preferredCameraError.name === "NotAllowedError") {
             throw preferredCameraError;
           }
-          stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+          if (preferredCameraError instanceof Error && preferredCameraError.message === "CAMERA_TIMEOUT") {
+            throw preferredCameraError;
+          }
+          stream = await requestStream({ video: true, audio: false });
         }
 
         if (disposed) {
@@ -121,8 +150,11 @@ export const BarcodeScannerModal = ({ isOpen, onClose, onDetected }: BarcodeScan
         if (!disposed) {
           stopCamera();
           const errorName = error instanceof DOMException ? error.name : "";
+          const timedOut = error instanceof Error && error.message === "CAMERA_TIMEOUT";
           setErrorMessage(
-            errorName === "NotAllowedError"
+            timedOut
+              ? "Android did not answer the camera request. Allow Camera for Chrome and this site, then tap Retry."
+              : errorName === "NotAllowedError" || errorName === "SecurityError"
               ? "Camera permission is blocked. Open Chrome site settings, allow Camera, then tap Retry."
               : "Camera could not start. Close other camera apps, check permission, then tap Retry."
           );
@@ -137,6 +169,32 @@ export const BarcodeScannerModal = ({ isOpen, onClose, onDetected }: BarcodeScan
       stopCamera();
     };
   }, [isOpen, retryKey]);
+
+  const scanCapturedPhoto = async (file: File | undefined) => {
+    if (!file) {
+      return;
+    }
+    setErrorMessage("");
+    const imageUrl = URL.createObjectURL(file);
+    try {
+      const result = await new BrowserMultiFormatReader().decodeFromImageUrl(imageUrl);
+      const barcode = result.getText().trim();
+      if (!barcode) {
+        throw new Error("EMPTY_BARCODE");
+      }
+      controlsRef.current?.stop();
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+      onDetectedRef.current(barcode);
+      onCloseRef.current();
+    } catch {
+      setErrorMessage("Barcode was not clear in the photo. Move closer, keep it straight, and try again.");
+    } finally {
+      URL.revokeObjectURL(imageUrl);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+    }
+  };
 
   return (
     <Modal isOpen={isOpen} onClose={onClose} size={{ base: "full", md: "lg" }} isCentered>
@@ -185,6 +243,24 @@ export const BarcodeScannerModal = ({ isOpen, onClose, onDetected }: BarcodeScan
               Retry Camera
             </Button>
           ) : null}
+          <Box
+            as="input"
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            capture="environment"
+            display="none"
+            onChange={(event: ChangeEvent<HTMLInputElement>) => void scanCapturedPhoto(event.target.files?.[0])}
+          />
+          <Button
+            mt={3}
+            ml={{ base: 0, md: errorMessage ? 2 : 0 }}
+            w={{ base: "full", md: "auto" }}
+            variant="outline"
+            onClick={() => fileInputRef.current?.click()}
+          >
+            Take Barcode Photo
+          </Button>
         </ModalBody>
       </ModalContent>
     </Modal>
