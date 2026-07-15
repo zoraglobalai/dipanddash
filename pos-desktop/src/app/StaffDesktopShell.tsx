@@ -211,6 +211,7 @@ export const StaffDesktopShell = () => {
   const { session, logout } = usePosAuth();
   const isOnline = useNetworkStatus();
   const shortcutsModal = useDisclosure();
+  const [isMobileViewport] = useMediaQuery("(max-width: 767px)");
   const [isCompactViewport] = useMediaQuery("(max-width: 1360px)");
   const [isSmallDesktopViewport] = useMediaQuery("(max-width: 1440px)");
   const [isNarrowDesktopViewport] = useMediaQuery("(max-width: 1600px)");
@@ -324,9 +325,10 @@ export const StaffDesktopShell = () => {
   }, [activeView, isSnookerStaff, logout, session?.fullName, session?.username]);
 
   return (
-    <Box h="100vh" overflow="hidden" bg="linear-gradient(160deg, #FFF6E6 0%, #FFFDF9 48%, #FFFFFF 100%)">
+    <Box h="100dvh" overflow="hidden" bg="linear-gradient(160deg, #FFF6E6 0%, #FFFDF9 48%, #FFFFFF 100%)">
       <HStack align="stretch" spacing={0} h="100%" w="100%" minW={0}>
         <Box
+          display={isMobileViewport ? "none" : "block"}
           w={isSidebarCollapsedResolved ? SIDEBAR_COLLAPSED_WIDTH : expandedSidebarWidth}
           minW={isSidebarCollapsedResolved ? SIDEBAR_COLLAPSED_WIDTH : expandedSidebarWidth}
           h="100%"
@@ -591,18 +593,89 @@ export const StaffDesktopShell = () => {
             title={titleMeta.title}
             subtitle={titleMeta.subtitle}
             compactLayout={shouldUseCompactTopBar}
+            mobileLayout={isMobileViewport}
             onOpenShortcuts={shortcutsModal.onOpen}
             onLogout={() => {
               void logout();
             }}
           />
-          <Box flex={1} overflowY="auto" overflowX="auto">
-            <Box p={{ base: 3, xl: 4 }} minW={0}>
+          <Box flex={1} overflowY="auto" overflowX="hidden" pb={isMobileViewport ? "78px" : 0}>
+            <Box p={{ base: 3, xl: 4 }} minW={0} w="100%">
               {content}
             </Box>
           </Box>
         </Box>
       </HStack>
+
+      {isMobileViewport ? (
+        <HStack
+          position="fixed"
+          left={0}
+          right={0}
+          bottom={0}
+          zIndex={100}
+          spacing={1}
+          px={2}
+          pt={2}
+          pb="calc(8px + env(safe-area-inset-bottom))"
+          bg="rgba(255, 253, 247, 0.98)"
+          borderTop="1px solid rgba(145, 87, 61, 0.2)"
+          boxShadow="0 -8px 24px rgba(56, 21, 8, 0.1)"
+          overflowX="auto"
+          align="stretch"
+          sx={{ scrollbarWidth: "none", "&::-webkit-scrollbar": { display: "none" } }}
+        >
+          {visibleMenus.map((menu) => {
+            const isGroup = "group" in menu;
+            const Icon = menu.icon;
+            const isActive = isGroup ? activeView.startsWith("new-order/") : activeView === menu.key;
+            return (
+              <Button
+                key={isGroup ? menu.group : menu.key}
+                variant="ghost"
+                minW="74px"
+                h="58px"
+                px={2}
+                py={1}
+                borderRadius="12px"
+                color={isActive ? "white" : "#6F3028"}
+                bg={isActive ? "linear-gradient(135deg, #9C0B0B, #CC9B31)" : "transparent"}
+                _hover={{ bg: isActive ? "linear-gradient(135deg, #8B0909, #B9892A)" : "rgba(193, 14, 14, 0.08)" }}
+                onClick={() => {
+                  if (isGroup) {
+                    setIsNewOrderExpanded(true);
+                    setActiveView("new-order/dine-in");
+                  } else {
+                    setActiveView(menu.key);
+                  }
+                }}
+              >
+                <VStack spacing={1}>
+                  <Icon size={20} />
+                  <Text fontSize="10px" fontWeight={800} noOfLines={1} maxW="68px">
+                    {menu.label}
+                  </Text>
+                </VStack>
+              </Button>
+            );
+          })}
+          <Button
+            variant="ghost"
+            minW="74px"
+            h="58px"
+            px={2}
+            py={1}
+            borderRadius="12px"
+            color="#7A2620"
+            onClick={() => void logout()}
+          >
+            <VStack spacing={1}>
+              <FiLogOut size={20} />
+              <Text fontSize="10px" fontWeight={800}>Logout</Text>
+            </VStack>
+          </Button>
+        </HStack>
+      ) : null}
 
       <ShortcutHelpModal isOpen={shortcutsModal.isOpen} onClose={shortcutsModal.onClose} />
     </Box>

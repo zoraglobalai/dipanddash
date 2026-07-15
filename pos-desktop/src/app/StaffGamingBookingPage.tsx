@@ -1192,7 +1192,7 @@ export const StaffGamingBookingPage = () => {
         header: "Actions",
         alwaysVisible: true,
         render: (booking) => (
-          <HStack>
+          <HStack flexWrap="wrap" gap={2}>
             <Button size="xs" variant="outline" leftIcon={<FiEye size={12} />} onClick={() => void openView(booking)}>
               View
             </Button>
@@ -1227,12 +1227,12 @@ export const StaffGamingBookingPage = () => {
 
   return (
     <VStack align="stretch" spacing={4}>
-      <SimpleGrid columns={{ base: 1, sm: 2, xl: 6 }} spacing={3}>
-        <Box p={4} border="1px solid rgba(132,79,52,0.2)" borderRadius="14px" bg="white"><Text fontSize="sm">Playing</Text><Text fontSize="2xl" fontWeight={900}>{summary.ongoing}</Text></Box>
-        <Box p={4} border="1px solid rgba(132,79,52,0.2)" borderRadius="14px" bg="white"><Text fontSize="sm">Upcoming</Text><Text fontSize="2xl" fontWeight={900}>{summary.upcoming}</Text></Box>
-        <Box p={4} border="1px solid rgba(132,79,52,0.2)" borderRadius="14px" bg="white"><Text fontSize="sm">Completed</Text><Text fontSize="2xl" fontWeight={900}>{summary.completed}</Text></Box>
-        <Box p={4} border="1px solid rgba(132,79,52,0.2)" borderRadius="14px" bg="white"><Text fontSize="sm">Pending Payment</Text><Text fontSize="2xl" fontWeight={900}>{summary.pending}</Text></Box>
-        <Box p={4} border="1px solid rgba(132,79,52,0.2)" borderRadius="14px" bg="white"><Text fontSize="sm">Active Players</Text><Text fontSize="2xl" fontWeight={900}>{summary.players}</Text></Box>
+      <SimpleGrid columns={{ base: 2, sm: 2, xl: 6 }} spacing={3}>
+        <Box p={{ base: 3, md: 4 }} border="1px solid rgba(132,79,52,0.2)" borderRadius="14px" bg="white"><Text fontSize="sm">Playing</Text><Text fontSize={{ base: "xl", md: "2xl" }} fontWeight={900}>{summary.ongoing}</Text></Box>
+        <Box p={{ base: 3, md: 4 }} border="1px solid rgba(132,79,52,0.2)" borderRadius="14px" bg="white"><Text fontSize="sm">Upcoming</Text><Text fontSize={{ base: "xl", md: "2xl" }} fontWeight={900}>{summary.upcoming}</Text></Box>
+        <Box p={{ base: 3, md: 4 }} border="1px solid rgba(132,79,52,0.2)" borderRadius="14px" bg="white"><Text fontSize="sm">Completed</Text><Text fontSize={{ base: "xl", md: "2xl" }} fontWeight={900}>{summary.completed}</Text></Box>
+        <Box p={{ base: 3, md: 4 }} border="1px solid rgba(132,79,52,0.2)" borderRadius="14px" bg="white"><Text fontSize="sm">Pending Payment</Text><Text fontSize={{ base: "xl", md: "2xl" }} fontWeight={900}>{summary.pending}</Text></Box>
+        <Box p={{ base: 3, md: 4 }} border="1px solid rgba(132,79,52,0.2)" borderRadius="14px" bg="white"><Text fontSize="sm">Active Players</Text><Text fontSize={{ base: "xl", md: "2xl" }} fontWeight={900}>{summary.players}</Text></Box>
         <Box display="flex" alignItems={{ base: "stretch", xl: "end" }} justifyContent={{ base: "stretch", xl: "end" }}>
           <Button leftIcon={<FiPlus size={16} />} onClick={openCreate} w={{ base: "full", xl: "auto" }}>
             New Booking

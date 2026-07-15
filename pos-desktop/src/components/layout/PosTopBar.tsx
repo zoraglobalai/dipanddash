@@ -10,6 +10,7 @@ type PosTopBarProps = {
   title?: string;
   subtitle?: string;
   compactLayout?: boolean;
+  mobileLayout?: boolean;
   onOpenShortcuts: () => void;
   onLogout?: () => void;
 };
@@ -20,13 +21,14 @@ export const PosTopBar = ({
   title,
   subtitle,
   compactLayout = false,
+  mobileLayout = false,
   onOpenShortcuts,
   onLogout
 }: PosTopBarProps) => {
   return (
     <Box
       px={{ base: 3, lg: 5 }}
-      py={3}
+      py={mobileLayout ? 2.5 : 3}
       borderBottom="1px solid"
       borderColor="rgba(121, 74, 51, 0.15)"
       bg="rgba(255,255,255,0.9)"
@@ -40,25 +42,27 @@ export const PosTopBar = ({
         justify="space-between"
         align={compactLayout ? "stretch" : { base: "stretch", xl: "center" }}
         direction={compactLayout ? "column" : { base: "column", xl: "row" }}
-        gap={3}
+        gap={mobileLayout ? 1.5 : 3}
       >
         <VStack align="start" spacing={0} minW={0}>
           <Text fontWeight={900} color="#2A1A14">
             {title ?? "Dip & Dash POS"}
           </Text>
-          <Text
-            fontSize={{ base: "xs", md: "sm" }}
-            color="#7A6258"
-            noOfLines={compactLayout ? 2 : { base: 2, xl: 1 }}
-          >
-            {subtitle ?? "Centralized billing console"}
-          </Text>
+          {!mobileLayout ? (
+            <Text
+              fontSize={{ base: "xs", md: "sm" }}
+              color="#7A6258"
+              noOfLines={compactLayout ? 2 : { base: 2, xl: 1 }}
+            >
+              {subtitle ?? "Centralized billing console"}
+            </Text>
+          ) : null}
         </VStack>
 
         <HStack
           spacing={2}
           flexWrap="wrap"
-          justify={compactLayout ? "flex-start" : { base: "flex-start", xl: "flex-end" }}
+          justify={mobileLayout ? "space-between" : compactLayout ? "flex-start" : { base: "flex-start", xl: "flex-end" }}
           align="center"
         >
           <StatusBadge
@@ -73,15 +77,15 @@ export const PosTopBar = ({
             {isOnline ? <FiWifi /> : <FiWifiOff />}
             <Text fontSize="sm">{isOnline ? "Network" : "No network"}</Text>
           </HStack>
-          <Button size={{ base: "xs", md: "sm" }} variant="outline" onClick={onOpenShortcuts}>
+          <Button display={mobileLayout ? "none" : undefined} size={{ base: "xs", md: "sm" }} variant="outline" onClick={onOpenShortcuts}>
             Shortcuts
           </Button>
           {onLogout ? (
-            <Button size={{ base: "xs", md: "sm" }} variant="outline" leftIcon={<FiLogOut />} onClick={onLogout}>
+            <Button display={mobileLayout ? "none" : undefined} size={{ base: "xs", md: "sm" }} variant="outline" leftIcon={<FiLogOut />} onClick={onLogout}>
               Logout
             </Button>
           ) : null}
-          <VStack align={compactLayout ? "start" : { base: "start", xl: "end" }} spacing={0}>
+          <VStack display={mobileLayout ? "none" : "flex"} align={compactLayout ? "start" : { base: "start", xl: "end" }} spacing={0}>
             <Text fontWeight={700} fontSize="sm">
               {session?.fullName ?? "Staff"}
             </Text>

@@ -17,6 +17,7 @@ import {
   Thead,
   Tr,
   VStack,
+  useMediaQuery,
   type TableCellProps,
   type TableColumnHeaderProps
 } from "@chakra-ui/react";
@@ -58,6 +59,7 @@ export const PosDataTable = <T,>({
   onRowClick
 }: PosDataTableProps<T>) => {
   const [viewRow, setViewRow] = useState<T | null>(null);
+  const [isMobileViewport] = useMediaQuery("(max-width: 767px)");
 
   const { visibleColumns, hiddenColumns } = useMemo(() => {
     if (columns.length <= maxColumns) {
@@ -95,8 +97,55 @@ export const PosDataTable = <T,>({
 
   return (
     <>
-      <Box border="1px solid rgba(132, 79, 52, 0.16)" borderRadius="12px" overflowX="auto" overflowY="hidden">
-        <Table variant="simple" size="sm" minW="680px">
+      {isMobileViewport ? (
+        <VStack align="stretch" spacing={3}>
+          {loading ? (
+            <PosLoadingState message={loadingMessage} compact minH="150px" />
+          ) : rows.length ? (
+            rows.map((row, index) => (
+              <Box
+                key={getRowId(row, index)}
+                border="1px solid rgba(132, 79, 52, 0.18)"
+                borderRadius="14px"
+                bg="white"
+                p={3}
+                boxShadow="0 3px 12px rgba(68, 35, 20, 0.04)"
+                onClick={onRowClick ? () => onRowClick(row) : undefined}
+              >
+                <VStack align="stretch" spacing={3}>
+                  {visibleColumns.map((column) => (
+                    <Box key={column.key}>
+                      <Text fontSize="10px" color="#80675C" fontWeight={800} textTransform="uppercase" mb={0.5}>
+                        {column.header}
+                      </Text>
+                      <Box fontSize="sm">{column.render(row)}</Box>
+                    </Box>
+                  ))}
+                  {hasHiddenColumns ? (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      w="full"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setViewRow(row);
+                      }}
+                    >
+                      View all details
+                    </Button>
+                  ) : null}
+                </VStack>
+              </Box>
+            ))
+          ) : (
+            <Box border="1px solid rgba(132, 79, 52, 0.16)" borderRadius="12px" p={4} bg="white">
+              <Text color="#6D584E">{emptyMessage}</Text>
+            </Box>
+          )}
+        </VStack>
+      ) : (
+        <Box border="1px solid rgba(132, 79, 52, 0.16)" borderRadius="12px" overflowX="auto" overflowY="hidden">
+          <Table variant="simple" size="sm" minW="680px">
           <Thead bg="rgba(218, 164, 56, 0.1)">
             <Tr>
               {visibleColumns.map((column) => (
@@ -164,8 +213,9 @@ export const PosDataTable = <T,>({
               </Tr>
             )}
           </Tbody>
-        </Table>
-      </Box>
+          </Table>
+        </Box>
+      )}
 
       <Modal isOpen={Boolean(viewRow)} onClose={() => setViewRow(null)} isCentered size="lg">
         <ModalOverlay />
