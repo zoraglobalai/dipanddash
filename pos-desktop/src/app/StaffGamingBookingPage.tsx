@@ -27,7 +27,7 @@
   useToast
 } from "@chakra-ui/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { FiEdit2, FiEye, FiPlus, FiShoppingBag } from "react-icons/fi";
+import { FiEdit2, FiEye, FiPlus, FiPrinter, FiShoppingBag } from "react-icons/fi";
 
 import { usePosAuth } from "@/app/PosAuthContext";
 import { usePos } from "@/app/PosContext";
@@ -46,7 +46,9 @@ import type {
   GamingPaymentMode,
   PosOrder
 } from "@/types/pos";
+import { extractApiErrorMessage } from "@/utils/api-error";
 import { formatINR } from "@/utils/currency";
+import { openBillInPrintFrame } from "@/utils/bill-print";
 
 type CustomerDraft = { name: string; phone: string };
 type FormMode = "create" | "edit";
@@ -128,6 +130,13 @@ const parsePaymentSplitAmount = (value: string) => {
   }
   return roundCheckoutAmount(parsed);
 };
+const escapePrintText = (value: unknown) =>
+  String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
 const formatPaymentSplitSummary = (split: { cash: number; card: number; upi: number }) => {
   const parts: string[] = [];
   if (split.cash > AMOUNT_DIFF_THRESHOLD) {
@@ -875,7 +884,7 @@ export const StaffGamingBookingPage = () => {
             : "Booking is now locked with pending payment."
       });
     } catch (error) {
-      toast({ status: "error", title: "Checkout failed", description: error instanceof Error ? error.message : "Please retry." });
+      toast({ status: "error", title: "Checkout failed", description: extractApiErrorMessage(error, "Please retry.") });
     } finally { setSaving(false); }
   };
 
@@ -894,6 +903,82 @@ export const StaffGamingBookingPage = () => {
     }
     checkoutConfirmModal.onOpen();
   };
+
+  const printCheckoutBill = useCallback(() => {
+    if (!checkoutBooking) {
+      return;
+    }
+    const paymentLabel =
+      checkoutPaymentStatus === "paid" ? `${checkoutPaymentStatus.toUpperCase()} via ${checkoutPaymentMode.toUpperCase()}` : "PENDING";
+    const html = `
+      <html>
+        <head>
+          <meta charset="utf-8" />
+          <title>${escapePrintText(checkoutBooking.bookingNumber)}</title>
+          <style>
+            body { font-family: "Courier New", monospace; margin: 0; padding: 18px; background: #f8f8f8; color: #24150f; }
+            .bill { max-width: 520px; margin: 0 auto; background: #fff; border: 1px dashed #b99675; border-radius: 10px; padding: 22px; }
+            .center { text-align: center; }
+            .brand { font-size: 22px; font-weight: 900; letter-spacing: .5px; }
+            .line { border-top: 1px dashed #c7ad96; margin-top: 12px; padding-top: 10px; }
+            .row { display: flex; justify-content: space-between; gap: 14px; padding: 3px 0; }
+            .final { font-size: 24px; font-weight: 900; border-top: 1px dashed #c7ad96; margin-top: 10px; padding-top: 10px; }
+            .small { font-size: 12px; color: #6d584e; }
+          </style>
+        </head>
+        <body>
+          <div class="bill">
+            <div class="center">
+              <div class="brand">147 Snooker Lounge</div>
+              <div class="small">Snooker Play Bill</div>
+            </div>
+            <div class="line">
+              <div class="row"><span>Booking</span><b>${escapePrintText(checkoutBooking.bookingNumber)}</b></div>
+              <div class="row"><span>Customer</span><b>${escapePrintText(checkoutBooking.primaryCustomerName ?? "-")}</b></div>
+              <div class="row"><span>Phone</span><b>${escapePrintText(checkoutBooking.primaryCustomerPhone ?? "-")}</b></div>
+              <div class="row"><span>Table</span><b>${escapePrintText(checkoutBooking.resourceLabel ?? "-")}</b></div>
+            </div>
+            <div class="line">
+              <div class="row"><span>Check In</span><b>${escapePrintText(formatDateTime(checkoutBooking.checkInAt))}</b></div>
+              <div class="row"><span>Check Out</span><b>${escapePrintText(formatDateTime(toIsoFromLocal(checkoutAtLocal)))}</b></div>
+              <div class="row"><span>Playing Time</span><b>${escapePrintText(formatDuration(checkoutPlayMinutes))}</b></div>
+              <div class="row"><span>Players</span><b>${checkoutBooking.playerCount} (Extra ${checkoutExtraMembers})</b></div>
+            </div>
+            <div class="line">
+              <div class="row"><span>Play Amount</span><b>${escapePrintText(formatINR(checkoutSystemAmount))}</b></div>
+              <div class="row"><span>Food Amount</span><b>${escapePrintText(formatINR(checkoutFoodAmount))}</b></div>
+              <div class="row"><span>Extra Charge</span><b>${escapePrintText(formatINR(checkoutExtraCharge))}</b></div>
+              <div class="row"><span>Discount</span><b>${escapePrintText(formatINR(checkoutDiscountAmount))}</b></div>
+              <div class="row"><span>Payment</span><b>${escapePrintText(paymentLabel)}</b></div>
+              ${checkoutPaymentStatus === "paid" ? `<div class="row"><span>Collected</span><b>${escapePrintText(checkoutPaymentSplitSummary || "-")}</b></div>` : ""}
+              ${checkoutRequiresReference ? `<div class="row"><span>Reference</span><b>${escapePrintText(checkoutPaymentReference.trim() || "-")}</b></div>` : ""}
+              <div class="row final"><span>Final Total</span><span>${escapePrintText(formatINR(checkoutFinalAmountNumber))}</span></div>
+            </div>
+            <div class="center small line">Thank you. Visit again.</div>
+          </div>
+        </body>
+      </html>
+    `;
+    if (!openBillInPrintFrame(html)) {
+      toast({ status: "error", title: "Unable to open print window" });
+    }
+  }, [
+    checkoutAtLocal,
+    checkoutBooking,
+    checkoutDiscountAmount,
+    checkoutExtraCharge,
+    checkoutExtraMembers,
+    checkoutFinalAmountNumber,
+    checkoutFoodAmount,
+    checkoutPaymentMode,
+    checkoutPaymentReference,
+    checkoutPaymentSplitSummary,
+    checkoutPaymentStatus,
+    checkoutPlayMinutes,
+    checkoutRequiresReference,
+    checkoutSystemAmount,
+    toast
+  ]);
 
   const openFoodOrderModal = async (booking: GamingBooking) => {
     setFoodBooking(booking);
@@ -1857,6 +1942,7 @@ export const StaffGamingBookingPage = () => {
           </ModalBody>
           <ModalFooter>
             <HStack>
+              <Button leftIcon={<FiPrinter />} variant="outline" onClick={printCheckoutBill}>Print Bill</Button>
               <Button variant="outline" onClick={checkoutConfirmModal.onClose}>Back</Button>
               <Button isLoading={saving} onClick={() => void confirmCheckout()}>Confirm Checkout</Button>
             </HStack>

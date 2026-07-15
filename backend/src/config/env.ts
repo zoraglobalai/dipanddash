@@ -114,10 +114,16 @@ const rawEnv = parsedEnv.data;
 const isProduction = rawEnv.NODE_ENV === "production";
 const hasDatabaseUrl = Boolean(rawEnv.DATABASE_URL);
 
+const normalizeOrigin = (value: string) =>
+  value
+    .trim()
+    .replace(/^(["'])(.*)\1$/, "$2")
+    .replace(/\/+$/, "");
+
 const parseOrigins = (value: string | undefined) =>
   (value ?? "")
     .split(",")
-    .map((entry) => entry.trim())
+    .map(normalizeOrigin)
     .filter((entry) => entry.length > 0);
 
 const defaultDevOrigins = [
@@ -130,10 +136,17 @@ const defaultDevOrigins = [
   "https://tauri.localhost"
 ];
 
+const defaultProductionOrigins = [
+  "https://dipanddash-92gb.vercel.app",
+  "tauri://localhost",
+  "http://tauri.localhost",
+  "https://tauri.localhost"
+];
+
 const configuredOrigins = [
   ...parseOrigins(rawEnv.CLIENT_ORIGINS),
-  ...(rawEnv.CLIENT_ORIGIN ? [rawEnv.CLIENT_ORIGIN.trim()] : []),
-  ...(isProduction ? [] : defaultDevOrigins)
+  ...(rawEnv.CLIENT_ORIGIN ? [normalizeOrigin(rawEnv.CLIENT_ORIGIN)] : []),
+  ...(isProduction ? defaultProductionOrigins : defaultDevOrigins)
 ];
 
 const clientOrigins = Array.from(new Set(configuredOrigins));

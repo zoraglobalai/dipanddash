@@ -28,7 +28,7 @@ import {
   VStack,
   useDisclosure
 } from "@chakra-ui/react";
-import { Download, Edit2, Eye, History, Plus, RotateCcw, Trash2, Upload } from "lucide-react";
+import { Download, Edit2, Eye, History, Plus, RotateCcw, ScanLine, Trash2, Upload } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { useLocation } from "react-router-dom";
 
@@ -36,6 +36,7 @@ import { ConfirmDialog } from "@/components/common/ConfirmDialog";
 import { EmptyState } from "@/components/common/EmptyState";
 import { PageHeader } from "@/components/common/PageHeader";
 import { SkeletonTable } from "@/components/feedback/SkeletonTable";
+import { BarcodeScannerModal } from "@/components/procurement/BarcodeScannerModal";
 import { ActionIconButton } from "@/components/ui/ActionIconButton";
 import { AppButton } from "@/components/ui/AppButton";
 import { AppCard } from "@/components/ui/AppCard";
@@ -281,6 +282,8 @@ const PurchaseOrderModal = memo(({
   const [invoiceImageFile, setInvoiceImageFile] = useState<File | null>(null);
   const [invoiceImageUrl, setInvoiceImageUrl] = useState<string | undefined>(undefined);
   const [invoicePreviewUrl, setInvoicePreviewUrl] = useState("");
+  const [scanningLineId, setScanningLineId] = useState<string | null>(null);
+  const toast = useAppToast();
   const isSnookerPurchase = purchaseSection === "gaming";
 
   useEffect(() => {
@@ -385,6 +388,15 @@ const PurchaseOrderModal = memo(({
   );
   const productById = useMemo(
     () => new Map((meta?.products ?? []).map((product) => [product.id, product])),
+    [meta?.products]
+  );
+  const productBySku = useMemo(
+    () =>
+      new Map(
+        (meta?.products ?? [])
+          .filter((product) => product.sku?.trim())
+          .map((product) => [product.sku!.trim().toLowerCase(), product])
+      ),
     [meta?.products]
   );
 
@@ -520,6 +532,41 @@ const PurchaseOrderModal = memo(({
       unitPrice: product ? String(product.purchaseUnitPrice) : line.unitPrice
     });
   };
+
+  const handleBarcodeDetected = useCallback(
+    (barcode: string) => {
+      if (!scanningLineId) {
+        return;
+      }
+      const product = productBySku.get(barcode.trim().toLowerCase());
+      if (!product) {
+        toast.warning(
+          "Barcode is not registered",
+          `Create the product once with SKU/barcode ${barcode}; future scans will fill it automatically.`
+        );
+        return;
+      }
+
+      setLines((previous) =>
+        previous.map((line) =>
+          line.id === scanningLineId
+            ? {
+                ...line,
+                lineType: "product",
+                ingredientId: "",
+                productId: product.id,
+                productName: isSnookerPurchase ? product.name : "",
+                productPackSize: product.packSize ?? "",
+                quantityUnit: product.unit,
+                unitPrice: String(product.purchaseUnitPrice)
+              }
+            : line
+        )
+      );
+      toast.success("Product scanned", `${product.name} selected at ${formatCurrency(product.purchaseUnitPrice)}.`);
+    },
+    [isSnookerPurchase, productBySku, scanningLineId, toast]
+  );
 
   const handleInvoiceFileChange = (nextFile: File | null) => {
     if (invoicePreviewUrl) {
@@ -757,6 +804,17 @@ const PurchaseOrderModal = memo(({
                       borderColor="rgba(133, 78, 48, 0.2)"
                       bg="linear-gradient(160deg, #FFFFFF 0%, #FFF8EF 100%)"
                     >
+                      <HStack justify="space-between" mb={3} flexWrap="wrap">
+                        <Text fontWeight={800}>Product {index + 1}</Text>
+                        <AppButton
+                          size="sm"
+                          variant="outline"
+                          leftIcon={<ScanLine size={16} />}
+                          onClick={() => setScanningLineId(line.id)}
+                        >
+                          Scan Barcode
+                        </AppButton>
+                      </HStack>
                       <SimpleGrid columns={{ base: 1, md: 2, xl: 4 }} spacing={3}>
                         <AppInput
                           label="Description"
@@ -857,6 +915,18 @@ const PurchaseOrderModal = memo(({
                     bg="linear-gradient(160deg, #FFFFFF 0%, #FFF8EF 100%)"
                   >
                     <VStack spacing={3} align="stretch">
+                      {line.lineType === "product" ? (
+                        <HStack justify="flex-end">
+                          <AppButton
+                            size="sm"
+                            variant="outline"
+                            leftIcon={<ScanLine size={16} />}
+                            onClick={() => setScanningLineId(line.id)}
+                          >
+                            Scan Barcode
+                          </AppButton>
+                        </HStack>
+                      ) : null}
                       <SimpleGrid columns={{ base: 1, md: 2, xl: 4 }} spacing={3}>
                       <AppSearchableSelect
                         label={`Line ${index + 1} Type`}
@@ -1190,6 +1260,11 @@ const PurchaseOrderModal = memo(({
           </ModalFooter>
         </ModalContent>
       </Modal>
+      <BarcodeScannerModal
+        isOpen={Boolean(scanningLineId)}
+        onClose={() => setScanningLineId(null)}
+        onDetected={handleBarcodeDetected}
+      />
       <ConfirmDialog
         isOpen={isCloseConfirmOpen}
         title="Close this popup?"
@@ -1237,6 +1312,7 @@ const ProductFormModal = memo(({
   onSubmit
 }: ProductFormModalProps) => {
   const { isCloseConfirmOpen, requestClose, cancelCloseRequest, confirmClose } = useModalCloseGuard(onClose);
+  const [isSkuScannerOpen, setIsSkuScannerOpen] = useState(false);
   const [form, setForm] = useState({
     name: "",
     category: "",
@@ -1345,11 +1421,22 @@ const ProductFormModal = memo(({
                   value={form.category}
                   onChange={(event) => setForm((prev) => ({ ...prev, category: (event.target as HTMLInputElement).value }))}
                 />
-                <AppInput
-                  label="SKU (optional)"
-                  value={form.sku}
-                  onChange={(event) => setForm((prev) => ({ ...prev, sku: (event.target as HTMLInputElement).value }))}
-                />
+                <Box>
+                  <AppInput
+                    label="SKU / Barcode (optional)"
+                    value={form.sku}
+                    onChange={(event) => setForm((prev) => ({ ...prev, sku: (event.target as HTMLInputElement).value }))}
+                  />
+                  <AppButton
+                    mt={2}
+                    size="sm"
+                    variant="outline"
+                    leftIcon={<ScanLine size={16} />}
+                    onClick={() => setIsSkuScannerOpen(true)}
+                  >
+                    Scan Barcode
+                  </AppButton>
+                </Box>
                 <AppInput
                   label="Pack Size (optional)"
                   value={form.packSize}
@@ -1479,6 +1566,11 @@ const ProductFormModal = memo(({
           </ModalFooter>
         </ModalContent>
       </Modal>
+      <BarcodeScannerModal
+        isOpen={isSkuScannerOpen}
+        onClose={() => setIsSkuScannerOpen(false)}
+        onDetected={(barcode) => setForm((previous) => ({ ...previous, sku: barcode }))}
+      />
       <ConfirmDialog
         isOpen={isCloseConfirmOpen}
         title="Close this popup?"

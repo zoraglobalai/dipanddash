@@ -1180,7 +1180,7 @@ export class GamingService {
     if (!booking) {
       throw new AppError(404, "Booking not found.");
     }
-    if (!isPrivileged(context.role) && booking.staffId !== context.userId) {
+    if (!isPrivileged(context.role) && context.role !== UserRole.SNOOKER_STAFF && booking.staffId !== context.userId) {
       throw new AppError(403, "You can only checkout your own bookings.");
     }
     if (booking.status === "completed") {

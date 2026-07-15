@@ -8,6 +8,10 @@ repository = ""
 edition = "2021"
 rust-version = "1.77.2"
 
+[lib]
+name = "dip_dash_pos"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

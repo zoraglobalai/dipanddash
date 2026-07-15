@@ -7,6 +7,16 @@ import { posTheme } from "@/app/theme";
 import { PosAuthProvider } from "@/app/PosAuthContext";
 import "@/styles/index.css";
 
+if (
+  import.meta.env.PROD &&
+  "serviceWorker" in navigator &&
+  (window.location.protocol === "https:" || window.location.hostname === "localhost")
+) {
+  window.addEventListener("load", () => {
+    void navigator.serviceWorker.register("/sw.js");
+  });
+}
+
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <ChakraProvider theme={posTheme}>

@@ -18,7 +18,7 @@ const allowedOrigins = new Set(env.CLIENT_ORIGINS);
 app.use(
   cors({
     origin: (origin, callback) => {
-      if (!origin || allowedOrigins.has(origin)) {
+      if (!origin || origin === "null" || allowedOrigins.has(origin)) {
         callback(null, true);
         return;
       }

@@ -42,6 +42,25 @@ npm run tauri:build
 npm run tauri:build:update
 ```
 
+## Mobile builds
+
+Android development and packaging use the same POS frontend and production API:
+
+```bash
+npm run tauri:android:dev
+npm run tauri:android:apk
+npm run tauri:android:aab
+```
+
+The APK is suitable for direct installation. The AAB is intended for Google Play.
+
+iOS initialization and builds require macOS with Xcode:
+
+```bash
+npm run tauri:ios:init
+npm run tauri:ios:build
+```
+
 ## Notes
 
 - Production builds use `https://dipanddash-yc72.vercel.app/api` unless
