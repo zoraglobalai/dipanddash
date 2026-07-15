@@ -167,6 +167,51 @@ const extractFileNameFromDisposition = (contentDisposition?: string | null) => {
 };
 
 const createDraftLineId = () => Math.random().toString(36).slice(2, 10);
+
+type PublicBarcodeProduct = {
+  name: string;
+  category: string;
+  packSize: string;
+};
+
+const lookupPublicBarcodeProduct = async (barcode: string): Promise<PublicBarcodeProduct | null> => {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), 8000);
+  try {
+    const fields = "code,product_name,brands,categories,quantity";
+    const response = await fetch(
+      `https://world.openfoodfacts.org/api/v3/product/${encodeURIComponent(barcode)}?fields=${fields}`,
+      { signal: controller.signal }
+    );
+    if (!response.ok) {
+      return null;
+    }
+    const payload = (await response.json()) as {
+      status?: string;
+      result?: { id?: string };
+      product?: {
+        product_name?: string;
+        brands?: string;
+        categories?: string;
+        quantity?: string;
+      };
+    };
+    if (payload.status !== "success" || payload.result?.id !== "product_found" || !payload.product?.product_name?.trim()) {
+      return null;
+    }
+    const firstCategory = payload.product.categories?.split(",")[0]?.trim();
+    return {
+      name: payload.product.product_name.trim(),
+      category: firstCategory || payload.product.brands?.trim() || "Packaged Product",
+      packSize: payload.product.quantity?.trim() ?? ""
+    };
+  } catch {
+    return null;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+};
+
 const PRODUCT_TARGET_SECTION_OPTIONS: AppSearchableSelectOption[] = [
   { value: "dip_and_dash", label: "Dip & Dash" },
   { value: "gaming", label: "Snooker / Gaming" },
@@ -1282,6 +1327,7 @@ type ProductFormModalProps = {
   onClose: () => void;
   loading: boolean;
   initialData: ProductListItem | null;
+  products: ProductListItem[];
   suppliers: SupplierListItem[];
   units: string[];
   forcedTargetSection?: ProductTargetSection;
@@ -1306,6 +1352,7 @@ const ProductFormModal = memo(({
   onClose,
   loading,
   initialData,
+  products,
   suppliers,
   units,
   forcedTargetSection,
@@ -1313,6 +1360,8 @@ const ProductFormModal = memo(({
 }: ProductFormModalProps) => {
   const { isCloseConfirmOpen, requestClose, cancelCloseRequest, confirmClose } = useModalCloseGuard(onClose);
   const [isSkuScannerOpen, setIsSkuScannerOpen] = useState(false);
+  const [isBarcodeLookupLoading, setIsBarcodeLookupLoading] = useState(false);
+  const toast = useAppToast();
   const [form, setForm] = useState({
     name: "",
     category: "",
@@ -1394,6 +1443,49 @@ const ProductFormModal = memo(({
     });
   };
 
+  const handleProductBarcode = async (barcode: string) => {
+    const normalizedBarcode = barcode.trim().toLowerCase();
+    const existingProduct = products.find((product) => product.sku?.trim().toLowerCase() === normalizedBarcode);
+    if (existingProduct) {
+      setForm((previous) => ({
+        ...previous,
+        name: existingProduct.name,
+        category: existingProduct.category,
+        sku: barcode.trim(),
+        packSize: existingProduct.packSize ?? "",
+        unit: existingProduct.unit,
+        minStock: String(existingProduct.minStock),
+        sellingPrice: String(existingProduct.sellingPrice),
+        targetSection: forcedTargetSection ?? existingProduct.targetSection,
+        defaultSupplierId: existingProduct.defaultSupplierId ?? ""
+      }));
+      toast.success("Existing product found", `${existingProduct.name} and its saved selling price were filled automatically.`);
+      return;
+    }
+
+    setForm((previous) => ({ ...previous, sku: barcode.trim() }));
+    setIsBarcodeLookupLoading(true);
+    const publicProduct = await lookupPublicBarcodeProduct(barcode.trim());
+    setIsBarcodeLookupLoading(false);
+    if (!publicProduct) {
+      toast.warning(
+        "New barcode",
+        "This product was not found in the public database. Enter its name and price once; future scans will fill them automatically."
+      );
+      return;
+    }
+    setForm((previous) => ({
+      ...previous,
+      name: publicProduct.name || previous.name,
+      category: publicProduct.category || previous.category,
+      packSize: publicProduct.packSize || previous.packSize
+    }));
+    toast.info(
+      "Product details found",
+      `${publicProduct.name} was filled. Enter your selling price once because price is not stored in the barcode.`
+    );
+  };
+
   return (
     <>
       <Modal
@@ -1433,6 +1525,7 @@ const ProductFormModal = memo(({
                     variant="outline"
                     leftIcon={<ScanLine size={16} />}
                     onClick={() => setIsSkuScannerOpen(true)}
+                    isLoading={isBarcodeLookupLoading}
                   >
                     Scan Barcode
                   </AppButton>
@@ -1569,7 +1662,7 @@ const ProductFormModal = memo(({
       <BarcodeScannerModal
         isOpen={isSkuScannerOpen}
         onClose={() => setIsSkuScannerOpen(false)}
-        onDetected={(barcode) => setForm((previous) => ({ ...previous, sku: barcode }))}
+        onDetected={(barcode) => void handleProductBarcode(barcode)}
       />
       <ConfirmDialog
         isOpen={isCloseConfirmOpen}
@@ -4056,6 +4149,7 @@ export const PurchasePage = ({ initialSection = "orders", standalone = false }: 
           }}
           loading={mutationLoading}
           initialData={selectedProduct}
+          products={productRows}
           suppliers={suppliers}
           units={units}
           forcedTargetSection={scopedTargetSection}
